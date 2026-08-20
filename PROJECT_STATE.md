@@ -11,8 +11,11 @@ Last updated: 2026-08-20
 **Phase 0 — Infrastructure Foundation**
 
 The project is in initial scaffolding. Python environment and dependency
-configuration are in place; no functional data pipelines or integrations
-exist yet.
+configuration are in place. A read-only Alpaca market-data connector exists
+and live provider connectivity has been verified (a single read-only
+snapshot request — see Status below). This is connectivity only: no bulk or
+historical data has been pulled, no dataset has been stored or validated,
+and no database, forecasting, or trading logic exists yet.
 
 ## Status
 
@@ -37,8 +40,13 @@ exist yet.
   market-data API (`https://data.alpaca.markets`) — no order, account, or
   execution functionality. It validates that both Alpaca credentials are
   configured before requesting, uses explicit timeouts, and returns only
-  sanitized results (never headers, keys, secrets, or the raw response). A
-  companion script, `scripts/check_alpaca_connection.py`, reports a
+  sanitized results (never headers, keys, secrets, or the raw response). All
+  symbols are normalized/validated (trimmed, uppercased, restricted to a
+  conservative U.S. ticker character set) before any request is built, so
+  invalid or malicious input never reaches the network; malformed or
+  non-object JSON responses are also rejected with a sanitized error/status
+  rather than surfaced raw. A companion script,
+  `scripts/check_alpaca_connection.py`, reports a
   sanitized connection status (configured, success, status category,
   symbol, timestamp). On 2026-08-20 one live, read-only SPY snapshot
   connection check was run using local `.env` credentials and succeeded

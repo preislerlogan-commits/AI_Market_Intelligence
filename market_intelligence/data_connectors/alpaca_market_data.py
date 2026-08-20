@@ -10,6 +10,7 @@ included in exception messages.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -22,6 +23,9 @@ DEFAULT_TIMEOUT = httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0)
 
 _SNAPSHOT_TIMESTAMP_FIELDS = ("latestTrade", "latestQuote", "minuteBar", "dailyBar")
 
+MAX_SYMBOL_LENGTH = 10
+_SYMBOL_PATTERN = re.compile(rf"^[A-Z0-9][A-Z0-9.\-]{{0,{MAX_SYMBOL_LENGTH - 1}}}$")
+
 
 class AlpacaCredentialsMissingError(RuntimeError):
     """Raised when an Alpaca request is attempted without configured credentials."""
@@ -33,6 +37,39 @@ class AlpacaMarketDataError(RuntimeError):
     The message never includes request headers, credential values, or the
     raw response body — only a status code or exception type.
     """
+
+
+class AlpacaInvalidSymbolError(AlpacaMarketDataError):
+    """Raised when a symbol fails normalization/validation before any request is made.
+
+    Validation happens before any HTTP request is constructed, so an
+    invalid symbol never reaches the network. The message never echoes the
+    raw, unvalidated input.
+    """
+
+
+def normalize_symbol(symbol: str) -> str:
+    """Normalize and validate a ticker symbol for use in an Alpaca request.
+
+    Trims surrounding whitespace and uppercases the result. Raises
+    ``AlpacaInvalidSymbolError`` for anything other than a conservative
+    U.S.-ticker-style token: 1-10 characters, starting with a letter or
+    digit, containing only letters, digits, ``.``, and ``-``. This rejects
+    empty/whitespace-only input, embedded whitespace, path separators,
+    query-string/URL-shaped input, and control characters.
+    """
+    if not isinstance(symbol, str):
+        raise AlpacaInvalidSymbolError("Invalid symbol: expected a string.")
+
+    normalized = symbol.strip().upper()
+
+    if not _SYMBOL_PATTERN.match(normalized):
+        raise AlpacaInvalidSymbolError(
+            "Invalid symbol: must be 1-10 characters, start with a letter or "
+            "digit, and contain only letters, digits, '.', and '-'."
+        )
+
+    return normalized
 
 
 @dataclass(frozen=True)
@@ -94,17 +131,20 @@ class AlpacaMarketDataClient:
     ) -> dict[str, Any]:
         """Fetch a single-symbol market-data snapshot. Read-only.
 
-        Raises ``AlpacaCredentialsMissingError`` if credentials are not
-        configured, or ``AlpacaMarketDataError`` (sanitized) on request
-        failure.
+        Raises ``AlpacaInvalidSymbolError`` (before any request is made) if
+        the symbol fails normalization/validation,
+        ``AlpacaCredentialsMissingError`` if credentials are not configured,
+        or ``AlpacaMarketDataError`` (sanitized) on request failure,
+        malformed JSON, or a non-object JSON payload.
         """
+        normalized_symbol = normalize_symbol(symbol)
         headers = self._auth_headers()
         owns_client = client is None
         http_client = client or httpx.Client(base_url=MARKET_DATA_BASE_URL, timeout=self._timeout)
         try:
-            response = http_client.get(f"/v2/stocks/{symbol}/snapshot", headers=headers)
+            response = http_client.get(f"/v2/stocks/{normalized_symbol}/snapshot", headers=headers)
             response.raise_for_status()
-            return response.json()
+            payload = response.json()
         except httpx.HTTPStatusError as exc:
             raise AlpacaMarketDataError(
                 f"Alpaca snapshot request failed with status {exc.response.status_code}."
@@ -113,9 +153,16 @@ class AlpacaMarketDataClient:
             raise AlpacaMarketDataError(
                 f"Alpaca snapshot request failed: {type(exc).__name__}."
             ) from None
+        except ValueError:
+            raise AlpacaMarketDataError("Alpaca snapshot response was not valid JSON.") from None
         finally:
             if owns_client:
                 http_client.close()
+
+        if not isinstance(payload, dict):
+            raise AlpacaMarketDataError("Alpaca snapshot response payload was not a JSON object.")
+
+        return payload
 
     def check_connection(
         self, symbol: str = "SPY", *, client: httpx.Client | None = None
@@ -123,14 +170,27 @@ class AlpacaMarketDataClient:
         """Perform one read-only connection check against the snapshot endpoint.
 
         Returns a sanitized ``ConnectionStatus``; never raises for a failed
-        request or missing credentials.
+        request, missing credentials, or an invalid symbol. An invalid
+        symbol is rejected before any request is made and never echoed back
+        in the returned status.
         """
+        try:
+            normalized_symbol = normalize_symbol(symbol)
+        except AlpacaInvalidSymbolError:
+            return ConnectionStatus(
+                configured=self.is_configured(),
+                success=False,
+                status_category="invalid_symbol",
+                symbol="",
+                timestamp=None,
+            )
+
         if not self.is_configured():
             return ConnectionStatus(
                 configured=False,
                 success=False,
                 status_category="not_configured",
-                symbol=symbol,
+                symbol=normalized_symbol,
                 timestamp=None,
             )
 
@@ -139,29 +199,47 @@ class AlpacaMarketDataClient:
         http_client = client or httpx.Client(base_url=MARKET_DATA_BASE_URL, timeout=self._timeout)
         try:
             try:
-                response = http_client.get(f"/v2/stocks/{symbol}/snapshot", headers=headers)
+                response = http_client.get(
+                    f"/v2/stocks/{normalized_symbol}/snapshot", headers=headers
+                )
             except httpx.RequestError:
                 return ConnectionStatus(
                     configured=True,
                     success=False,
                     status_category="network_error",
-                    symbol=symbol,
+                    symbol=normalized_symbol,
                     timestamp=None,
                 )
 
-            success = response.is_success
-            timestamp = None
-            if success:
-                try:
-                    timestamp = _extract_timestamp(response.json())
-                except ValueError:
-                    timestamp = None
+            if not response.is_success:
+                return ConnectionStatus(
+                    configured=True,
+                    success=False,
+                    status_category=_status_category(response.status_code),
+                    symbol=normalized_symbol,
+                    timestamp=None,
+                )
+
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = None
+
+            if not isinstance(payload, dict):
+                return ConnectionStatus(
+                    configured=True,
+                    success=False,
+                    status_category="invalid_response",
+                    symbol=normalized_symbol,
+                    timestamp=None,
+                )
+
             return ConnectionStatus(
                 configured=True,
-                success=success,
+                success=True,
                 status_category=_status_category(response.status_code),
-                symbol=symbol,
-                timestamp=timestamp,
+                symbol=normalized_symbol,
+                timestamp=_extract_timestamp(payload),
             )
         finally:
             if owns_client:

@@ -15,8 +15,10 @@ from market_intelligence.config.settings import Settings
 from market_intelligence.data_connectors.alpaca_market_data import (
     MARKET_DATA_BASE_URL,
     AlpacaCredentialsMissingError,
+    AlpacaInvalidSymbolError,
     AlpacaMarketDataClient,
     AlpacaMarketDataError,
+    normalize_symbol,
 )
 
 CREDENTIAL_ENV_VARS = [
@@ -182,4 +184,148 @@ def test_check_connection_network_error(monkeypatch, isolated_env_file):
     assert status.configured is True
     assert status.success is False
     assert status.status_category == "network_error"
+    assert status.timestamp is None
+
+
+# --- Symbol normalization/validation -----------------------------------
+
+VALID_SYMBOLS = [
+    ("spy", "SPY"),
+    ("  spy  ", "SPY"),
+    ("brk.b", "BRK.B"),
+    ("rds-a", "RDS-A"),
+    ("AAPL", "AAPL"),
+]
+
+INVALID_SYMBOLS = [
+    "",
+    "   ",
+    "../../etc/passwd",
+    "AAPL/AAPL",
+    "AAPL?x=1",
+    "http://evil.com",
+    "https://evil.com/AAPL",
+    "AA PL",
+    "AA\tPL",
+    "AA\nPL",
+    "AA\x00PL",
+    "AA\x1bPL",
+    ".AAPL",
+    "-AAPL",
+    "AAAAAAAAAAA",  # 11 chars, over MAX_SYMBOL_LENGTH
+]
+
+
+@pytest.mark.parametrize(("raw", "expected"), VALID_SYMBOLS)
+def test_normalize_symbol_accepts_valid_input(raw, expected):
+    assert normalize_symbol(raw) == expected
+
+
+@pytest.mark.parametrize("raw", INVALID_SYMBOLS)
+def test_normalize_symbol_rejects_invalid_input(raw):
+    with pytest.raises(AlpacaInvalidSymbolError) as exc_info:
+        normalize_symbol(raw)
+    message = str(exc_info.value)
+    if raw.strip():
+        assert raw not in message
+
+
+def test_get_snapshot_normalizes_lowercase_symbol(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v2/stocks/BRK.B/snapshot"
+        return httpx.Response(200, json={"symbol": "BRK.B"})
+
+    client = AlpacaMarketDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        payload = client.get_snapshot("  brk.b  ", client=http_client)
+
+    assert payload["symbol"] == "BRK.B"
+
+
+@pytest.mark.parametrize("raw", INVALID_SYMBOLS)
+def test_get_snapshot_invalid_symbol_makes_zero_requests(monkeypatch, isolated_env_file, raw):
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json={"symbol": "SHOULD_NOT_BE_CALLED"})
+
+    client = AlpacaMarketDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(AlpacaInvalidSymbolError) as exc_info:
+        client.get_snapshot(raw, client=http_client)
+
+    assert calls == []
+    if raw.strip():
+        assert raw not in str(exc_info.value)
+
+
+@pytest.mark.parametrize("raw", INVALID_SYMBOLS)
+def test_check_connection_invalid_symbol_makes_zero_requests(monkeypatch, isolated_env_file, raw):
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json={"symbol": "SHOULD_NOT_BE_CALLED"})
+
+    client = AlpacaMarketDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        status = client.check_connection(raw, client=http_client)
+
+    assert calls == []
+    assert status.success is False
+    assert status.status_category == "invalid_symbol"
+    assert status.symbol == ""
+    assert status.timestamp is None
+
+
+def test_get_snapshot_sanitized_error_on_malformed_json(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"{not valid json")
+
+    client = AlpacaMarketDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(AlpacaMarketDataError) as exc_info:
+        client.get_snapshot("SPY", client=http_client)
+
+    message = str(exc_info.value)
+    assert "{not valid json" not in message
+
+
+def test_get_snapshot_sanitized_error_on_non_object_json(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=["SPY", "AAPL"])
+
+    client = AlpacaMarketDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(AlpacaMarketDataError) as exc_info:
+        client.get_snapshot("SPY", client=http_client)
+
+    message = str(exc_info.value)
+    assert "SPY" not in message
+    assert "AAPL" not in message
+
+
+def test_check_connection_invalid_response_on_malformed_json(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"{not valid json")
+
+    client = AlpacaMarketDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        status = client.check_connection("SPY", client=http_client)
+
+    assert status.configured is True
+    assert status.success is False
+    assert status.status_category == "invalid_response"
+    assert status.timestamp is None
+
+
+def test_check_connection_invalid_response_on_non_object_json(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=["SPY", "AAPL"])
+
+    client = AlpacaMarketDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        status = client.check_connection("SPY", client=http_client)
+
+    assert status.configured is True
+    assert status.success is False
+    assert status.status_category == "invalid_response"
     assert status.timestamp is None
