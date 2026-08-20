@@ -4,6 +4,7 @@
 # Python bytecode/cache
 __pycache__/
 *.pyc
+*.egg-info/
 
 # Environment files / secrets
 .env
@@ -11,8 +12,6 @@ __pycache__/
 !.env.example
 *.key
 *.pem
-*secret*
-*credential*
 
 # Data directories (keep .gitkeep so structure is tracked)
 data/raw/*
