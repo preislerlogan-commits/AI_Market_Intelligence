@@ -9,11 +9,14 @@ details, and any unverified claims below should be corrected or removed.
 ## Data Independence
 
 This is an independent project. It does not depend on or access the
-separate ORB_Project, or any other data outside this repository. No
-historical or live datasets are connected yet. No code in this repository
-may access files outside the repository unless the user explicitly
-authorizes a specific source. Future data will come through this project's
-own reviewed connectors under `market_intelligence/data_connectors/`, with
+separate ORB_Project, or any other data outside this repository.
+Read-only Alpaca provider connectivity has been verified, but no
+historical or live dataset has been stored, cataloged, or validated yet —
+connectivity is not the same as a validated data pipeline. No code in
+this repository may access files outside the repository unless the user
+explicitly authorizes a specific source. Future data will come through
+this project's own reviewed connectors under
+`market_intelligence/data_connectors/`, with
 verified details recorded below only after direct inspection.
 
 ## Known Universe

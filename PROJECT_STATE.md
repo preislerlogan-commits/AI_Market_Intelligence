@@ -11,11 +11,11 @@ Last updated: 2026-08-20
 **Phase 0 — Infrastructure Foundation**
 
 The project is in initial scaffolding. Python environment and dependency
-configuration are in place. A read-only Alpaca market-data connector exists
-and live provider connectivity has been verified (a single read-only
-snapshot request — see Status below). This is connectivity only: no bulk or
-historical data has been pulled, no dataset has been stored or validated,
-and no database, forecasting, or trading logic exists yet.
+configuration are in place. Read-only Alpaca market-data provider
+connectivity has been verified (a single read-only snapshot request — see
+Status below). Connectivity is not the same as a validated data pipeline:
+no historical or live dataset has been stored, cataloged, or validated
+yet, and no database, forecasting, or trading logic exists yet.
 
 ## Status
 
@@ -50,10 +50,11 @@ and no database, forecasting, or trading logic exists yet.
   sanitized connection status (configured, success, status category,
   symbol, timestamp). On 2026-08-20 one live, read-only SPY snapshot
   connection check was run using local `.env` credentials and succeeded
-  (2xx, market timestamp returned). FRED remains a planned provider with no
-  credentials, client, or connection test yet. No bulk or historical market
-  data has been pulled or stored, and no dataset has been validated — see
-  `DATA_CATALOG.md`.
+  (2xx, market timestamp returned). This confirms connectivity only; it is
+  not the same as a validated data pipeline. FRED remains a planned
+  provider with no credentials, client, or connection test yet. No
+  historical or live dataset has been stored, cataloged, or validated
+  yet — see `DATA_CATALOG.md`.
 - No database initialized. DuckDB is included as a runtime dependency but
   no database file has been created and no schema exists yet.
 - No trading execution connected. No brokerage integration exists or is
@@ -61,9 +62,11 @@ and no database, forecasting, or trading logic exists yet.
 - No validated predictive model. No forecasting, scoring, or evaluation
   logic has been built or tested.
 - **This is an independent project.** It does not depend on, read from, or
-  otherwise access the separate ORB_Project. No historical or live datasets
-  are connected yet. The settings layer's only data-path configuration is
-  `project_data_path`, which defaults to this repository's own `data/`
+  otherwise access the separate ORB_Project. Read-only Alpaca provider
+  connectivity has been verified, but no historical or live dataset has
+  been stored, cataloged, or validated yet. The settings layer's only
+  data-path configuration is `project_data_path`, which defaults to this
+  repository's own `data/`
   directory. No code in this repository may access files outside the
   repository unless the user explicitly authorizes a specific source.
 
