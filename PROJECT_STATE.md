@@ -11,8 +11,11 @@ Last updated: 2026-08-20
 **Phase 0 — Infrastructure Foundation**
 
 The project is in initial scaffolding. Python environment and dependency
-configuration are in place; no functional data pipelines or integrations
-exist yet.
+configuration are in place. Read-only Alpaca market-data provider
+connectivity has been verified (a single read-only snapshot request — see
+Status below). Connectivity is not the same as a validated data pipeline:
+no historical or live dataset has been stored, cataloged, or validated
+yet, and no database, forecasting, or trading logic exists yet.
 
 ## Status
 
@@ -31,9 +34,27 @@ exist yet.
   with `SecretStr`, and exposes a `provider_status()` method that reports
   only booleans, never secret values. Settings can be instantiated without
   any credentials present.
-- No live APIs connected. Alpaca and FRED are planned providers but no
-  credentials, clients, or connection tests exist yet. The settings layer
-  only reads locally supplied `.env` values; it makes no network calls.
+- A read-only Alpaca market-data connector
+  (`market_intelligence/data_connectors/alpaca_market_data.py`,
+  `AlpacaMarketDataClient`) has been added, covering only Alpaca's
+  market-data API (`https://data.alpaca.markets`) — no order, account, or
+  execution functionality. It validates that both Alpaca credentials are
+  configured before requesting, uses explicit timeouts, and returns only
+  sanitized results (never headers, keys, secrets, or the raw response). All
+  symbols are normalized/validated (trimmed, uppercased, restricted to a
+  conservative U.S. ticker character set) before any request is built, so
+  invalid or malicious input never reaches the network; malformed or
+  non-object JSON responses are also rejected with a sanitized error/status
+  rather than surfaced raw. A companion script,
+  `scripts/check_alpaca_connection.py`, reports a
+  sanitized connection status (configured, success, status category,
+  symbol, timestamp). On 2026-08-20 one live, read-only SPY snapshot
+  connection check was run using local `.env` credentials and succeeded
+  (2xx, market timestamp returned). This confirms connectivity only; it is
+  not the same as a validated data pipeline. FRED remains a planned
+  provider with no credentials, client, or connection test yet. No
+  historical or live dataset has been stored, cataloged, or validated
+  yet — see `DATA_CATALOG.md`.
 - No database initialized. DuckDB is included as a runtime dependency but
   no database file has been created and no schema exists yet.
 - No trading execution connected. No brokerage integration exists or is
@@ -41,22 +62,25 @@ exist yet.
 - No validated predictive model. No forecasting, scoring, or evaluation
   logic has been built or tested.
 - **This is an independent project.** It does not depend on, read from, or
-  otherwise access the separate ORB_Project. No historical or live datasets
-  are connected yet. The settings layer's only data-path configuration is
-  `project_data_path`, which defaults to this repository's own `data/`
+  otherwise access the separate ORB_Project. Read-only Alpaca provider
+  connectivity has been verified, but no historical or live dataset has
+  been stored, cataloged, or validated yet. The settings layer's only
+  data-path configuration is `project_data_path`, which defaults to this
+  repository's own `data/`
   directory. No code in this repository may access files outside the
   repository unless the user explicitly authorizes a specific source.
 
 ## Next Planned Work
 
-1. Data connector design — defining this project's own reviewed connectors
-   for future datasets, and recording verified schema/provenance details in
-   `DATA_CATALOG.md` once a source is actually connected.
-2. Provider configuration — Alpaca and FRED credential handling (via
-   `.env`, never committed).
-3. First connection tests — minimal, read-only checks that provider
-   credentials and connectivity work, with results recorded (including
-   failures).
+1. Data connector design — an Alpaca read-only market-data connector now
+   exists (see above); a FRED connector is still to be designed. Verified
+   schema/provenance details belong in `DATA_CATALOG.md` once bulk data is
+   actually pulled and inspected, not just a connectivity check.
+2. Provider configuration — Alpaca credential handling is in place; FRED
+   credential handling (via `.env`, never committed) is still planned.
+3. First connection tests — done for Alpaca (read-only snapshot
+   connectivity check, recorded in `DATA_CATALOG.md`/`PROJECT_STATE.md`);
+   still planned for FRED.
 4. Database initialization — local DuckDB/Parquet storage layout under
    `data/`, once a schema has been designed.
 
