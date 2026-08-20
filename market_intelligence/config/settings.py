@@ -8,7 +8,7 @@ instantiation time, and no credential value is ever printed or logged.
 
 from pathlib import Path
 
-from pydantic import SecretStr
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -28,6 +28,18 @@ class Settings(BaseSettings):
     )
 
     project_data_path: Path = REPO_ROOT / "data"
+
+    @field_validator("project_data_path")
+    @classmethod
+    def _resolve_relative_to_repo_root(cls, value: Path) -> Path:
+        """Anchor a relative configured path to ``REPO_ROOT``.
+
+        An absolute path (explicitly supplied) is left untouched. This does
+        not create or access the resulting directory.
+        """
+        if value.is_absolute():
+            return value
+        return REPO_ROOT / value
 
     alpaca_api_key: SecretStr | None = None
     alpaca_api_secret: SecretStr | None = None

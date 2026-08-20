@@ -50,6 +50,37 @@ def test_default_project_data_path(isolated_settings_env):
     assert settings.project_data_path == REPO_ROOT / "data"
 
 
+def test_project_data_path_data_resolves_to_repo_root_data(
+    monkeypatch, isolated_settings_env
+):
+    monkeypatch.setenv("PROJECT_DATA_PATH", "data")
+
+    settings = make_settings(isolated_settings_env)
+
+    assert settings.project_data_path == REPO_ROOT / "data"
+
+
+def test_project_data_path_other_relative_path_resolves_under_repo_root(
+    monkeypatch, isolated_settings_env
+):
+    monkeypatch.setenv("PROJECT_DATA_PATH", "custom/nested-data")
+
+    settings = make_settings(isolated_settings_env)
+
+    assert settings.project_data_path == REPO_ROOT / "custom" / "nested-data"
+
+
+def test_project_data_path_absolute_path_stays_absolute(
+    monkeypatch, isolated_settings_env, tmp_path
+):
+    absolute_path = tmp_path / "elsewhere" / "data"
+    monkeypatch.setenv("PROJECT_DATA_PATH", str(absolute_path))
+
+    settings = make_settings(isolated_settings_env)
+
+    assert settings.project_data_path == absolute_path
+
+
 def test_credential_repr_does_not_reveal_value(monkeypatch, isolated_settings_env):
     secret_value = "unit-test-secret-value-should-not-appear"
     monkeypatch.setenv("ALPACA_API_KEY", secret_value)
