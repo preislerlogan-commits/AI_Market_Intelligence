@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from market_intelligence.config.settings import Settings
+from market_intelligence.config.settings import REPO_ROOT, Settings
 
 CREDENTIAL_ENV_VARS = [
     "ALPACA_API_KEY",
@@ -47,7 +47,7 @@ def test_settings_instantiate_without_credentials(isolated_settings_env):
 def test_default_project_data_path(isolated_settings_env):
     settings = make_settings(isolated_settings_env)
 
-    assert settings.project_data_path == Path("data")
+    assert settings.project_data_path == REPO_ROOT / "data"
 
 
 def test_credential_repr_does_not_reveal_value(monkeypatch, isolated_settings_env):

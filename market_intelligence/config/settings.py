@@ -11,12 +11,14 @@ from pathlib import Path
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 class Settings(BaseSettings):
     """Runtime configuration.
 
-    All fields are optional so that ``Settings()`` can be instantiated
-    without any environment variables or credentials present.
+    Only the provider credential fields are optional, so that ``Settings()``
+    can be instantiated without any of them present.
     """
 
     model_config = SettingsConfigDict(
@@ -25,7 +27,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    project_data_path: Path = Path("data")
+    project_data_path: Path = REPO_ROOT / "data"
 
     alpaca_api_key: SecretStr | None = None
     alpaca_api_secret: SecretStr | None = None
