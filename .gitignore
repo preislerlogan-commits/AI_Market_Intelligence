@@ -1,0 +1,33 @@
+# Virtual environments
+.venv/
+
+# Python bytecode/cache
+__pycache__/
+*.pyc
+
+# Environment files / secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*secret*
+*credential*
+
+# Data directories (keep .gitkeep so structure is tracked)
+data/raw/*
+data/processed/*
+data/cache/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/cache/.gitkeep
+
+# Databases
+*.duckdb
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+logs/
