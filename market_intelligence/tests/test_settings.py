@@ -96,6 +96,42 @@ def test_provider_status_all_false_without_credentials(isolated_settings_env):
     }
 
 
+def test_provider_status_treats_blank_credential_as_not_configured(
+    monkeypatch, isolated_settings_env
+):
+    monkeypatch.setenv("FRED_API_KEY", "")
+    monkeypatch.setenv("ALPACA_API_KEY", "unit-test-alpaca-key")
+    monkeypatch.setenv("ALPACA_API_SECRET", "")
+
+    settings = make_settings(isolated_settings_env)
+    status = settings.provider_status()
+
+    assert status == {
+        "alpaca": False,
+        "fred": False,
+        "openai": False,
+        "anthropic": False,
+    }
+
+
+def test_provider_status_treats_whitespace_only_credential_as_not_configured(
+    monkeypatch, isolated_settings_env
+):
+    monkeypatch.setenv("FRED_API_KEY", "   ")
+    monkeypatch.setenv("ALPACA_API_KEY", "unit-test-alpaca-key")
+    monkeypatch.setenv("ALPACA_API_SECRET", "\t\n")
+
+    settings = make_settings(isolated_settings_env)
+    status = settings.provider_status()
+
+    assert status == {
+        "alpaca": False,
+        "fred": False,
+        "openai": False,
+        "anthropic": False,
+    }
+
+
 def test_env_example_has_placeholders_for_expected_credentials():
     env_example_path = Path(__file__).resolve().parents[2] / ".env.example"
     content = env_example_path.read_text(encoding="utf-8")

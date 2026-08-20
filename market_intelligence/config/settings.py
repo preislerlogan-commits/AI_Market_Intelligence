@@ -39,14 +39,22 @@ class Settings(BaseSettings):
     openai_api_key: SecretStr | None = None
     anthropic_api_key: SecretStr | None = None
 
+    @staticmethod
+    def _is_configured(value: SecretStr | None) -> bool:
+        """Return True only if ``value`` holds a non-blank secret."""
+        return value is not None and value.get_secret_value().strip() != ""
+
     def provider_status(self) -> dict[str, bool]:
         """Report whether each provider has credentials configured.
 
-        Returns only booleans — never the credential values themselves.
+        A credential that is missing, empty, or whitespace-only is treated
+        as not configured. Returns only booleans — never the credential
+        values themselves.
         """
         return {
-            "alpaca": self.alpaca_api_key is not None and self.alpaca_api_secret is not None,
-            "fred": self.fred_api_key is not None,
-            "openai": self.openai_api_key is not None,
-            "anthropic": self.anthropic_api_key is not None,
+            "alpaca": self._is_configured(self.alpaca_api_key)
+            and self._is_configured(self.alpaca_api_secret),
+            "fred": self._is_configured(self.fred_api_key),
+            "openai": self._is_configured(self.openai_api_key),
+            "anthropic": self._is_configured(self.anthropic_api_key),
         }

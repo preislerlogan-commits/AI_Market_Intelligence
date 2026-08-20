@@ -14,13 +14,16 @@ py -3.13 -m venv .venv
 .venv\Scripts\Activate.ps1
 ```
 
-If PowerShell blocks script execution, you may need to allow local scripts
-for your user (run once, in an elevated or normal PowerShell session as
-appropriate for your environment):
+If PowerShell blocks script execution, allow it for the current session
+only:
 
 ```powershell
-Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
+
+This applies only to the current PowerShell session (the `Process` scope)
+and does not persist once that window is closed, so it does not change the
+execution policy for any other session or user on the machine.
 
 To deactivate later:
 
