@@ -43,6 +43,14 @@ application functionality exists yet. See
 [PROJECT_STATE.md](PROJECT_STATE.md) for the authoritative, up-to-date status
 of the project.
 
+## Project Independence
+
+This is an independent project. It does not depend on or access the
+separate ORB_Project. No historical or live datasets are connected yet.
+Future data will come through this project's own reviewed connectors, and
+no code in this repository may access files outside the repository unless
+the user explicitly authorizes a specific source.
+
 ## Manual-Execution Safety Boundary
 
 **This system never executes trades.** All trade execution is performed

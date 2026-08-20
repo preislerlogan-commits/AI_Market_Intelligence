@@ -10,10 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from market_intelligence.config.settings import (
-    DEFAULT_EXTERNAL_HISTORICAL_DATA_PATH,
-    Settings,
-)
+from market_intelligence.config.settings import Settings
 
 CREDENTIAL_ENV_VARS = [
     "ALPACA_API_KEY",
@@ -29,7 +26,7 @@ def isolated_settings_env(monkeypatch, tmp_path):
     """Clear credential env vars and point at a nonexistent .env file."""
     for var in CREDENTIAL_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.delenv("EXTERNAL_HISTORICAL_DATA_PATH", raising=False)
+    monkeypatch.delenv("PROJECT_DATA_PATH", raising=False)
     return tmp_path / "does-not-exist.env"
 
 
@@ -47,11 +44,10 @@ def test_settings_instantiate_without_credentials(isolated_settings_env):
     assert settings.anthropic_api_key is None
 
 
-def test_default_external_data_path(isolated_settings_env):
+def test_default_project_data_path(isolated_settings_env):
     settings = make_settings(isolated_settings_env)
 
-    assert settings.external_historical_data_path == Path(r"C:\ORB_Project\data")
-    assert settings.external_historical_data_path == DEFAULT_EXTERNAL_HISTORICAL_DATA_PATH
+    assert settings.project_data_path == Path("data")
 
 
 def test_credential_repr_does_not_reveal_value(monkeypatch, isolated_settings_env):

@@ -11,12 +11,6 @@ from pathlib import Path
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Historical ORB data lives outside this repository and is read-only by
-# project policy (see CLAUDE.md / AGENTS.md / PROJECT_STATE.md). Nothing in
-# this project may write to, move, delete, or transform files under this
-# path.
-DEFAULT_EXTERNAL_HISTORICAL_DATA_PATH = Path(r"C:\ORB_Project\data")
-
 
 class Settings(BaseSettings):
     """Runtime configuration.
@@ -31,7 +25,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    external_historical_data_path: Path = DEFAULT_EXTERNAL_HISTORICAL_DATA_PATH
+    project_data_path: Path = Path("data")
 
     alpaca_api_key: SecretStr | None = None
     alpaca_api_secret: SecretStr | None = None
