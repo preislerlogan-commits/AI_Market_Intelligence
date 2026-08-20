@@ -8,21 +8,17 @@ instantiation time, and no credential value is ever printed or logged.
 
 from pathlib import Path
 
-from pydantic import SecretStr
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Historical ORB data lives outside this repository and is read-only by
-# project policy (see CLAUDE.md / AGENTS.md / PROJECT_STATE.md). Nothing in
-# this project may write to, move, delete, or transform files under this
-# path.
-DEFAULT_EXTERNAL_HISTORICAL_DATA_PATH = Path(r"C:\ORB_Project\data")
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
     """Runtime configuration.
 
-    All fields are optional so that ``Settings()`` can be instantiated
-    without any environment variables or credentials present.
+    Only the provider credential fields are optional, so that ``Settings()``
+    can be instantiated without any of them present.
     """
 
     model_config = SettingsConfigDict(
@@ -31,7 +27,19 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    external_historical_data_path: Path = DEFAULT_EXTERNAL_HISTORICAL_DATA_PATH
+    project_data_path: Path = REPO_ROOT / "data"
+
+    @field_validator("project_data_path")
+    @classmethod
+    def _resolve_relative_to_repo_root(cls, value: Path) -> Path:
+        """Anchor a relative configured path to ``REPO_ROOT``.
+
+        An absolute path (explicitly supplied) is left untouched. This does
+        not create or access the resulting directory.
+        """
+        if value.is_absolute():
+            return value
+        return REPO_ROOT / value
 
     alpaca_api_key: SecretStr | None = None
     alpaca_api_secret: SecretStr | None = None

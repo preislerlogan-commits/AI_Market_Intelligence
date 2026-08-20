@@ -36,12 +36,20 @@ service is part of the current design.
 
 ## Setup Status
 
-This repository currently contains only the initial project scaffold
-(directory structure and governing documents). No dependencies are
-installed, no APIs are connected, no databases are initialized, and no
-application functionality exists yet. See
+This repository has a Python environment, its runtime/dev dependencies, and
+a settings layer (`market_intelligence/config/settings.py`) in place. No
+APIs are connected, no databases are initialized, no data pipelines exist,
+and no predictive models exist yet. See
 [PROJECT_STATE.md](PROJECT_STATE.md) for the authoritative, up-to-date status
 of the project.
+
+## Project Independence
+
+This is an independent project. It does not depend on or access the
+separate ORB_Project. No historical or live datasets are connected yet.
+Future data will come through this project's own reviewed connectors, and
+no code in this repository may access files outside the repository unless
+the user explicitly authorizes a specific source.
 
 ## Manual-Execution Safety Boundary
 

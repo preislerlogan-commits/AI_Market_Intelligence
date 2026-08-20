@@ -6,19 +6,15 @@ verified schemas for data that has not yet been inspected. As datasets are
 inspected and validated, this file should be updated with confirmed
 details, and any unverified claims below should be corrected or removed.
 
-## External Historical Data
+## Data Independence
 
-- **Location:** `C:\ORB_Project\data`
-- **Status:** External to this repository. Read-only (see
-  [PROJECT_STATE.md](PROJECT_STATE.md) and [CLAUDE.md](CLAUDE.md) /
-  [AGENTS.md](AGENTS.md)).
-- **Known contents (unverified schema):**
-  - 1-minute OHLCV/VWAP data, approximately 2019 through August 2026.
-  - Daily OHLCV data.
-- **Note:** The exact schema (column names, types, timezone conventions,
-  adjustment methodology, gaps/quality issues) has not yet been inspected
-  as part of this project and must not be assumed. Schema details should be
-  recorded here only after direct inspection.
+This is an independent project. It does not depend on or access the
+separate ORB_Project, or any other data outside this repository. No
+historical or live datasets are connected yet. No code in this repository
+may access files outside the repository unless the user explicitly
+authorizes a specific source. Future data will come through this project's
+own reviewed connectors under `market_intelligence/data_connectors/`, with
+verified details recorded below only after direct inspection.
 
 ## Known Universe
 

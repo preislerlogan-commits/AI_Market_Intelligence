@@ -10,10 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from market_intelligence.config.settings import (
-    DEFAULT_EXTERNAL_HISTORICAL_DATA_PATH,
-    Settings,
-)
+from market_intelligence.config.settings import REPO_ROOT, Settings
 
 CREDENTIAL_ENV_VARS = [
     "ALPACA_API_KEY",
@@ -29,7 +26,7 @@ def isolated_settings_env(monkeypatch, tmp_path):
     """Clear credential env vars and point at a nonexistent .env file."""
     for var in CREDENTIAL_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.delenv("EXTERNAL_HISTORICAL_DATA_PATH", raising=False)
+    monkeypatch.delenv("PROJECT_DATA_PATH", raising=False)
     return tmp_path / "does-not-exist.env"
 
 
@@ -47,11 +44,41 @@ def test_settings_instantiate_without_credentials(isolated_settings_env):
     assert settings.anthropic_api_key is None
 
 
-def test_default_external_data_path(isolated_settings_env):
+def test_default_project_data_path(isolated_settings_env):
     settings = make_settings(isolated_settings_env)
 
-    assert settings.external_historical_data_path == Path(r"C:\ORB_Project\data")
-    assert settings.external_historical_data_path == DEFAULT_EXTERNAL_HISTORICAL_DATA_PATH
+    assert settings.project_data_path == REPO_ROOT / "data"
+
+
+def test_project_data_path_data_resolves_to_repo_root_data(
+    monkeypatch, isolated_settings_env
+):
+    monkeypatch.setenv("PROJECT_DATA_PATH", "data")
+
+    settings = make_settings(isolated_settings_env)
+
+    assert settings.project_data_path == REPO_ROOT / "data"
+
+
+def test_project_data_path_other_relative_path_resolves_under_repo_root(
+    monkeypatch, isolated_settings_env
+):
+    monkeypatch.setenv("PROJECT_DATA_PATH", "custom/nested-data")
+
+    settings = make_settings(isolated_settings_env)
+
+    assert settings.project_data_path == REPO_ROOT / "custom" / "nested-data"
+
+
+def test_project_data_path_absolute_path_stays_absolute(
+    monkeypatch, isolated_settings_env, tmp_path
+):
+    absolute_path = tmp_path / "elsewhere" / "data"
+    monkeypatch.setenv("PROJECT_DATA_PATH", str(absolute_path))
+
+    settings = make_settings(isolated_settings_env)
+
+    assert settings.project_data_path == absolute_path
 
 
 def test_credential_repr_does_not_reveal_value(monkeypatch, isolated_settings_env):

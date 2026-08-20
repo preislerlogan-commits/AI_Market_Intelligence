@@ -25,9 +25,11 @@ agents working on this project follow the same rules.
 
 ## Data and Credential Safety
 
-- **Do not modify external ORB data.** Historical data at
-  `C:\ORB_Project\data` is external to this repository and must be treated
-  as read-only. Do not write to, move, delete, or transform files there.
+- **This is an independent project.** It does not depend on or access the
+  separate ORB_Project. No historical or live datasets are connected yet.
+  Future data will come through this project's own reviewed connectors.
+- **No access outside this repository.** No code may access files outside
+  this repository unless the user explicitly authorizes a specific source.
 - **Never expose credentials.** Never print, log, commit, or otherwise
   expose API keys or secrets (Alpaca, FRED, OpenAI, Anthropic, or any
   other). Use `.env` (never committed) and reference `.env.example` for the

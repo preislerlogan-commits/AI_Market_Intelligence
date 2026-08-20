@@ -40,16 +40,18 @@ exist yet.
   planned; Robinhood is used manually, outside this system.
 - No validated predictive model. No forecasting, scoring, or evaluation
   logic has been built or tested.
-- Historical ORB data remains external at `C:\ORB_Project\data`. This data
-  has **not** been copied, moved, or ingested into this repository. It must
-  be treated as **read-only** until a deliberate, reviewed decision is made
-  to reference or import it. The settings layer's default external-data
-  path points at this location but does not read or write to it.
+- **This is an independent project.** It does not depend on, read from, or
+  otherwise access the separate ORB_Project. No historical or live datasets
+  are connected yet. The settings layer's only data-path configuration is
+  `project_data_path`, which defaults to this repository's own `data/`
+  directory. No code in this repository may access files outside the
+  repository unless the user explicitly authorizes a specific source.
 
 ## Next Planned Work
 
-1. Data catalog validation — inspecting actual schemas of external ORB data
-   and recording verified findings in `DATA_CATALOG.md`.
+1. Data connector design — defining this project's own reviewed connectors
+   for future datasets, and recording verified schema/provenance details in
+   `DATA_CATALOG.md` once a source is actually connected.
 2. Provider configuration — Alpaca and FRED credential handling (via
    `.env`, never committed).
 3. First connection tests — minimal, read-only checks that provider
