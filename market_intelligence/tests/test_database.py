@@ -105,8 +105,8 @@ def test_initialize_creates_database_file(tmp_path, isolated_env_file):
 
     assert result.database_path.exists()
     assert result.database_path.name == DATABASE_FILENAME
-    assert result.applied_migration_count == 4
-    assert result.schema_version == "0004"
+    assert result.applied_migration_count == 5
+    assert result.schema_version == "0005"
 
 
 def test_initialize_creates_required_tables_and_columns(tmp_path, isolated_env_file):
@@ -171,6 +171,35 @@ def test_initialize_creates_required_tables_and_columns(tmp_path, isolated_env_f
             "last_seen_at",
             "ingestion_run_id",
         }
+
+        assert "market_bars" in tables
+        bars_columns = {
+            row[0]
+            for row in connection.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'market_bars'"
+            ).fetchall()
+        }
+        assert bars_columns == {
+            "provider",
+            "symbol",
+            "timeframe",
+            "feed",
+            "adjustment",
+            "currency",
+            "bar_timestamp",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "trade_count",
+            "vwap",
+            "retrieved_at",
+            "first_ingested_at",
+            "last_seen_at",
+            "ingestion_run_id",
+        }
     finally:
         connection.close()
 
@@ -192,7 +221,7 @@ def test_repeated_initialize_applies_zero_new_migrations(tmp_path, isolated_env_
     first = manager.initialize()
     second = manager.initialize()
 
-    assert first.applied_migration_count == 4
+    assert first.applied_migration_count == 5
     assert second.applied_migration_count == 0
     assert second.schema_version == first.schema_version
 
@@ -207,7 +236,7 @@ def test_repeated_initialize_does_not_duplicate_rows(tmp_path, isolated_env_file
         count = connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0]
     finally:
         connection.close()
-    assert count == 4
+    assert count == 5
 
 
 # --- migration order ---------------------------------------------------------
@@ -432,8 +461,8 @@ def test_check_health_after_initialization_reports_healthy(tmp_path, isolated_en
     assert health.migration_history_valid is True
     assert health.checksums_valid is True
     assert health.is_current is True
-    assert health.schema_version == "0004"
-    assert health.applied_migration_count == 4
+    assert health.schema_version == "0005"
+    assert health.applied_migration_count == 5
 
 
 def test_check_health_is_read_only(tmp_path, isolated_env_file):
@@ -605,6 +634,140 @@ def test_0002_to_0003_upgrade_preserves_existing_infrastructure_state(tmp_path, 
     health = manager.check_health()
     assert health.healthy is True
     assert health.schema_version == "0003"
+
+
+# --- migration 0005 (market_bars) schema and primary key ---------------------
+
+
+def test_migration_0005_creates_market_bars_with_expected_primary_key(tmp_path, isolated_env_file):
+    manager = real_migrations_manager(tmp_path, isolated_env_file)
+    result = manager.initialize()
+
+    connection = duckdb.connect(str(result.database_path), read_only=True)
+    try:
+        pk_columns = [
+            row[0]
+            for row in connection.execute(
+                "SELECT column_name FROM information_schema.key_column_usage "
+                "WHERE table_name = 'market_bars' ORDER BY ordinal_position"
+            ).fetchall()
+        ]
+    finally:
+        connection.close()
+
+    assert pk_columns == [
+        "provider",
+        "symbol",
+        "timeframe",
+        "feed",
+        "adjustment",
+        "currency",
+        "bar_timestamp",
+    ]
+
+
+def test_migration_0005_primary_key_rejects_duplicate_identity(tmp_path, isolated_env_file):
+    manager = real_migrations_manager(tmp_path, isolated_env_file)
+    manager.initialize()
+
+    connection = duckdb.connect(str(manager.database_path))
+    try:
+        connection.execute(
+            "INSERT INTO market_bars (provider, symbol, timeframe, feed, adjustment, currency, "
+            "bar_timestamp, open, high, low, close, volume, trade_count, vwap, retrieved_at, "
+            "first_ingested_at, last_seen_at, ingestion_run_id) VALUES "
+            "('alpaca', 'SPY', '5Min', 'iex', 'raw', 'USD', now(), 100, 101, 99, 100.5, 1000, "
+            "50, 100.2, now(), now(), now(), 'run-1')"
+        )
+        with pytest.raises(duckdb.ConstraintException):
+            connection.execute(
+                "INSERT INTO market_bars (provider, symbol, timeframe, feed, adjustment, "
+                "currency, bar_timestamp, open, high, low, close, volume, trade_count, vwap, "
+                "retrieved_at, first_ingested_at, last_seen_at, ingestion_run_id) VALUES "
+                "('alpaca', 'SPY', '5Min', 'iex', 'raw', 'USD', "
+                "(SELECT bar_timestamp FROM market_bars LIMIT 1), "
+                "200, 201, 199, 200.5, 2000, 60, 200.2, now(), now(), now(), 'run-2')"
+            )
+    finally:
+        connection.close()
+
+
+def test_migration_0005_nullable_trade_count_and_vwap(tmp_path, isolated_env_file):
+    manager = real_migrations_manager(tmp_path, isolated_env_file)
+    manager.initialize()
+
+    connection = duckdb.connect(str(manager.database_path))
+    try:
+        connection.execute(
+            "INSERT INTO market_bars (provider, symbol, timeframe, feed, adjustment, currency, "
+            "bar_timestamp, open, high, low, close, volume, trade_count, vwap, retrieved_at, "
+            "first_ingested_at, last_seen_at, ingestion_run_id) VALUES "
+            "('alpaca', 'SPY', '5Min', 'iex', 'raw', 'USD', now(), 100, 101, 99, 100.5, 1000, "
+            "NULL, NULL, now(), now(), now(), 'run-1')"
+        )
+        row = connection.execute(
+            "SELECT trade_count, vwap FROM market_bars WHERE provider = 'alpaca'"
+        ).fetchone()
+    finally:
+        connection.close()
+
+    assert row == (None, None)
+
+
+# --- 0004 -> 0005 upgrade ------------------------------------------------------
+
+
+def test_0004_to_0005_upgrade_preserves_existing_infrastructure_state(tmp_path, isolated_env_file):
+    """A database already at 0004 upgrades to 0005 without losing existing rows."""
+    migrations_dir = tmp_path / "migrations"
+    write_migration(migrations_dir, *MIGRATION_0001)
+    write_migration(migrations_dir, *MIGRATION_0002)
+    write_migration(migrations_dir, *MIGRATION_0003)
+    real_migrations_dir = Path(__file__).resolve().parents[1] / "storage" / "migrations"
+    migration_0004_sql = (real_migrations_dir / "0004_create_news_articles.sql").read_text(
+        encoding="utf-8"
+    )
+    write_migration(migrations_dir, "0004_create_news_articles.sql", migration_0004_sql)
+    settings = isolated_settings(tmp_path, isolated_env_file)
+    manager = DuckDBManager(settings=settings, migrations_dir=migrations_dir)
+    first = manager.initialize()
+    assert first.schema_version == "0004"
+
+    connection = duckdb.connect(str(manager.database_path))
+    try:
+        connection.execute(
+            "INSERT INTO ingestion_runs "
+            "(run_id, provider, dataset_name, started_at_utc, status, code_version, "
+            "schema_version) VALUES ('run-1', 'alpaca', 'news', now(), 'succeeded', 'v0', '0004')"
+        )
+    finally:
+        connection.close()
+
+    migration_0005_sql = (real_migrations_dir / "0005_create_market_bars.sql").read_text(
+        encoding="utf-8"
+    )
+    write_migration(migrations_dir, "0005_create_market_bars.sql", migration_0005_sql)
+    second = manager.initialize()
+
+    assert second.applied_migration_count == 1
+    assert second.schema_version == "0005"
+
+    connection = duckdb.connect(str(manager.database_path), read_only=True)
+    try:
+        tables = table_names(connection)
+        row = connection.execute(
+            "SELECT run_id, provider FROM ingestion_runs WHERE run_id = 'run-1'"
+        ).fetchone()
+    finally:
+        connection.close()
+
+    assert "market_bars" in tables
+    assert row is not None
+    assert row[0] == "run-1"
+
+    health = manager.check_health()
+    assert health.healthy is True
+    assert health.schema_version == "0005"
 
 
 # --- database file remains ignored by Git ------------------------------------

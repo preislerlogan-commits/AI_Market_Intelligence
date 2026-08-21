@@ -7,7 +7,7 @@ for what data has (and has not) actually been ingested.
 
 ## Scope
 
-This foundation defines and applies four tables:
+This foundation defines and applies five tables:
 
 - **`schema_migrations`** — tracks which versioned migrations have been
   applied, with a checksum of each migration file's content.
@@ -23,10 +23,19 @@ This foundation defines and applies four tables:
   data; it is schema/storage infrastructure only — no persistent news
   dataset is validated here until an explicitly authorized live ingestion
   succeeds and is recorded in `DATA_CATALOG.md`.
+- **`market_bars`** (added in migration `0005`) — stores normalized
+  historical stock bars with provenance and idempotency. See "Market-bar
+  storage" below. As with `news_articles`, this is schema/storage
+  infrastructure only: as of this entry, no bars have been ingested through
+  it, and no bars dataset is validated here until an explicitly authorized
+  live ingestion succeeds and is recorded in `DATA_CATALOG.md`. Migration
+  `0005` exists in this repository's migration code only — the real local
+  database file has not been upgraded to `0005` as part of adding this
+  capability; see "Status" in `PROJECT_STATE.md`.
 
-No market-bar, macroeconomic-observation, forecast, or trade tables exist
-yet. Those each require a separate, reviewed data contract before they are
-added as their own versioned migration.
+No macroeconomic-observation, forecast, or trade tables exist yet. Those
+each require a separate, reviewed data contract before they are added as
+their own versioned migration.
 
 ## News article storage
 
@@ -91,6 +100,86 @@ Invalid `--symbol`/`--limit` values are rejected before any network request
 is constructed. It has not been run live as part of adding this storage
 layer — see "Status" in `PROJECT_STATE.md`.
 
+## Market-bar storage
+
+`market_bars` (`market_intelligence/storage/migrations/0005_create_market_bars.sql`)
+stores only provider-reported OHLCV/vwap data plus this project's own
+provenance/ingestion bookkeeping — never indicators, returns, labels,
+sentiment, predictions, recommendations, option-contract data, orders,
+execution fields, credentials, request headers, or raw API responses.
+
+Columns: `provider`, `symbol`, `timeframe`, `feed`, `adjustment`,
+`currency`, `bar_timestamp` (the provider's reported bar timestamp, UTC,
+kept distinct from retrieval/ingestion time), `open`/`high`/`low`/`close`
+(each `DECIMAL(18,6)`, so values are stored exactly as decimal quantities
+rather than binary-float approximations — matching the connector's use of
+Python `Decimal`), `volume` (`BIGINT`), `trade_count` (`BIGINT`, nullable),
+`vwap` (`DECIMAL(18,6)`, nullable — `trade_count`/`vwap` are nullable
+consistent with `AlpacaBarsClient`, which accepts either as legitimately
+absent for some provider responses/subscription tiers), `retrieved_at`
+(when the connector fetched the response that produced the currently-stored
+values), `first_ingested_at` (set once, on first insert, never changed
+afterward), `last_seen_at` (refreshed every time the bar is re-ingested),
+and `ingestion_run_id` (the `ingestion_runs.run_id` of the run that most
+recently wrote this row — recorded, not enforced as a DuckDB foreign key,
+for the same reason as `news_articles.ingestion_run_id`). The primary key is
+`(provider, symbol, timeframe, feed, adjustment, currency, bar_timestamp)`
+— this table's idempotency mechanism; `adjustment` and `currency` are part
+of the identity, not just descriptive columns, since a differently adjusted
+or differently denominated bar for the same timestamp is a genuinely
+different value series, even though this project's connector currently only
+ever produces `adjustment='raw', currency='USD'` bars.
+
+`market_intelligence/storage/bar_repository.py` (`BarRepository`) is the
+only code that writes to this table. It accepts already-normalized `Bar`
+objects (from `market_intelligence/data_connectors/alpaca_bars.py`) — it
+makes no network requests itself and does not apply migrations; the
+database must already be initialized to at least migration `0005`. Every
+call to `store_bars()` first strictly validates every item before any
+database write, rejecting: non-`Bar` elements; a `feed`/`adjustment`/
+`currency`/`timeframe` outside this project's fixed, project-approved
+values (`iex`/`raw`/`USD`/one of `1Min`,`5Min`,`1Day`); a naive,
+timezone-free, or otherwise malformed `timestamp`/`retrieved_at`; a
+non-`Decimal`, non-finite `open`/`high`/`low`/`close`/`vwap`; a negative or
+non-integer `volume`/`trade_count`; and a candle whose OHLC values are
+internally inconsistent — with a sanitized `BarStorageValidationError` and
+no `ingestion_runs` row created for this failure mode. It then records a
+`running` `ingestion_runs` row, and writes the entire batch *plus* the final
+`succeeded` `ingestion_runs` status update inside one DuckDB transaction: an
+unseen bar identity is inserted; an already-known bar identity whose
+OHLCV/`trade_count`/`vwap` values still match has its retrieval/last-seen/
+run provenance (`retrieved_at`, `last_seen_at`, `ingestion_run_id`)
+refreshed, never its price/volume values; an already-known bar identity
+whose values *conflict* with the incoming value, or a failure while
+recording the final `succeeded` status itself, aborts the entire batch —
+nothing in that batch persists, and no bar changes are left associated with
+a `running` or `failed` run — and the `ingestion_runs` row is separately
+recorded as `failed` with a sanitized `error_category` (`content_conflict`
+or `storage_error`), never a raw exception message or OHLCV content. If
+recording that `failed` status itself also fails, a sanitized
+`BarStorageError` is raised instead of returning a result. A duplicate `Bar`
+within one incoming batch is handled deterministically without any
+separate duplicate-tracking code: every bar is written through the same
+DuckDB connection inside one transaction, so a second occurrence of the
+same identity later in the same batch sees the first occurrence's
+not-yet-committed row exactly as it would see an already-committed row from
+a prior call. The returned `BarStorageResult` reports only sanitized counts
+(`received`, `inserted`, `existing_or_updated`, `failed`) and the
+ingestion-run id/status — never OHLCV values, individual bar timestamps,
+database internals, or credentials.
+
+`scripts/ingest_alpaca_bars.py` is the one manual ingestion entry point: it
+makes at most one bounded, explicit, read-only `AlpacaBarsClient.get_bars()`
+request for a single, strictly-validated command-line symbol/timeframe/
+window (default `SPY`, `5Min`, and — if `--start`/`--end` are omitted — a
+small, fully completed historical window ending at the start of the current
+UTC day, so the default never includes a partial/live bar), then stores the
+results through `BarRepository`. Invalid `--symbol`/`--timeframe`/`--start`/
+`--end`/`--limit`/`--max-pages` values are rejected before any network
+request is constructed or any database write occurs. It has not been run
+live as part of adding this storage layer — see "Status" in
+`PROJECT_STATE.md`.
+
 ## Components
 
 - `market_intelligence/storage/database.py` — `DuckDBManager`, the
@@ -99,6 +188,8 @@ layer — see "Status" in `PROJECT_STATE.md`.
   migrations, applied in ascending filename order.
 - `market_intelligence/storage/news_repository.py` — `NewsArticleRepository`,
   the news-article storage service (see "News article storage" above).
+- `market_intelligence/storage/bar_repository.py` — `BarRepository`, the
+  market-bar storage service (see "Market-bar storage" above).
 - `scripts/initialize_database.py` — applies pending migrations to the
   configured local database; prints only the database path, schema
   version, and applied migration count.
@@ -107,6 +198,8 @@ layer — see "Status" in `PROJECT_STATE.md`.
   writing anything.
 - `scripts/ingest_alpaca_news.py` — one-shot manual news ingestion (see
   "News article storage" above); not run live as part of this change.
+- `scripts/ingest_alpaca_bars.py` — one-shot manual bars ingestion (see
+  "Market-bar storage" above); not run live as part of this change.
 
 ## Database location and path safety
 

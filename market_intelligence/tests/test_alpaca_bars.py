@@ -17,6 +17,8 @@ import pytest
 from market_intelligence.config.settings import Settings
 from market_intelligence.data_connectors.alpaca_bars import (
     BARS_BASE_URL,
+    DATA_ADJUSTMENT,
+    DATA_CURRENCY,
     DATA_FEED,
     MAX_LIMIT,
     MAX_PAGES,
@@ -1401,6 +1403,173 @@ def test_get_bars_credentials_absent_from_url_params_and_feed_still_present(
         get_bars_default(client, http_client)
 
 
+# --- adjustment/currency provenance hardening ----------------------------------
+
+
+def test_data_adjustment_constant_is_raw():
+    assert DATA_ADJUSTMENT == "raw"
+
+
+def test_data_currency_constant_is_usd():
+    assert DATA_CURRENCY == "USD"
+
+
+def test_get_bars_sends_adjustment_and_currency_params(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["adjustment"] == "raw"
+        assert request.url.params["currency"] == "USD"
+        return httpx.Response(200, json=bars_payload([sample_bar()]))
+
+    client = AlpacaBarsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        get_bars_default(client, http_client)
+
+
+def test_get_bars_sends_adjustment_and_currency_on_every_paginated_request(
+    monkeypatch, isolated_env_file
+):
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        assert request.url.params["adjustment"] == "raw"
+        assert request.url.params["currency"] == "USD"
+        page_token = request.url.params.get("page_token")
+        if page_token is None:
+            return httpx.Response(
+                200,
+                json=bars_payload(
+                    [sample_bar(t="2026-08-19T09:30:00Z")], next_page_token="TOK1"
+                ),
+            )
+        elif page_token == "TOK1":
+            return httpx.Response(
+                200, json=bars_payload([sample_bar(t="2026-08-19T09:31:00Z")], next_page_token=None)
+            )
+        raise AssertionError("unexpected page token")
+
+    client = AlpacaBarsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        get_bars_default(client, http_client)
+
+    assert len(calls) == 2
+    assert all(call.url.params["adjustment"] == "raw" for call in calls)
+    assert all(call.url.params["currency"] == "USD" for call in calls)
+
+
+def test_check_connection_sends_adjustment_and_currency_params(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["adjustment"] == "raw"
+        assert request.url.params["currency"] == "USD"
+        return httpx.Response(200, json=bars_payload([sample_bar()]))
+
+    client = AlpacaBarsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        client.check_connection("SPY", client=http_client)
+
+
+def test_get_bars_normalized_bars_always_have_raw_usd_provenance(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=bars_payload(
+                [sample_bar(t="2026-08-19T09:30:00Z"), sample_bar(t="2026-08-19T09:31:00Z")]
+            ),
+        )
+
+    client = AlpacaBarsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        bars = get_bars_default(client, http_client)
+
+    assert len(bars) == 2
+    assert all(bar.adjustment == "raw" for bar in bars)
+    assert all(bar.currency == "USD" for bar in bars)
+
+
+def test_check_connection_status_always_has_raw_usd_provenance_including_on_failure(
+    monkeypatch, isolated_env_file
+):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"message": "unauthorized"})
+
+    client = AlpacaBarsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        status = client.check_connection("SPY", client=http_client)
+
+    assert status.success is False
+    assert status.adjustment == "raw"
+    assert status.currency == "USD"
+
+
+def test_check_connection_not_configured_status_has_raw_usd_provenance(isolated_env_file):
+    client = AlpacaBarsClient(settings=unconfigured_settings(isolated_env_file))
+    status = client.check_connection("SPY")
+
+    assert status.adjustment == "raw"
+    assert status.currency == "USD"
+
+
+def test_check_connection_invalid_symbol_status_has_raw_usd_provenance(isolated_env_file):
+    client = AlpacaBarsClient(settings=unconfigured_settings(isolated_env_file))
+    status = client.check_connection("")
+
+    assert status.adjustment == "raw"
+    assert status.currency == "USD"
+
+
+def test_get_bars_does_not_accept_adjustment_or_currency_keyword_arguments(
+    monkeypatch, isolated_env_file
+):
+    """No caller-controlled adjustment/currency can be injected: get_bars has no such params."""
+    client = AlpacaBarsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with pytest.raises(TypeError):
+        client.get_bars(
+            "SPY",
+            "1Day",
+            DEFAULT_START,
+            DEFAULT_END,
+            adjustment="split",  # type: ignore[call-arg]
+        )
+    with pytest.raises(TypeError):
+        client.get_bars(
+            "SPY",
+            "1Day",
+            DEFAULT_START,
+            DEFAULT_END,
+            currency="EUR",  # type: ignore[call-arg]
+        )
+
+
+def test_check_connection_does_not_accept_adjustment_or_currency_keyword_arguments(
+    monkeypatch, isolated_env_file
+):
+    """No caller-controlled adjustment/currency can be injected via check_connection."""
+    client = AlpacaBarsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with pytest.raises(TypeError):
+        client.check_connection("SPY", adjustment="split")  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        client.check_connection("SPY", currency="EUR")  # type: ignore[call-arg]
+
+
+def test_get_bars_adjustment_and_currency_cannot_be_overridden_via_response_payload(
+    monkeypatch, isolated_env_file
+):
+    """A provider response cannot smuggle a different adjustment/currency onto the Bar."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = bars_payload([sample_bar()])
+        payload["adjustment"] = "split"
+        payload["currency"] = "EUR"
+        return httpx.Response(200, json=payload)
+
+    client = AlpacaBarsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        bars = get_bars_default(client, http_client)
+
+    assert bars[0].adjustment == "raw"
+    assert bars[0].currency == "USD"
+
+
 # --- scripts/check_alpaca_bars.py sanitized output -----------------------------
 
 
@@ -1436,6 +1605,8 @@ def test_check_alpaca_bars_script_prints_sanitized_feed(monkeypatch, isolated_en
         symbol="SPY",
         timeframe="5Min",
         feed=DATA_FEED,
+        adjustment=DATA_ADJUSTMENT,
+        currency=DATA_CURRENCY,
         bar_count=2,
         oldest_bar_timestamp="2026-08-18T09:30:00Z",
         newest_bar_timestamp="2026-08-19T09:30:00Z",
