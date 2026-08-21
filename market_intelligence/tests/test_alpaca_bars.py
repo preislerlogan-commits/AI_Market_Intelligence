@@ -614,6 +614,75 @@ def test_get_bars_rejects_candle_inconsistent_bars(monkeypatch, isolated_env_fil
         get_bars_default(client, http_client)
 
 
+# --- negative/zero OHLC and vwap rejection --------------------------------------
+
+NEGATIVE_OR_ZERO_OHLC_BARS = [
+    sample_bar(o=-1.0),
+    sample_bar(o=0.0),
+    sample_bar(h=-1.0),
+    sample_bar(h=0.0),
+    sample_bar(lo=-1.0),
+    sample_bar(lo=0.0),
+    sample_bar(c=-1.0),
+    sample_bar(c=0.0),
+]
+
+
+@pytest.mark.parametrize("bad_bar", NEGATIVE_OR_ZERO_OHLC_BARS)
+def test_get_bars_rejects_non_positive_ohlc(monkeypatch, isolated_env_file, bad_bar):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=bars_payload([bad_bar]))
+
+    client = AlpacaBarsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(AlpacaBarsError):
+        get_bars_default(client, http_client)
+
+
+def test_get_bars_rejects_negative_vwap(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=bars_payload([sample_bar(vw=-0.01)]))
+
+    client = AlpacaBarsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(AlpacaBarsError):
+        get_bars_default(client, http_client)
+
+
+def test_get_bars_accepts_zero_vwap(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=bars_payload([sample_bar(vw=0.0)]))
+
+    client = AlpacaBarsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        bars = get_bars_default(client, http_client)
+
+    assert bars[0].vwap == Decimal("0")
+
+
+def test_get_bars_negative_ohlc_error_never_exposes_rejected_value(
+    monkeypatch, isolated_env_file
+):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=bars_payload([sample_bar(c=-999.25)]))
+
+    client = AlpacaBarsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(AlpacaBarsError) as exc_info:
+        get_bars_default(client, http_client)
+
+    assert "999.25" not in str(exc_info.value)
+
+
+def test_check_connection_rejects_negative_open(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=bars_payload([sample_bar(o=-1.0)]))
+
+    client = AlpacaBarsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        status = client.check_connection("SPY", client=http_client)
+
+    assert status.success is False
+    assert status.status_category == "invalid_response"
+
+
 # --- nullable trade_count/vwap ------------------------------------------------
 
 

@@ -15,6 +15,16 @@ is rejected by argparse itself (before ``Settings``/the bars client are ever
 created), and an invalid ``--symbol``/``--timeframe``/``--start``/``--end``
 is rejected by the same normalization the connector uses internally, with
 zero HTTP requests and zero database writes made in any invalid-input case.
+The normalized ``start``/``end`` are also compared here (rejecting
+``start >= end``) before ``Settings``, the bars client, any network request,
+or any database construction happens -- not left to be discovered later
+inside the connector or the repository.
+
+Database initialization and repository storage are also wrapped: a DuckDB
+initialization failure or a ``BarStorageError`` from storage is caught and
+reported as a fixed, sanitized outcome/category and a nonzero exit code --
+never a raw traceback containing SQL, paths, prices, or other internals, and
+never a falsely reported success.
 
 If ``--start``/``--end`` are omitted, a small, clearly bounded, fully
 completed historical window is used by default: the DEFAULT_LOOKBACK_DAYS
@@ -56,7 +66,7 @@ from market_intelligence.data_connectors.alpaca_market_data import (
     AlpacaInvalidSymbolError,
     normalize_symbol,
 )
-from market_intelligence.storage.bar_repository import BarRepository
+from market_intelligence.storage.bar_repository import BarRepository, BarStorageError
 from market_intelligence.storage.database import DuckDBManager
 
 DEFAULT_SYMBOL = "SPY"
@@ -107,6 +117,12 @@ def main(argv: list[str] | None = None, *, settings: Settings | None = None) -> 
                                      field_name="start")
         end = normalize_timestamp(args.end if args.end is not None else default_end,
                                    field_name="end")
+        start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        end_dt = datetime.fromisoformat(end.replace("Z", "+00:00"))
+        if start_dt >= end_dt:
+            raise AlpacaBarsInvalidInputError(
+                "Invalid start/end: start must be strictly before end."
+            )
         limit = normalize_limit(args.limit)
         max_pages = normalize_max_pages(args.max_pages)
     except (AlpacaInvalidSymbolError, AlpacaBarsInvalidInputError) as exc:
@@ -151,9 +167,20 @@ def main(argv: list[str] | None = None, *, settings: Settings | None = None) -> 
     print(f"currency: {DATA_CURRENCY}")
     print(f"received: {len(bars)}")
 
-    DuckDBManager(settings=settings).initialize()
+    try:
+        DuckDBManager(settings=settings).initialize()
+    except Exception:
+        print("storage outcome: failed")
+        print("error category: database_initialization_failed")
+        return 1
+
     repository = BarRepository(settings=settings)
-    result = repository.store_bars(bars, provider="alpaca")
+    try:
+        result = repository.store_bars(bars, provider="alpaca")
+    except BarStorageError:
+        print("storage outcome: failed")
+        print("error category: storage_error")
+        return 1
 
     print(f"inserted: {result.inserted}")
     print(f"existing/updated: {result.existing_or_updated}")

@@ -182,6 +182,51 @@ def test_invalid_input_error_never_echoes_raw_symbol(monkeypatch, capsys):
     assert secret_marker not in captured.out
 
 
+def test_start_after_end_makes_zero_requests_and_writes(monkeypatch, tmp_path, isolated_env_file):
+    calls = blocked_http_send(monkeypatch)
+    module = load_script_module()
+    settings = unconfigured_settings(tmp_path, isolated_env_file)
+
+    exit_code = module.main(
+        ["--start", "2026-08-16T00:00:00Z", "--end", "2026-08-15T00:00:00Z"], settings=settings
+    )
+
+    assert exit_code == 2
+    assert calls == []
+    assert database_file_exists(settings) is False
+
+
+def test_start_equal_end_makes_zero_requests_and_writes(monkeypatch, tmp_path, isolated_env_file):
+    calls = blocked_http_send(monkeypatch)
+    module = load_script_module()
+    settings = unconfigured_settings(tmp_path, isolated_env_file)
+
+    exit_code = module.main(
+        ["--start", "2026-08-15T00:00:00Z", "--end", "2026-08-15T00:00:00Z"], settings=settings
+    )
+
+    assert exit_code == 2
+    assert calls == []
+    assert database_file_exists(settings) is False
+
+
+def test_start_after_end_never_echoes_raw_timestamps(
+    monkeypatch, tmp_path, isolated_env_file, capsys
+):
+    blocked_http_send(monkeypatch)
+    module = load_script_module()
+    settings = unconfigured_settings(tmp_path, isolated_env_file)
+    secret_start = "2026-08-16T00:00:00Z"
+    secret_end = "2026-08-15T00:00:00Z"
+
+    module.main(["--start", secret_start, "--end", secret_end], settings=settings)
+
+    captured = capsys.readouterr()
+    assert "fetch outcome: invalid_input" in captured.out
+    assert secret_start not in captured.out
+    assert secret_end not in captured.out
+
+
 # --- not configured makes zero requests and writes ------------------------------
 
 
@@ -301,3 +346,100 @@ def test_successful_ingestion_prints_sanitized_output_and_stores_bars(
     assert "2026-08-15T09:30:00Z" not in captured.out
     assert "unit-test-alpaca-key" not in captured.out
     assert "unit-test-alpaca-secret" not in captured.out
+
+
+# --- database initialization and storage failures are sanitized -----------------
+
+
+def _fetch_bars_fake_send(self, request: httpx.Request, **kwargs) -> httpx.Response:
+    payload = {
+        "bars": [_bar_json("2026-08-15T09:30:00Z")],
+        "next_page_token": None,
+    }
+    return httpx.Response(200, json=payload, request=request)
+
+
+def test_database_initialization_failure_is_sanitized(
+    monkeypatch, tmp_path, isolated_env_file, capsys
+):
+    monkeypatch.setattr(httpx.Client, "send", _fetch_bars_fake_send)
+
+    from market_intelligence.storage.database import DuckDBManager
+
+    secret_marker = "SECRET-DB-INTERNAL-DETAIL"
+
+    def fake_initialize(self):
+        raise RuntimeError(f"boom {secret_marker}")
+
+    monkeypatch.setattr(DuckDBManager, "initialize", fake_initialize)
+
+    module = load_script_module()
+    settings = configured_settings(monkeypatch, tmp_path, isolated_env_file)
+
+    exit_code = module.main(
+        ["--start", "2026-08-15T00:00:00Z", "--end", "2026-08-16T00:00:00Z"], settings=settings
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "storage outcome: failed" in captured.out
+    assert "error category: database_initialization_failed" in captured.out
+    assert secret_marker not in captured.out
+    assert "RuntimeError" not in captured.out
+    assert "ingestion-run status: succeeded" not in captured.out
+
+
+def test_repository_storage_error_is_sanitized(monkeypatch, tmp_path, isolated_env_file, capsys):
+    monkeypatch.setattr(httpx.Client, "send", _fetch_bars_fake_send)
+
+    from market_intelligence.storage.bar_repository import BarRepository, BarStorageError
+
+    secret_marker = "SECRET-STORAGE-INTERNAL-DETAIL"
+
+    def fake_store_bars(self, items, *, provider="alpaca", dataset_name="bars"):
+        raise BarStorageError(f"boom {secret_marker}")
+
+    monkeypatch.setattr(BarRepository, "store_bars", fake_store_bars)
+
+    module = load_script_module()
+    settings = configured_settings(monkeypatch, tmp_path, isolated_env_file)
+
+    exit_code = module.main(
+        ["--start", "2026-08-15T00:00:00Z", "--end", "2026-08-16T00:00:00Z"], settings=settings
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "storage outcome: failed" in captured.out
+    assert "error category: storage_error" in captured.out
+    assert secret_marker not in captured.out
+    assert "ingestion-run status: succeeded" not in captured.out
+
+
+def test_repository_validation_error_is_sanitized(
+    monkeypatch, tmp_path, isolated_env_file, capsys
+):
+    monkeypatch.setattr(httpx.Client, "send", _fetch_bars_fake_send)
+
+    from market_intelligence.storage.bar_repository import (
+        BarRepository,
+        BarStorageValidationError,
+    )
+
+    def fake_store_bars(self, items, *, provider="alpaca", dataset_name="bars"):
+        raise BarStorageValidationError("simulated validation failure")
+
+    monkeypatch.setattr(BarRepository, "store_bars", fake_store_bars)
+
+    module = load_script_module()
+    settings = configured_settings(monkeypatch, tmp_path, isolated_env_file)
+
+    exit_code = module.main(
+        ["--start", "2026-08-15T00:00:00Z", "--end", "2026-08-16T00:00:00Z"], settings=settings
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "storage outcome: failed" in captured.out
+    assert "error category: storage_error" in captured.out
+    assert "ingestion-run status: succeeded" not in captured.out

@@ -418,12 +418,17 @@ def _normalize_bar(raw: Any, *, symbol: str, timeframe: str, retrieved_at: str) 
     low = _to_decimal(raw.get("l"), field_name="low")
     close = _to_decimal(raw.get("c"), field_name="close")
 
+    if open_ <= 0 or high <= 0 or low <= 0 or close <= 0:
+        raise _MalformedBarError("OHLC values must be greater than zero")
+
     if not (high >= low and high >= open_ and high >= close and low <= open_ and low <= close):
         raise _MalformedBarError("candle values are inconsistent")
 
     volume = _to_nonneg_int(raw.get("v"), field_name="volume", allow_none=False)
     trade_count = _to_nonneg_int(raw.get("n"), field_name="trade_count", allow_none=True)
     vwap = _to_optional_decimal(raw.get("vw"), field_name="vwap")
+    if vwap is not None and vwap < 0:
+        raise _MalformedBarError("vwap must not be negative")
 
     assert volume is not None  # allow_none=False guarantees this
     return Bar(

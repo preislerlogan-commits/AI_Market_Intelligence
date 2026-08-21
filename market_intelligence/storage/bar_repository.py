@@ -60,6 +60,15 @@ DEFAULT_PROVIDER = "alpaca"
 
 _ALLOWED_TIMEFRAMES = frozenset({"1Min", "5Min", "1Day"})
 
+# Matches the market_bars schema's open/high/low/close/vwap columns
+# (migration 0005: DECIMAL(18,6) -- 12 integer digits, 6 fractional digits).
+# A value with more than 6 fractional digits would be silently rounded by
+# DuckDB, and a value outside this magnitude would silently overflow; both
+# are rejected here before any write rather than allowed to happen inside
+# DuckDB.
+_DECIMAL_SCALE = 6
+_DECIMAL_MAX_ABS = Decimal("999999999999.999999")
+
 
 class BarStorageError(RuntimeError):
     """Sanitized storage failure.
@@ -125,7 +134,36 @@ def _require_rfc3339_timestamp(value: object, *, field_name: str) -> str:
         raise BarStorageValidationError(f"Invalid items: {exc}") from None
 
 
-def _require_decimal(value: object, *, field_name: str, allow_none: bool) -> None:
+def _validate_decimal_storage_precision(value: Decimal, *, field_name: str) -> None:
+    """Reject a Decimal that DuckDB's DECIMAL(18,6) column would silently round or overflow.
+
+    Never echoes the rejected value. Trailing zeros beyond the 6th
+    fractional digit do not require rounding (they are normalized away
+    before the fractional-digit check), but any value with more than 6
+    significant fractional digits, or a magnitude the column cannot hold,
+    is rejected.
+    """
+    normalized_exponent = value.normalize().as_tuple().exponent
+    if isinstance(normalized_exponent, str):
+        raise BarStorageValidationError(f"Invalid items: {field_name} is not a supported value.")
+    if normalized_exponent < -_DECIMAL_SCALE:
+        raise BarStorageValidationError(
+            f"Invalid items: {field_name} exceeds the maximum supported decimal precision."
+        )
+    if abs(value) > _DECIMAL_MAX_ABS:
+        raise BarStorageValidationError(
+            f"Invalid items: {field_name} exceeds the maximum supported decimal range."
+        )
+
+
+def _require_decimal(
+    value: object,
+    *,
+    field_name: str,
+    allow_none: bool,
+    require_positive: bool = False,
+    reject_negative: bool = False,
+) -> None:
     if value is None:
         if allow_none:
             return
@@ -134,6 +172,11 @@ def _require_decimal(value: object, *, field_name: str, allow_none: bool) -> Non
         raise BarStorageValidationError(f"Invalid items: {field_name} must be a Decimal.")
     if not value.is_finite():
         raise BarStorageValidationError(f"Invalid items: {field_name} must be a finite value.")
+    _validate_decimal_storage_precision(value, field_name=field_name)
+    if require_positive and value <= 0:
+        raise BarStorageValidationError(f"Invalid items: {field_name} must be greater than zero.")
+    if reject_negative and value < 0:
+        raise BarStorageValidationError(f"Invalid items: {field_name} must not be negative.")
 
 
 def _require_nonneg_int(value: object, *, field_name: str, allow_none: bool) -> None:
@@ -184,11 +227,11 @@ def _validate_items(items: Sequence[Bar], *, provider: str) -> None:
         _require_rfc3339_timestamp(item.timestamp, field_name="timestamp")
         _require_rfc3339_timestamp(item.retrieved_at, field_name="retrieved_at")
 
-        _require_decimal(item.open, field_name="open", allow_none=False)
-        _require_decimal(item.high, field_name="high", allow_none=False)
-        _require_decimal(item.low, field_name="low", allow_none=False)
-        _require_decimal(item.close, field_name="close", allow_none=False)
-        _require_decimal(item.vwap, field_name="vwap", allow_none=True)
+        _require_decimal(item.open, field_name="open", allow_none=False, require_positive=True)
+        _require_decimal(item.high, field_name="high", allow_none=False, require_positive=True)
+        _require_decimal(item.low, field_name="low", allow_none=False, require_positive=True)
+        _require_decimal(item.close, field_name="close", allow_none=False, require_positive=True)
+        _require_decimal(item.vwap, field_name="vwap", allow_none=True, reject_negative=True)
 
         _require_nonneg_int(item.volume, field_name="volume", allow_none=False)
         _require_nonneg_int(item.trade_count, field_name="trade_count", allow_none=True)
@@ -255,8 +298,8 @@ class BarRepository:
         status itself also fails, in which case a sanitized
         ``BarStorageError`` is raised.
         """
-        received = len(items)
         _validate_items(items, provider=provider)
+        received = len(items)
         _require_non_blank_str(provider, field_name="provider")
         _require_non_blank_str(dataset_name, field_name="dataset_name")
 

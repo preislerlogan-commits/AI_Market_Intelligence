@@ -406,6 +406,187 @@ def test_candle_inconsistent_bars_rejected(tmp_path, isolated_env_file, override
         repository.store_bars([make_bar(**overrides)])
 
 
+# --- DECIMAL(18,6) precision/overflow validation ------------------------------------
+
+
+def test_exactly_six_fractional_digits_succeeds_unchanged(tmp_path, isolated_env_file):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    result = repository.store_bars(
+        [
+            make_bar(
+                open=Decimal("100.123456"),
+                high=Decimal("100.123457"),
+                low=Decimal("100.123455"),
+                close=Decimal("100.123456"),
+                vwap=Decimal("100.123456"),
+            )
+        ]
+    )
+
+    assert result.ingestion_run_status == "succeeded"
+
+    connection = read_only_connection(repository)
+    try:
+        row = fetch_bar(connection, "SPY", "2026-08-19T09:30:00Z")
+    finally:
+        connection.close()
+    assert row[7] == Decimal("100.123456")
+    assert row[13] == Decimal("100.123456")
+
+
+@pytest.mark.parametrize("field_name", ["open", "high", "low", "close", "vwap"])
+def test_more_than_six_fractional_digits_rejected_zero_writes(
+    tmp_path, isolated_env_file, field_name
+):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    with pytest.raises(BarStorageValidationError):
+        repository.store_bars([make_bar(**{field_name: Decimal("100.1234567")})])
+
+    connection = read_only_connection(repository)
+    try:
+        assert count_bars(connection) == 0
+        assert connection.execute("SELECT count(*) FROM ingestion_runs").fetchone()[0] == 0
+    finally:
+        connection.close()
+
+
+def test_positive_overflow_rejected_zero_writes(tmp_path, isolated_env_file):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    with pytest.raises(BarStorageValidationError):
+        repository.store_bars([make_bar(high=Decimal("1000000000000.000000"))])
+
+    connection = read_only_connection(repository)
+    try:
+        assert count_bars(connection) == 0
+        assert connection.execute("SELECT count(*) FROM ingestion_runs").fetchone()[0] == 0
+    finally:
+        connection.close()
+
+
+def test_negative_overflow_rejected_zero_writes(tmp_path, isolated_env_file):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    with pytest.raises(BarStorageValidationError):
+        repository.store_bars([make_bar(vwap=Decimal("-1000000000000.000000"))])
+
+    connection = read_only_connection(repository)
+    try:
+        assert count_bars(connection) == 0
+        assert connection.execute("SELECT count(*) FROM ingestion_runs").fetchone()[0] == 0
+    finally:
+        connection.close()
+
+
+def test_decimal_precision_error_never_exposes_rejected_value(tmp_path, isolated_env_file):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    with pytest.raises(BarStorageValidationError) as exc_info:
+        repository.store_bars([make_bar(close=Decimal("123.1234567"))])
+
+    assert "123.1234567" not in str(exc_info.value)
+
+
+def test_decimal_overflow_error_never_exposes_rejected_value(tmp_path, isolated_env_file):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    with pytest.raises(BarStorageValidationError) as exc_info:
+        repository.store_bars([make_bar(high=Decimal("1000000000000.000000"))])
+
+    assert "1000000000000" not in str(exc_info.value)
+
+
+def test_boundary_max_decimal_value_accepted(tmp_path, isolated_env_file):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    result = repository.store_bars(
+        [
+            make_bar(
+                open=Decimal("1.0"),
+                high=Decimal("999999999999.999999"),
+                low=Decimal("1.0"),
+                close=Decimal("1.0"),
+            )
+        ]
+    )
+
+    assert result.ingestion_run_status == "succeeded"
+
+
+# --- negative/zero OHLC and vwap rejection -------------------------------------------
+
+
+@pytest.mark.parametrize("field_name", ["open", "high", "low", "close"])
+def test_negative_ohlc_rejected_zero_writes(tmp_path, isolated_env_file, field_name):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    with pytest.raises(BarStorageValidationError):
+        repository.store_bars([make_bar(**{field_name: Decimal("-1.0")})])
+
+    connection = read_only_connection(repository)
+    try:
+        assert count_bars(connection) == 0
+        assert connection.execute("SELECT count(*) FROM ingestion_runs").fetchone()[0] == 0
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize("field_name", ["open", "high", "low", "close"])
+def test_zero_ohlc_rejected_zero_writes(tmp_path, isolated_env_file, field_name):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    with pytest.raises(BarStorageValidationError):
+        repository.store_bars([make_bar(**{field_name: Decimal("0")})])
+
+    connection = read_only_connection(repository)
+    try:
+        assert count_bars(connection) == 0
+        assert connection.execute("SELECT count(*) FROM ingestion_runs").fetchone()[0] == 0
+    finally:
+        connection.close()
+
+
+def test_negative_vwap_rejected_zero_writes(tmp_path, isolated_env_file):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    with pytest.raises(BarStorageValidationError):
+        repository.store_bars([make_bar(vwap=Decimal("-0.01"))])
+
+    connection = read_only_connection(repository)
+    try:
+        assert count_bars(connection) == 0
+        assert connection.execute("SELECT count(*) FROM ingestion_runs").fetchone()[0] == 0
+    finally:
+        connection.close()
+
+
+def test_zero_vwap_accepted(tmp_path, isolated_env_file):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    result = repository.store_bars([make_bar(vwap=Decimal("0"))])
+
+    assert result.ingestion_run_status == "succeeded"
+
+
+def test_negative_ohlc_error_never_exposes_rejected_value(tmp_path, isolated_env_file):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    with pytest.raises(BarStorageValidationError) as exc_info:
+        repository.store_bars([make_bar(close=Decimal("-999.25"))])
+
+    assert "999.25" not in str(exc_info.value)
+
+
+# --- non-Sequence input validated before len() is ever computed ----------------------
+
+
+def test_generator_input_rejected_before_len_zero_writes(tmp_path, isolated_env_file):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+
+    def bar_generator():
+        yield make_bar()
+
+    with pytest.raises(BarStorageValidationError):
+        repository.store_bars(bar_generator())
+
+    connection = read_only_connection(repository)
+    try:
+        assert count_bars(connection) == 0
+        assert connection.execute("SELECT count(*) FROM ingestion_runs").fetchone()[0] == 0
+    finally:
+        connection.close()
+
+
 # --- fixed provenance validation ---------------------------------------------------
 
 
