@@ -70,6 +70,26 @@ The following tickers are the known initial universe of interest:
   limitations exists yet. This is a connectivity check only and must not be
   described as a validated data pipeline.
 
+## Local Storage
+
+A local DuckDB storage foundation exists at `data/market_intelligence.duckdb`
+(`market_intelligence/storage/`, documented in
+[docs/STORAGE_ARCHITECTURE.md](docs/STORAGE_ARCHITECTURE.md)). Its schema
+currently defines only two infrastructure-metadata tables:
+
+- `schema_migrations` — tracks which versioned migrations have been
+  applied.
+- `ingestion_runs` — records ingestion-run metadata (provider, dataset
+  name, start/completion timestamps, status, records received, a
+  sanitized error category, and code/schema version). No ingestion code
+  writes to this table yet.
+
+No provider dataset has been ingested or stored in this database, and no
+forecast or trade data exists here. No market-bar, macro-observation,
+news, forecast, or trade table has been created — each requires its own
+reviewed data contract and a corresponding versioned migration before it
+is added.
+
 ## Required Fields for Every Future Dataset
 
 Every dataset added to this catalog in the future must record:
