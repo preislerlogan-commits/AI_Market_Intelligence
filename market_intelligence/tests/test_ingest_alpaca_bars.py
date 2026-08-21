@@ -416,6 +416,38 @@ def test_repository_storage_error_is_sanitized(monkeypatch, tmp_path, isolated_e
     assert "ingestion-run status: succeeded" not in captured.out
 
 
+def test_unexpected_repository_exception_is_sanitized(
+    monkeypatch, tmp_path, isolated_env_file, capsys
+):
+    """A non-BarStorageError leaking from the repository must never surface as a traceback."""
+    monkeypatch.setattr(httpx.Client, "send", _fetch_bars_fake_send)
+
+    from market_intelligence.storage.bar_repository import BarRepository
+
+    secret_marker = "SECRET-UNEXPECTED-INTERNAL-DETAIL"
+
+    def fake_store_bars(self, items, *, provider="alpaca", dataset_name="bars"):
+        raise RuntimeError(f"boom {secret_marker}")
+
+    monkeypatch.setattr(BarRepository, "store_bars", fake_store_bars)
+
+    module = load_script_module()
+    settings = configured_settings(monkeypatch, tmp_path, isolated_env_file)
+
+    exit_code = module.main(
+        ["--start", "2026-08-15T00:00:00Z", "--end", "2026-08-16T00:00:00Z"], settings=settings
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "storage outcome: failed" in captured.out
+    assert "error category: unexpected_error" in captured.out
+    assert secret_marker not in captured.out
+    assert "RuntimeError" not in captured.out
+    assert "Traceback" not in captured.out
+    assert "ingestion-run status: succeeded" not in captured.out
+
+
 def test_repository_validation_error_is_sanitized(
     monkeypatch, tmp_path, isolated_env_file, capsys
 ):

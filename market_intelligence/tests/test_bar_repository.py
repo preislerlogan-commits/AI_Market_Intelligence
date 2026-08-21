@@ -9,6 +9,7 @@ constructed directly here -- never fetched live.
 
 from __future__ import annotations
 
+import uuid
 from decimal import Decimal
 from pathlib import Path
 
@@ -813,3 +814,221 @@ def test_successful_store_is_atomic_with_succeeded_run_status(tmp_path, isolated
         connection.close()
 
     assert run[2] == "succeeded"
+
+
+# --- failures before a durable running ingestion run exists ------------------------
+
+
+def test_connection_failure_raises_sanitized_error(tmp_path, isolated_env_file, monkeypatch):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    secret_marker = "SECRET-CONNECT-DETAIL"
+
+    def fake_connect(*args, **kwargs):
+        raise RuntimeError(f"boom {secret_marker}")
+
+    with monkeypatch.context() as m:
+        m.setattr(duckdb, "connect", fake_connect)
+        with pytest.raises(BarStorageError) as exc_info:
+            repository.store_bars([make_bar()])
+
+    assert secret_marker not in str(exc_info.value)
+    assert not isinstance(exc_info.value, BarStorageValidationError)
+
+    connection = read_only_connection(repository)
+    try:
+        assert count_bars(connection) == 0
+        assert connection.execute("SELECT count(*) FROM ingestion_runs").fetchone()[0] == 0
+    finally:
+        connection.close()
+
+
+def test_schema_version_read_failure_raises_sanitized_error(
+    tmp_path, isolated_env_file, monkeypatch
+):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    secret_marker = "SECRET-SCHEMA-READ-DETAIL"
+
+    def fake_schema_version(connection):
+        raise RuntimeError(f"boom {secret_marker}")
+
+    monkeypatch.setattr(
+        BarRepository, "_current_schema_version", staticmethod(fake_schema_version)
+    )
+
+    with pytest.raises(BarStorageError) as exc_info:
+        repository.store_bars([make_bar()])
+
+    assert secret_marker not in str(exc_info.value)
+    assert not isinstance(exc_info.value, BarStorageValidationError)
+
+    connection = read_only_connection(repository)
+    try:
+        assert count_bars(connection) == 0
+        assert connection.execute("SELECT count(*) FROM ingestion_runs").fetchone()[0] == 0
+    finally:
+        connection.close()
+
+
+def test_initial_running_row_insertion_failure_raises_sanitized_error(
+    tmp_path, isolated_env_file, monkeypatch
+):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    fixed_run_id = "11111111-1111-1111-1111-111111111111"
+
+    # Pre-insert a row with the run_id the repository is about to generate,
+    # so its own INSERT hits the run_id PRIMARY KEY constraint -- a real
+    # DuckDB failure at the "initial running row" step, not a mocked one.
+    connection = duckdb.connect(str(repository.database_path))
+    try:
+        connection.execute(
+            "INSERT INTO ingestion_runs "
+            "(run_id, provider, dataset_name, started_at_utc, status, code_version) "
+            "VALUES (?, 'alpaca', 'bars', now(), 'running', 'preexisting')",
+            [fixed_run_id],
+        )
+    finally:
+        connection.close()
+
+    monkeypatch.setattr(uuid, "uuid4", lambda: uuid.UUID(fixed_run_id))
+
+    with pytest.raises(BarStorageError) as exc_info:
+        repository.store_bars([make_bar()])
+
+    assert fixed_run_id not in str(exc_info.value)
+    assert not isinstance(exc_info.value, BarStorageValidationError)
+
+    connection = read_only_connection(repository)
+    try:
+        assert count_bars(connection) == 0
+        rows = connection.execute("SELECT run_id, status FROM ingestion_runs").fetchall()
+    finally:
+        connection.close()
+
+    # Only the pre-existing row is present, and it is untouched -- the
+    # repository's own insert never durably succeeded.
+    assert rows == [(fixed_run_id, "running")]
+
+
+# --- rollback failure ---------------------------------------------------------------
+
+
+class _RollbackFailingConnection:
+    """Wraps a real DuckDB connection, forwarding everything except ROLLBACK."""
+
+    def __init__(self, real: duckdb.DuckDBPyConnection, secret_marker: str) -> None:
+        self._real = real
+        self._secret_marker = secret_marker
+
+    def execute(self, query, *args, **kwargs):
+        if isinstance(query, str) and query.strip().upper() == "ROLLBACK":
+            raise RuntimeError(f"boom {self._secret_marker}")
+        return self._real.execute(query, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def test_rollback_failure_raises_sanitized_error(tmp_path, isolated_env_file, monkeypatch):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    repository.store_bars([make_bar(close=Decimal("100.5"))])
+
+    secret_marker = "SECRET-ROLLBACK-DETAIL"
+    real_connect = duckdb.connect
+
+    def fake_connect(*args, **kwargs):
+        return _RollbackFailingConnection(real_connect(*args, **kwargs), secret_marker)
+
+    with monkeypatch.context() as m:
+        m.setattr(duckdb, "connect", fake_connect)
+        with pytest.raises(BarStorageError) as exc_info:
+            # A conflicting close value triggers the batch-failure/rollback path.
+            repository.store_bars([make_bar(close=Decimal("999.0"))])
+
+    assert secret_marker not in str(exc_info.value)
+    assert not isinstance(exc_info.value, BarStorageValidationError)
+
+    connection = read_only_connection(repository)
+    try:
+        assert count_bars(connection) == 1
+        row = fetch_bar(connection, "SPY", "2026-08-19T09:30:00Z")
+        statuses = [
+            r[0] for r in connection.execute("SELECT status FROM ingestion_runs").fetchall()
+        ]
+    finally:
+        connection.close()
+
+    assert row[10] == Decimal("100.5")  # original bar unchanged
+    # One "succeeded" row from the first (unrelated) store_bars call above;
+    # the second run -- whose rollback failed -- is truthfully left
+    # "running" since it could never be durably marked "failed", and is
+    # never falsely reported as "succeeded".
+    assert statuses.count("succeeded") == 1
+    assert statuses.count("running") == 1
+
+
+# --- connection-close failure ---------------------------------------------------------
+
+
+class _CloseFailingConnection:
+    """Wraps a real DuckDB connection, forwarding everything except close()."""
+
+    def __init__(self, real: duckdb.DuckDBPyConnection, secret_marker: str) -> None:
+        self._real = real
+        self._secret_marker = secret_marker
+
+    def close(self):
+        raise RuntimeError(f"boom {self._secret_marker}")
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def test_connection_close_failure_does_not_override_successful_result(
+    tmp_path, isolated_env_file, monkeypatch
+):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    secret_marker = "SECRET-CLOSE-SUCCESS-DETAIL"
+    real_connect = duckdb.connect
+
+    def fake_connect(*args, **kwargs):
+        return _CloseFailingConnection(real_connect(*args, **kwargs), secret_marker)
+
+    with monkeypatch.context() as m:
+        m.setattr(duckdb, "connect", fake_connect)
+        result = repository.store_bars([make_bar()])
+
+    assert result.ingestion_run_status == "succeeded"
+    assert result.inserted == 1
+
+    connection = read_only_connection(repository)
+    try:
+        assert count_bars(connection) == 1
+    finally:
+        connection.close()
+
+
+def test_connection_close_failure_does_not_replace_sanitized_error(
+    tmp_path, isolated_env_file, monkeypatch
+):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    close_secret = "SECRET-CLOSE-ERROR-DETAIL"
+    schema_secret = "SECRET-SCHEMA-ERROR-DETAIL"
+    real_connect = duckdb.connect
+
+    def fake_connect(*args, **kwargs):
+        return _CloseFailingConnection(real_connect(*args, **kwargs), close_secret)
+
+    def fake_schema_version(connection):
+        raise RuntimeError(f"boom {schema_secret}")
+
+    with monkeypatch.context() as m:
+        m.setattr(duckdb, "connect", fake_connect)
+        m.setattr(
+            BarRepository, "_current_schema_version", staticmethod(fake_schema_version)
+        )
+        with pytest.raises(BarStorageError) as exc_info:
+            repository.store_bars([make_bar()])
+
+    assert close_secret not in str(exc_info.value)
+    assert schema_secret not in str(exc_info.value)
+    assert not isinstance(exc_info.value, BarStorageValidationError)

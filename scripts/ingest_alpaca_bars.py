@@ -24,7 +24,9 @@ Database initialization and repository storage are also wrapped: a DuckDB
 initialization failure or a ``BarStorageError`` from storage is caught and
 reported as a fixed, sanitized outcome/category and a nonzero exit code --
 never a raw traceback containing SQL, paths, prices, or other internals, and
-never a falsely reported success.
+never a falsely reported success. Storage also has a final defensive
+catch-all for any unexpected non-``BarStorageError`` exception, so a bug in
+the repository can never surface a raw traceback here either.
 
 If ``--start``/``--end`` are omitted, a small, clearly bounded, fully
 completed historical window is used by default: the DEFAULT_LOOKBACK_DAYS
@@ -180,6 +182,14 @@ def main(argv: list[str] | None = None, *, settings: Settings | None = None) -> 
     except BarStorageError:
         print("storage outcome: failed")
         print("error category: storage_error")
+        return 1
+    except Exception:
+        # Defensive catch-all: BarRepository.store_bars is documented to
+        # never raise anything but BarStorageError, but this guards against
+        # an unexpected raw exception -- and any SQL, path, or credential it
+        # might embed -- ever reaching a printed traceback.
+        print("storage outcome: failed")
+        print("error category: unexpected_error")
         return 1
 
     print(f"inserted: {result.inserted}")

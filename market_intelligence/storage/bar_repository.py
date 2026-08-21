@@ -19,8 +19,17 @@ persisted, and the corresponding ``ingestion_runs`` row is separately
 recorded as ``failed`` with a sanitized error category -- never a raw
 exception message, and never prices, timestamps, or credentials. Stored bar
 changes are never left associated with a ``running`` or ``failed`` run. If
-recording the ``failed`` status itself also fails, a sanitized
-``BarStorageError`` is raised.
+rollback itself fails, or recording the ``failed`` status itself also
+fails, a sanitized ``BarStorageError`` is raised without leaking the
+original or rollback exception.
+
+Any failure before a durable ``running`` ``ingestion_runs`` row exists --
+opening the DuckDB connection, reading the current schema version, or
+inserting the initial ``running`` row -- also raises a sanitized
+``BarStorageError`` directly; no raw DuckDB exception, SQL text, database
+path, credential, OHLCV value, or timestamp ever escapes ``store_bars``.
+Connection cleanup can never replace a sanitized error (or a successful
+result) with a raw connection-close exception.
 
 Duplicate ``Bar`` objects within a single incoming batch are handled
 deterministically without any special-cased duplicate-tracking code: every
@@ -297,6 +306,14 @@ class BarRepository:
         returned ``BarStorageResult`` -- unless recording the ``failed``
         status itself also fails, in which case a sanitized
         ``BarStorageError`` is raised.
+
+        Any failure before a durable ``running`` ``ingestion_runs`` row
+        exists -- opening the connection, reading the schema version, or
+        inserting that row -- raises a sanitized ``BarStorageError``
+        directly, since there is no durable run to mark ``failed``. If
+        rolling back the batch transaction itself fails, a sanitized
+        ``BarStorageError`` is likewise raised without attempting to record
+        a ``failed`` status.
         """
         _validate_items(items, provider=provider)
         received = len(items)
@@ -306,15 +323,27 @@ class BarRepository:
         run_id = str(uuid.uuid4())
         started_at = _now_naive_utc()
 
-        connection = duckdb.connect(str(self._manager.database_path))
         try:
-            schema_version = self._current_schema_version(connection)
-            connection.execute(
-                "INSERT INTO ingestion_runs "
-                "(run_id, provider, dataset_name, started_at_utc, status, code_version, "
-                "schema_version) VALUES (?, ?, ?, ?, 'running', ?, ?)",
-                [run_id, provider, dataset_name, started_at, CODE_VERSION, schema_version],
-            )
+            connection = duckdb.connect(str(self._manager.database_path))
+        except Exception:
+            raise BarStorageError(
+                "Failed to open the local database connection before any ingestion run "
+                "could be recorded."
+            ) from None
+
+        try:
+            try:
+                schema_version = self._current_schema_version(connection)
+                connection.execute(
+                    "INSERT INTO ingestion_runs "
+                    "(run_id, provider, dataset_name, started_at_utc, status, code_version, "
+                    "schema_version) VALUES (?, ?, ?, ?, 'running', ?, ?)",
+                    [run_id, provider, dataset_name, started_at, CODE_VERSION, schema_version],
+                )
+            except Exception:
+                raise BarStorageError(
+                    "Failed to record a running ingestion run before any batch write."
+                ) from None
 
             try:
                 connection.execute("BEGIN TRANSACTION")
@@ -334,7 +363,12 @@ class BarRepository:
                 )
                 connection.execute("COMMIT")
             except Exception as exc:
-                connection.execute("ROLLBACK")
+                try:
+                    connection.execute("ROLLBACK")
+                except Exception:
+                    raise BarStorageError(
+                        "Failed to roll back the batch after a storage error."
+                    ) from None
                 error_category = (
                     "content_conflict"
                     if isinstance(exc, BarStorageConflictError)
@@ -361,7 +395,10 @@ class BarRepository:
                     ingestion_run_status="failed",
                 )
         finally:
-            connection.close()
+            try:
+                connection.close()
+            except Exception:
+                pass
 
         return BarStorageResult(
             received=received,
