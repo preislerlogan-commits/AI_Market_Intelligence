@@ -149,6 +149,24 @@ def normalize_limit(limit: Any) -> int:
     return limit
 
 
+def normalize_max_pages(value: Any) -> int:
+    """Normalize and validate the ``max_pages`` pagination bound.
+
+    Raises ``AlpacaBarsInvalidInputError`` unless ``max_pages`` is a plain
+    ``int`` (booleans rejected) within ``[1, MAX_PAGES]``. This enforces
+    ``MAX_PAGES`` as a hard ceiling that no caller can raise, so a single
+    ``get_bars()`` call can never be made to follow more than ``MAX_PAGES``
+    pages. The error message never echoes the raw input.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise AlpacaBarsInvalidInputError("Invalid max_pages: expected an integer.")
+    if not (1 <= value <= MAX_PAGES):
+        raise AlpacaBarsInvalidInputError(
+            f"Invalid max_pages: must be between 1 and {MAX_PAGES}."
+        )
+    return value
+
+
 def normalize_timestamp(value: Any, *, field_name: str) -> str:
     """Normalize and validate a required start/end RFC3339 timestamp.
 
@@ -454,9 +472,7 @@ class AlpacaBarsClient:
             )
 
         normalized_limit = normalize_limit(limit)
-
-        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1:
-            raise AlpacaBarsInvalidInputError("Invalid max_pages: expected a positive integer.")
+        normalized_max_pages = normalize_max_pages(max_pages)
 
         headers = self._auth_headers()
 
@@ -469,7 +485,7 @@ class AlpacaBarsClient:
         page_token: str | None = None
 
         try:
-            for _ in range(max_pages):
+            for _ in range(normalized_max_pages):
                 params = _build_params(
                     normalized_timeframe,
                     normalized_start,
@@ -560,7 +576,13 @@ class AlpacaBarsClient:
         URLs, raw responses, or page tokens. Uses a small, fixed historical
         lookback window and a conservative limit, and makes at most one
         HTTP request (no pagination). Malformed provider bar data is
-        reported as ``status_category="invalid_response"``.
+        reported as ``status_category="invalid_response"``. Bars are
+        deduplicated by timestamp using the same identity rules as
+        ``get_bars()``: exact duplicate bars count once, and duplicate
+        timestamps with conflicting OHLCV/trade_count/vwap are reported as
+        ``status_category="invalid_response"`` rather than success.
+        ``bar_count``/``oldest_bar_timestamp``/``newest_bar_timestamp``
+        reflect the deduplicated set.
         """
         try:
             normalized_symbol = normalize_symbol(symbol)
@@ -672,16 +694,14 @@ class AlpacaBarsClient:
                 )
 
             retrieved_at = datetime.now(UTC).isoformat()
-            bars: list[Bar] = []
+            bars_by_timestamp: dict[str, Bar] = {}
             for raw_bar in raw_bars:
                 try:
-                    bars.append(
-                        _normalize_bar(
-                            raw_bar,
-                            symbol=normalized_symbol,
-                            timeframe=normalized_timeframe,
-                            retrieved_at=retrieved_at,
-                        )
+                    bar = _normalize_bar(
+                        raw_bar,
+                        symbol=normalized_symbol,
+                        timeframe=normalized_timeframe,
+                        retrieved_at=retrieved_at,
                     )
                 except _MalformedBarError:
                     return BarsConnectionStatus(
@@ -695,7 +715,23 @@ class AlpacaBarsClient:
                         newest_bar_timestamp=None,
                     )
 
-            bars.sort(key=lambda bar: bar.timestamp)
+                existing = bars_by_timestamp.get(bar.timestamp)
+                if existing is not None:
+                    if not _bars_match(existing, bar):
+                        return BarsConnectionStatus(
+                            configured=True,
+                            success=False,
+                            status_category="invalid_response",
+                            symbol=normalized_symbol,
+                            timeframe=normalized_timeframe,
+                            bar_count=0,
+                            oldest_bar_timestamp=None,
+                            newest_bar_timestamp=None,
+                        )
+                    continue
+                bars_by_timestamp[bar.timestamp] = bar
+
+            bars = sorted(bars_by_timestamp.values(), key=lambda bar: bar.timestamp)
 
             return BarsConnectionStatus(
                 configured=True,

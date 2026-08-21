@@ -18,11 +18,13 @@ from market_intelligence.config.settings import Settings
 from market_intelligence.data_connectors.alpaca_bars import (
     BARS_BASE_URL,
     MAX_LIMIT,
+    MAX_PAGES,
     AlpacaBarsClient,
     AlpacaBarsCredentialsMissingError,
     AlpacaBarsError,
     AlpacaBarsInvalidInputError,
     normalize_limit,
+    normalize_max_pages,
     normalize_timeframe,
     normalize_timestamp,
 )
@@ -370,7 +372,30 @@ def test_get_bars_invalid_limit_makes_zero_requests(monkeypatch, isolated_env_fi
     assert calls == []
 
 
-@pytest.mark.parametrize("raw", [0, -1, 1.5, True, False, "2"])
+# --- max_pages validation -------------------------------------------------------
+
+INVALID_MAX_PAGES = [0, -1, 1.5, True, False, "2", None, MAX_PAGES + 1, MAX_PAGES + 100]
+
+
+@pytest.mark.parametrize("raw", INVALID_MAX_PAGES)
+def test_normalize_max_pages_rejects_invalid_input(raw):
+    with pytest.raises(AlpacaBarsInvalidInputError):
+        normalize_max_pages(raw)
+
+
+def test_normalize_max_pages_accepts_boundaries():
+    assert normalize_max_pages(1) == 1
+    assert normalize_max_pages(MAX_PAGES) == MAX_PAGES
+
+
+def test_normalize_max_pages_error_never_echoes_input():
+    with pytest.raises(AlpacaBarsInvalidInputError) as exc_info:
+        normalize_max_pages(MAX_PAGES + 12345)
+
+    assert str(MAX_PAGES + 12345) not in str(exc_info.value)
+
+
+@pytest.mark.parametrize("raw", INVALID_MAX_PAGES)
 def test_get_bars_invalid_max_pages_makes_zero_requests(monkeypatch, isolated_env_file, raw):
     calls = []
 
@@ -383,6 +408,17 @@ def test_get_bars_invalid_max_pages_makes_zero_requests(monkeypatch, isolated_en
         get_bars_default(client, http_client, max_pages=raw)
 
     assert calls == []
+
+
+def test_get_bars_accepts_max_pages_equal_to_max_pages_cap(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=bars_payload([sample_bar()], next_page_token=None))
+
+    client = AlpacaBarsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        bars = get_bars_default(client, http_client, max_pages=MAX_PAGES)
+
+    assert len(bars) == 1
 
 
 # --- successful single-page normalization --------------------------------------
@@ -1009,6 +1045,92 @@ def test_check_connection_success(monkeypatch, isolated_env_file):
     assert status.bar_count == 2
     assert status.oldest_bar_timestamp == "2026-08-18T09:30:00Z"
     assert status.newest_bar_timestamp == "2026-08-19T09:30:00Z"
+
+
+def test_check_connection_deduplicates_exact_duplicate_bars(monkeypatch, isolated_env_file):
+    bar = sample_bar(t="2026-08-19T09:30:00Z")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=bars_payload(
+                [bar, dict(bar), sample_bar(t="2026-08-19T09:31:00Z")]
+            ),
+        )
+
+    client = AlpacaBarsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        status = client.check_connection("SPY", client=http_client)
+
+    assert status.success is True
+    assert status.status_category == "2xx"
+    assert status.bar_count == 2
+    assert status.oldest_bar_timestamp == "2026-08-19T09:30:00Z"
+    assert status.newest_bar_timestamp == "2026-08-19T09:31:00Z"
+
+
+def test_check_connection_conflicting_duplicate_timestamp_fails(monkeypatch, isolated_env_file):
+    bars = [
+        sample_bar(t="2026-08-19T09:30:00Z", c=100.5),
+        sample_bar(t="2026-08-19T09:30:00Z", c=200.0),
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=bars_payload(bars))
+
+    client = AlpacaBarsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        status = client.check_connection("SPY", client=http_client)
+
+    assert status.success is False
+    assert status.status_category == "invalid_response"
+    assert status.bar_count == 0
+    assert status.oldest_bar_timestamp is None
+    assert status.newest_bar_timestamp is None
+
+
+def test_check_connection_deduplicated_chronological_order(monkeypatch, isolated_env_file):
+    bars_out_of_order = [
+        sample_bar(t="2026-08-19T09:32:00Z"),
+        sample_bar(t="2026-08-19T09:30:00Z"),
+        dict(sample_bar(t="2026-08-19T09:30:00Z")),
+        sample_bar(t="2026-08-19T09:31:00Z"),
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=bars_payload(bars_out_of_order))
+
+    client = AlpacaBarsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        status = client.check_connection("SPY", client=http_client)
+
+    assert status.success is True
+    assert status.bar_count == 3
+    assert status.oldest_bar_timestamp == "2026-08-19T09:30:00Z"
+    assert status.newest_bar_timestamp == "2026-08-19T09:32:00Z"
+
+
+def test_check_connection_conflicting_duplicate_status_repr_never_leaks_data(
+    monkeypatch, isolated_env_file
+):
+    bars = [
+        sample_bar(t="2026-08-19T09:30:00Z", c=100.5, o=999.25),
+        sample_bar(t="2026-08-19T09:30:00Z", c=200.0, o=999.25),
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=bars_payload(bars))
+
+    client = AlpacaBarsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        status = client.check_connection("SPY", client=http_client)
+
+    status_repr = repr(status)
+    assert FAKE_ALPACA_KEY not in status_repr
+    assert FAKE_ALPACA_SECRET not in status_repr
+    assert "999.25" not in status_repr
+    assert "100.5" not in status_repr
+    assert "200.0" not in status_repr
 
 
 def test_check_connection_empty_bars_is_success(monkeypatch, isolated_env_file):
