@@ -53,8 +53,22 @@ The following tickers are the known initial universe of interest:
   captured, stored, or inspected, so no dataset entry with verified
   Schema/Coverage/Known limitations exists yet. This is a connectivity
   check only and must not be described as a validated data pipeline.
-- **FRED** — planned macroeconomic data provider. Not yet connected; no
-  credentials configured (see `.env.example`).
+- **FRED** — macroeconomic data provider. A read-only connector,
+  `FredMacroDataClient` in
+  `market_intelligence/data_connectors/fred_macro_data.py`, exists and
+  talks only to FRED's official API (`https://api.stlouisfed.org`); it has
+  no methods for anything beyond fetching published series observations.
+  Status: connection-verified (read-only). On 2026-08-20, one live,
+  read-only latest-observation request for the FEDFUNDS series was made
+  via `scripts/check_fred_connection.py` using locally configured `.env`
+  credentials and returned a successful (2xx) response with an observation
+  date. Only sanitized connection-status metadata was recorded (configured,
+  success, status category, series ID, observation date) — the observation
+  value itself was never printed or recorded, and no raw response payload,
+  schema, or bulk/historical series data has been captured, stored, or
+  inspected, so no dataset entry with verified Schema/Coverage/Known
+  limitations exists yet. This is a connectivity check only and must not be
+  described as a validated data pipeline.
 
 ## Required Fields for Every Future Dataset
 
