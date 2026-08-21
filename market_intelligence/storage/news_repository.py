@@ -10,12 +10,17 @@ already been brought up to at least migration ``0004`` (e.g. via
 ``DuckDBManager.initialize()``); this class only writes rows, it never
 applies migrations itself.
 
-Every batch is written inside a single DuckDB transaction: if any item in
-the batch cannot be safely stored (invalid input, or an existing provider
-article whose stable content conflicts with the incoming values), nothing
-in that batch is persisted, and the corresponding ``ingestion_runs`` row is
+Every batch -- and the final ``succeeded`` ``ingestion_runs`` status update
+-- is written inside a single DuckDB transaction: if any item in the batch
+cannot be safely stored (invalid input, or an existing provider article
+whose stable content conflicts with the incoming values), or the final
+``succeeded`` status update itself fails, nothing in that batch is
+persisted, and the corresponding ``ingestion_runs`` row is separately
 recorded as ``failed`` with a sanitized error category -- never a raw
-exception message, and never article text, URLs, or credentials.
+exception message, and never article text, URLs, or credentials. Stored
+article changes are never left associated with a ``running`` or ``failed``
+run. If recording the ``failed`` status itself also fails, a sanitized
+``NewsStorageError`` is raised.
 """
 
 from __future__ import annotations
@@ -29,7 +34,11 @@ from pathlib import Path
 import duckdb
 
 from market_intelligence.config.settings import Settings
-from market_intelligence.data_connectors.alpaca_news import NewsItem
+from market_intelligence.data_connectors.alpaca_news import (
+    AlpacaNewsInvalidInputError,
+    NewsItem,
+    normalize_timestamp,
+)
 from market_intelligence.storage.database import DuckDBManager
 
 CODE_VERSION = "news_repository_v1"
@@ -80,6 +89,30 @@ def _require_non_blank_str(value: object, *, field_name: str) -> None:
         raise NewsStorageValidationError(f"Invalid items: {field_name} must be a non-blank string.")
 
 
+def _require_rfc3339_timestamp(value: object, *, field_name: str, optional: bool) -> None:
+    """Require ``value`` to be a strict RFC3339 timestamp (explicit Z/offset).
+
+    Delegates to ``AlpacaNewsClient``'s own RFC3339 validator so both layers
+    reject naive, date-only, malformed, blank, and non-string timestamps
+    identically. When ``optional`` is True, ``None`` is accepted; otherwise
+    ``None`` is rejected. Never echoes the raw input value.
+    """
+    if value is None:
+        if optional:
+            return
+        raise NewsStorageValidationError(
+            f"Invalid items: {field_name} must be a valid RFC3339 timestamp."
+        )
+    if not isinstance(value, str):
+        raise NewsStorageValidationError(
+            f"Invalid items: {field_name} must be a valid RFC3339 timestamp."
+        )
+    try:
+        normalize_timestamp(value, field_name=field_name)
+    except AlpacaNewsInvalidInputError as exc:
+        raise NewsStorageValidationError(f"Invalid items: {exc}") from None
+
+
 def _validate_items(items: Sequence[NewsItem], *, provider: str) -> None:
     if isinstance(items, (str, bytes)) or not isinstance(items, Sequence):
         raise NewsStorageValidationError("Invalid items: expected a sequence of NewsItem.")
@@ -96,7 +129,9 @@ def _validate_items(items: Sequence[NewsItem], *, provider: str) -> None:
         _require_non_blank_str(item.headline, field_name="headline")
         _require_non_blank_str(item.source, field_name="source")
         _require_non_blank_str(item.url, field_name="url")
-        _require_non_blank_str(item.retrieved_at, field_name="retrieved_at")
+        _require_rfc3339_timestamp(item.created_at, field_name="created_at", optional=True)
+        _require_rfc3339_timestamp(item.updated_at, field_name="updated_at", optional=True)
+        _require_rfc3339_timestamp(item.retrieved_at, field_name="retrieved_at", optional=False)
         if item.summary is not None and not isinstance(item.summary, str):
             raise NewsStorageValidationError("Invalid items: summary must be a string or None.")
         if not isinstance(item.related_symbols, tuple) or not all(
@@ -119,7 +154,15 @@ def _to_naive_utc(value: datetime) -> datetime:
 
 
 def _parse_timestamp(value: str) -> datetime:
-    return _to_naive_utc(datetime.fromisoformat(value.replace("Z", "+00:00")))
+    """Parse an already-validated RFC3339 timestamp into a naive UTC datetime.
+
+    Routes through ``normalize_timestamp`` (rather than a bare
+    ``fromisoformat``) so any explicit-offset form accepted by validation --
+    including a lowercase ``z`` suffix -- is normalized identically before
+    parsing.
+    """
+    normalized = normalize_timestamp(value, field_name="timestamp")
+    return _to_naive_utc(datetime.fromisoformat(normalized.replace("Z", "+00:00")))
 
 
 def _parse_optional_timestamp(value: str | None) -> datetime | None:
@@ -157,16 +200,23 @@ class NewsArticleRepository:
         Validates every item before any database write (raising
         ``NewsStorageValidationError`` and writing nothing if validation
         fails). Otherwise records a ``running`` ``ingestion_runs`` row, then
-        writes the whole batch inside one transaction: an unseen article is
-        inserted; an already-known article with matching stable content
-        (headline, source, url, publication time) has its mutable fields
-        (summary, updated_at, related_symbols) and provenance
-        (retrieved_at, last_seen_at, ingestion_run_id) refreshed; an
-        already-known article whose stable content conflicts aborts the
-        entire batch (nothing in it persists) and the run is recorded as
-        ``failed`` with a sanitized error category. Never raises for a
-        conflict or storage failure -- both are reported truthfully via the
-        returned ``NewsStorageResult``.
+        writes the whole batch -- plus the final ``succeeded``
+        ``ingestion_runs`` status update -- inside one DuckDB transaction:
+        an unseen article is inserted; an already-known article with
+        matching stable content (headline, source, url, publication time)
+        has its mutable fields (summary, updated_at, related_symbols) and
+        provenance (retrieved_at, last_seen_at, ingestion_run_id)
+        refreshed; an already-known article whose stable content conflicts
+        aborts the entire batch. If any article write, or the final
+        ``succeeded`` status update itself, fails, the whole transaction is
+        rolled back (no article changes are left associated with the run)
+        and the run is separately recorded as ``failed`` with a sanitized
+        error category, so stored article changes are never left attached
+        to a ``running`` or ``failed`` run. Never raises for a conflict or
+        storage failure -- both are reported truthfully via the returned
+        ``NewsStorageResult`` -- unless recording the ``failed`` status
+        itself also fails, in which case a sanitized ``NewsStorageError``
+        is raised.
         """
         received = len(items)
         _validate_items(items, provider=provider)
@@ -195,6 +245,13 @@ class NewsArticleRepository:
                         inserted += 1
                     else:
                         updated += 1
+                self._complete_run(
+                    connection,
+                    run_id=run_id,
+                    status="succeeded",
+                    records_received=received,
+                    error_category=None,
+                )
                 connection.execute("COMMIT")
             except Exception as exc:
                 connection.execute("ROLLBACK")
@@ -203,13 +260,18 @@ class NewsArticleRepository:
                     if isinstance(exc, NewsStorageConflictError)
                     else "storage_error"
                 )
-                self._complete_run(
-                    connection,
-                    run_id=run_id,
-                    status="failed",
-                    records_received=received,
-                    error_category=error_category,
-                )
+                try:
+                    self._complete_run(
+                        connection,
+                        run_id=run_id,
+                        status="failed",
+                        records_received=received,
+                        error_category=error_category,
+                    )
+                except Exception:
+                    raise NewsStorageError(
+                        "Failed to record the ingestion run as failed after a storage error."
+                    ) from None
                 return NewsStorageResult(
                     received=received,
                     inserted=0,
@@ -218,14 +280,6 @@ class NewsArticleRepository:
                     ingestion_run_id=run_id,
                     ingestion_run_status="failed",
                 )
-
-            self._complete_run(
-                connection,
-                run_id=run_id,
-                status="succeeded",
-                records_received=received,
-                error_category=None,
-            )
         finally:
             connection.close()
 

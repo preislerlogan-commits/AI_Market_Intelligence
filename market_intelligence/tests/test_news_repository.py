@@ -19,6 +19,7 @@ from market_intelligence.data_connectors.alpaca_news import NewsItem
 from market_intelligence.storage.database import DuckDBManager
 from market_intelligence.storage.news_repository import (
     NewsArticleRepository,
+    NewsStorageError,
     NewsStorageValidationError,
 )
 
@@ -483,3 +484,197 @@ def test_news_repository_module_has_no_network_dependency():
     import market_intelligence.storage.news_repository as module
 
     assert not hasattr(module, "httpx")
+
+
+# --- successful atomic storage ---------------------------------------------------
+
+
+def test_successful_store_is_atomic_with_succeeded_run_status(tmp_path, isolated_env_file):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    result = repository.store_news_items(
+        [news_item(provider_article_id="1"), news_item(provider_article_id="2")],
+        provider="alpaca",
+    )
+
+    assert result.ingestion_run_status == "succeeded"
+    assert result.inserted == 2
+    assert result.failed == 0
+
+    connection = read_only_connection(repository)
+    try:
+        assert count_articles(connection) == 2
+        run = fetch_run(connection, result.ingestion_run_id)
+    finally:
+        connection.close()
+
+    assert run[2] == "succeeded"
+
+
+# --- rollback when the final succeeded-status update fails -----------------------
+
+
+def test_success_status_update_failure_rolls_back_articles_and_marks_run_failed(
+    tmp_path, isolated_env_file, monkeypatch
+):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    original_complete_run = NewsArticleRepository._complete_run
+
+    def fake_complete_run(connection, *, run_id, status, records_received, error_category):
+        if status == "succeeded":
+            raise RuntimeError("simulated failure completing the run as succeeded")
+        original_complete_run(
+            connection,
+            run_id=run_id,
+            status=status,
+            records_received=records_received,
+            error_category=error_category,
+        )
+
+    monkeypatch.setattr(NewsArticleRepository, "_complete_run", staticmethod(fake_complete_run))
+
+    result = repository.store_news_items([news_item()], provider="alpaca")
+
+    assert result.received == 1
+    assert result.inserted == 0
+    assert result.updated == 0
+    assert result.failed == 1
+    assert result.ingestion_run_status == "failed"
+
+    connection = read_only_connection(repository)
+    try:
+        assert count_articles(connection) == 0  # article write rolled back
+        run = fetch_run(connection, result.ingestion_run_id)
+    finally:
+        connection.close()
+
+    assert run[2] == "failed"
+    assert run[4] == "storage_error"
+
+
+# --- failure-status recording itself failing --------------------------------------
+
+
+def test_failed_status_recording_failure_raises_sanitized_error(
+    tmp_path, isolated_env_file, monkeypatch
+):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+
+    def always_fail_complete_run(connection, *, run_id, status, records_received, error_category):
+        raise RuntimeError("simulated failure with SECRET-INTERNAL-DETAIL")
+
+    monkeypatch.setattr(
+        NewsArticleRepository, "_complete_run", staticmethod(always_fail_complete_run)
+    )
+
+    with pytest.raises(NewsStorageError) as exc_info:
+        repository.store_news_items([news_item()], provider="alpaca")
+
+    assert "SECRET-INTERNAL-DETAIL" not in str(exc_info.value)
+    assert not isinstance(exc_info.value, NewsStorageValidationError)
+
+    connection = read_only_connection(repository)
+    try:
+        assert count_articles(connection) == 0  # article write rolled back
+        statuses = [
+            row[0] for row in connection.execute("SELECT status FROM ingestion_runs").fetchall()
+        ]
+    finally:
+        connection.close()
+
+    assert statuses == ["running"]  # neither status update ever committed
+
+
+# --- valid UTC / offset timestamps normalize correctly ----------------------------
+
+
+def test_valid_offset_and_lowercase_z_timestamps_normalized_to_utc(tmp_path, isolated_env_file):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    repository.store_news_items(
+        [
+            news_item(
+                created_at="2026-08-20T08:00:00-04:00",
+                updated_at="2026-08-20T12:05:00+00:00",
+                retrieved_at="2026-08-20t12:10:00z",
+            )
+        ],
+        provider="alpaca",
+    )
+
+    connection = read_only_connection(repository)
+    try:
+        row = fetch_article(connection, "alpaca", "1")
+    finally:
+        connection.close()
+
+    assert row[6].isoformat().startswith("2026-08-20T12:00:00")  # created_at -> UTC
+    assert row[7].isoformat().startswith("2026-08-20T12:05:00")  # updated_at -> UTC
+    assert row[9].isoformat().startswith("2026-08-20T12:10:00")  # retrieved_at -> UTC
+
+
+# --- rejection of ambiguous timestamps ---------------------------------------------
+
+
+_AMBIGUOUS_TIMESTAMPS = [
+    pytest.param("2026-08-20T12:00:00", id="naive"),
+    pytest.param("2026-08-20", id="date-only"),
+    pytest.param("not-a-timestamp", id="malformed"),
+    pytest.param("   ", id="blank"),
+    pytest.param(12345, id="non-string"),
+]
+
+
+@pytest.mark.parametrize("field_name", ["created_at", "updated_at", "retrieved_at"])
+@pytest.mark.parametrize("bad_value", _AMBIGUOUS_TIMESTAMPS)
+def test_ambiguous_timestamps_rejected(tmp_path, isolated_env_file, field_name, bad_value):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    with pytest.raises(NewsStorageValidationError):
+        repository.store_news_items([news_item(**{field_name: bad_value})], provider="alpaca")
+
+
+def test_retrieved_at_none_rejected(tmp_path, isolated_env_file):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    with pytest.raises(NewsStorageValidationError):
+        repository.store_news_items([news_item(retrieved_at=None)], provider="alpaca")
+
+
+def test_created_at_and_updated_at_none_accepted(tmp_path, isolated_env_file):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    result = repository.store_news_items(
+        [news_item(created_at=None, updated_at=None)], provider="alpaca"
+    )
+
+    assert result.ingestion_run_status == "succeeded"
+
+
+# --- zero writes/runs after a timestamp validation failure -------------------------
+
+
+def test_zero_writes_after_timestamp_validation_failure(tmp_path, isolated_env_file):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    with pytest.raises(NewsStorageValidationError):
+        repository.store_news_items(
+            [news_item(created_at="2026-08-20T12:00:00")],  # naive, no offset
+            provider="alpaca",
+        )
+
+    connection = read_only_connection(repository)
+    try:
+        assert count_articles(connection) == 0
+        assert connection.execute("SELECT count(*) FROM ingestion_runs").fetchone()[0] == 0
+    finally:
+        connection.close()
+
+
+# --- sanitized timestamp validation errors ------------------------------------------
+
+
+def test_timestamp_validation_error_never_echoes_raw_value(tmp_path, isolated_env_file):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    secret_marker = "SECRET-TIMESTAMP-VALUE"
+    with pytest.raises(NewsStorageValidationError) as exc_info:
+        repository.store_news_items(
+            [news_item(retrieved_at=f"not-a-timestamp-{secret_marker}")],
+            provider="alpaca",
+        )
+
+    assert secret_marker not in str(exc_info.value)

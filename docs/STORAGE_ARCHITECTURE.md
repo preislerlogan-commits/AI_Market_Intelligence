@@ -58,20 +58,30 @@ is the only code that writes to this table. It accepts already-normalized
 `market_intelligence/data_connectors/alpaca_news.py`) — it makes no network
 requests itself and does not apply migrations; the database must already be
 initialized to at least migration `0004`. Every call to
-`store_news_items()` validates its input before any write, records a
-`running` `ingestion_runs` row, and then writes the entire batch inside one
-DuckDB transaction: an unseen article is inserted; an already-known article
-whose stable identity fields (headline, source, URL, publication time)
-still match has its mutable fields (summary, `updated_at`,
-`related_symbols`) and provenance (`retrieved_at`, `last_seen_at`,
-`ingestion_run_id`) refreshed; an already-known article whose stable fields
-*conflict* with the incoming value aborts the entire batch — nothing in
-that batch persists — and the `ingestion_runs` row is recorded as `failed`
-with a sanitized `error_category` (`content_conflict` or `storage_error`),
-never a raw exception message or article content. The returned
-`NewsStorageResult` reports only sanitized counts (`received`, `inserted`,
-`updated`, `failed`) and the ingestion-run id/status — never article text,
-URLs, database internals, or credentials.
+`store_news_items()` first requires `created_at`, `updated_at`, and
+`retrieved_at` on every item to be valid RFC3339 timestamps (explicit `Z`
+or numeric offset; `created_at`/`updated_at` may be `None`) before any
+database write, rejecting naive, date-only, malformed, blank, or
+non-string timestamps with a sanitized `NewsStorageValidationError` and
+normalizing valid timestamps to UTC. It then records a `running`
+`ingestion_runs` row, and writes the entire batch *plus* the final
+`succeeded` `ingestion_runs` status update inside one DuckDB transaction:
+an unseen article is inserted; an already-known article whose stable
+identity fields (headline, source, URL, publication time) still match has
+its mutable fields (summary, `updated_at`, `related_symbols`) and
+provenance (`retrieved_at`, `last_seen_at`, `ingestion_run_id`) refreshed;
+an already-known article whose stable fields *conflict* with the incoming
+value, or a failure while recording the final `succeeded` status itself,
+aborts the entire batch — nothing in that batch persists, and no article
+changes are left associated with a `running` or `failed` run — and the
+`ingestion_runs` row is separately recorded as `failed` with a sanitized
+`error_category` (`content_conflict` or `storage_error`), never a raw
+exception message or article content. If recording that `failed` status
+itself also fails, a sanitized `NewsStorageError` is raised instead of
+returning a result. The returned `NewsStorageResult` reports only
+sanitized counts (`received`, `inserted`, `updated`, `failed`) and the
+ingestion-run id/status — never article text, URLs, database internals, or
+credentials.
 
 `scripts/ingest_alpaca_news.py` is the one manual ingestion entry point: it
 makes at most one explicit, read-only `AlpacaNewsClient.get_news()` request
