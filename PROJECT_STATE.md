@@ -19,8 +19,12 @@ Status below). Read-only Alpaca news provider connectivity has also been
 verified (a single read-only SPY-news request — see Status below).
 Connectivity is not the same as a validated data pipeline: no historical
 or live dataset has been stored, cataloged, or validated yet. A local
-DuckDB storage foundation now exists (infrastructure metadata only — see
-Status below), but no forecasting or trading logic exists yet.
+DuckDB storage foundation exists (infrastructure metadata only), and a
+first persistent news-storage table/schema (`news_articles`, migration
+`0004`) plus a news storage service and manual ingestion script now exist
+(schema/storage capability only — see Status below; no live news ingestion
+has been run and no persistent news dataset is validated yet). No
+forecasting or trading logic exists yet.
 
 ## Status
 
@@ -134,9 +138,38 @@ Status below), but no forecasting or trading logic exists yet.
   applied), and on the same day was upgraded to schema version `0003` (1
   additional migration applied, 3 total) after migration `0003` was added;
   the health check reported healthy at `0003`. See
-  [docs/STORAGE_ARCHITECTURE.md](docs/STORAGE_ARCHITECTURE.md). No market
-  bar, macro observation, news, forecast, or trade tables exist yet —
-  those require separate, reviewed data contracts.
+  [docs/STORAGE_ARCHITECTURE.md](docs/STORAGE_ARCHITECTURE.md).
+- A first persistent news-storage table, `news_articles`, has been added
+  via migration `0004`
+  (`market_intelligence/storage/migrations/0004_create_news_articles.sql`),
+  along with a storage service
+  (`market_intelligence/storage/news_repository.py`,
+  `NewsArticleRepository`) that accepts already-normalized `NewsItem`
+  objects from `AlpacaNewsClient` and writes them transactionally, and a
+  manual ingestion script (`scripts/ingest_alpaca_news.py`). The table
+  stores only provider-reported article metadata plus provenance
+  (`provider`, `provider_article_id`, `headline`, `source`, `article_url`,
+  `summary`, `created_at`/`updated_at` as reported by the provider,
+  `related_symbols` stored sorted/deduplicated for determinism,
+  `retrieved_at`, `first_ingested_at`, `last_seen_at`,
+  `ingestion_run_id`) — no sentiment, impact, direction, confidence, model
+  output, recommendation, or option-contract field exists. Idempotency is
+  enforced via a `(provider, provider_article_id)` primary key; an
+  already-known article with matching stable content (headline, source,
+  URL, publication time) has its mutable fields and provenance refreshed,
+  while an already-known article whose stable content conflicts aborts the
+  entire batch (nothing partially persists) and the corresponding
+  `ingestion_runs` row is recorded `failed` with a sanitized error
+  category. See [docs/STORAGE_ARCHITECTURE.md](docs/STORAGE_ARCHITECTURE.md)
+  for full detail. **This is a schema/storage capability only.**
+  `scripts/ingest_alpaca_news.py` has deliberately not been run live as
+  part of adding this layer, so the real local database file is still at
+  schema version `0003` (not yet upgraded to `0004`), and no persistent
+  news dataset has been stored, cataloged, or validated — see
+  `DATA_CATALOG.md`. Live ingestion requires separate, explicit
+  authorization.
+- No market-bar or macro-observation table exists yet — those require
+  separate, reviewed data contracts.
 - No trading execution connected. No brokerage integration exists or is
   planned; Robinhood is used manually, outside this system.
 - No validated predictive model. No forecasting, scoring, or evaluation
@@ -164,8 +197,16 @@ Status below), but no forecasting or trading logic exists yet.
    connectivity check), recorded in `DATA_CATALOG.md`/`PROJECT_STATE.md`.
 4. Database initialization — done (see above): the local DuckDB storage
    foundation (infrastructure-metadata schema only) is initialized under
-   `data/`.
-5. Reviewed data contracts for actual provider data — design and add
+   `data/` at schema version `0003`; migration `0004` (`news_articles`)
+   exists in this repository's migration code and is covered by tests
+   against temporary databases, but has not yet been applied to the real
+   local database file.
+5. News storage — done (see above): `news_articles` schema, storage
+   service, and a manual ingestion script exist, but no live ingestion has
+   been run and no persistent news dataset is validated yet. Running
+   `scripts/ingest_alpaca_news.py` live (which will also upgrade the real
+   database to schema `0004`) requires separate, explicit authorization.
+6. Reviewed data contracts for actual provider data — design and add
    versioned migrations for market-bar and macro-observation tables (and
    the ingestion code that writes to `ingestion_runs`), each as its own
    reviewed change, before any provider data is stored.

@@ -99,23 +99,44 @@ The following tickers are the known initial universe of interest:
 
 A local DuckDB storage foundation exists at `data/market_intelligence.duckdb`
 (`market_intelligence/storage/`, documented in
-[docs/STORAGE_ARCHITECTURE.md](docs/STORAGE_ARCHITECTURE.md)), currently at
-schema version `0003`. Its schema currently defines only two
-infrastructure-metadata tables:
+[docs/STORAGE_ARCHITECTURE.md](docs/STORAGE_ARCHITECTURE.md)). Migration
+`0004` (a `news_articles` table, plus `market_intelligence/storage/news_repository.py`
+and `scripts/ingest_alpaca_news.py`) has been added to this repository's
+migration/storage code and is covered by tests using temporary DuckDB
+files, but has **not** been applied to the real local database file — as of
+this entry the real database is still at schema version `0003`, since
+`scripts/initialize_database.py` has not been re-run against it. Its
+schema defines four tables:
 
 - `schema_migrations` — tracks which versioned migrations have been
   applied.
 - `ingestion_runs` — records ingestion-run metadata (provider, dataset
   name, start/completion timestamps, status, records received, a
   sanitized error category, `code_version`, and — since migration `0003`
-  — a separate `schema_version`). No ingestion code writes to this table
-  yet.
+  — a separate `schema_version`).
+- `news_articles` (migration `0004`) — stores normalized news-article
+  metadata (provider, provider article ID, headline, source, URL, summary,
+  publication/update timestamps, related symbols, retrieval/ingestion
+  provenance timestamps, and the writing ingestion run's ID) with
+  `(provider, provider_article_id)` idempotency. No sentiment, impact,
+  direction, confidence, model output, recommendation, or option-contract
+  field exists on this table. See
+  [docs/STORAGE_ARCHITECTURE.md](docs/STORAGE_ARCHITECTURE.md) for full
+  column/behavior detail.
 
-No provider dataset has been ingested or stored in this database, and no
-forecast or trade data exists here. No market-bar, macro-observation,
-news, forecast, or trade table has been created — each requires its own
-reviewed data contract and a corresponding versioned migration before it
-is added.
+**This is a schema/storage-capability change, not a validated dataset.**
+No live news ingestion has been run and no persistent news dataset exists
+yet — `scripts/ingest_alpaca_news.py` performs at most one explicit,
+read-only, strictly-validated request and has been deliberately not run
+live as part of adding this storage layer; that requires separate,
+explicit authorization. Once an authorized live ingestion succeeds, this
+entry must be updated with a real dataset record (Source, Status,
+Provenance, Schema, Coverage, Known limitations) per the "Required Fields"
+section below — it must not be described as validated before that.
+
+No market-bar, macro-observation, forecast, or trade table has been
+created — each requires its own reviewed data contract and a
+corresponding versioned migration before it is added.
 
 ## Required Fields for Every Future Dataset
 
