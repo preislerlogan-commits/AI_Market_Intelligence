@@ -15,10 +15,12 @@ configuration are in place. Read-only Alpaca market-data provider
 connectivity has been verified (a single read-only snapshot request — see
 Status below). Read-only FRED macroeconomic-data provider connectivity has
 also been verified (a single read-only latest-observation request — see
-Status below). Connectivity is not the same as a validated data pipeline:
-no historical or live dataset has been stored, cataloged, or validated
-yet. A local DuckDB storage foundation now exists (infrastructure metadata
-only — see Status below), but no forecasting or trading logic exists yet.
+Status below). Read-only Alpaca news provider connectivity has also been
+verified (a single read-only SPY-news request — see Status below).
+Connectivity is not the same as a validated data pipeline: no historical
+or live dataset has been stored, cataloged, or validated yet. A local
+DuckDB storage foundation now exists (infrastructure metadata only — see
+Status below), but no forecasting or trading logic exists yet.
 
 ## Status
 
@@ -76,6 +78,35 @@ only — see Status below), but no forecasting or trading logic exists yet.
   observation date returned). This confirms connectivity only; it is not
   the same as a validated data pipeline. No historical or live dataset has
   been stored, cataloged, or validated yet — see `DATA_CATALOG.md`.
+- A read-only Alpaca news connector
+  (`market_intelligence/data_connectors/alpaca_news.py`,
+  `AlpacaNewsClient`) has been added, covering only Alpaca's read-only
+  data host (`https://data.alpaca.markets`) and only its news endpoint
+  (`/v1beta1/news`) — no order, account, or execution functionality, and
+  it does not write to DuckDB. It validates that Alpaca credentials are
+  configured before requesting, uses explicit timeouts, and returns only
+  sanitized results (never headers, keys, secrets, or the complete raw
+  response). Symbols, result limits, sort direction, and optional
+  start/end timestamps are all strictly normalized/validated before any
+  request is built, so invalid or malicious input never reaches the
+  network; malformed or non-object JSON responses, and individual articles
+  missing required fields, are rejected/skipped with a sanitized
+  error/status rather than surfaced raw, and duplicate articles (by
+  provider article ID) within a single response are deduplicated. The
+  normalized news-item model contains only provider-reported metadata
+  (provider article ID, headline, source, URL, summary when available,
+  publication/update timestamps when available, related symbols, a UTC
+  retrieval timestamp kept distinct from publication time, and provider
+  name) — no sentiment, impact, or direction is inferred. A companion
+  script, `scripts/check_alpaca_news.py`, reports a sanitized connection
+  status (configured, success, status category, requested symbol, article
+  count, newest publication timestamp) and never prints headlines, URLs,
+  summaries, or raw payloads. On 2026-08-20 one live, read-only SPY-news
+  connection check was run using local `.env` credentials and succeeded
+  (2xx, 10 articles, newest publication timestamp returned). This confirms
+  connectivity only; it is not the same as a validated data pipeline. No
+  news data has been stored, cataloged, or validated yet — see
+  `DATA_CATALOG.md`.
 - A local DuckDB storage foundation has been initialized
   (`market_intelligence/storage/`, `DuckDBManager` in
   `market_intelligence/storage/database.py`). It provides only a
@@ -121,15 +152,16 @@ only — see Status below), but no forecasting or trading logic exists yet.
 
 ## Next Planned Work
 
-1. Data connector design — read-only Alpaca and FRED connectors now exist
-   (see above). Verified schema/provenance details belong in
-   `DATA_CATALOG.md` once bulk data is actually pulled and inspected, not
-   just a connectivity check.
+1. Data connector design — read-only Alpaca market-data, Alpaca news, and
+   FRED connectors now exist (see above). Verified schema/provenance
+   details belong in `DATA_CATALOG.md` once bulk data is actually pulled
+   and inspected, not just a connectivity check.
 2. Provider configuration — Alpaca and FRED credential handling (via
    `.env`, never committed) is in place.
-3. First connection tests — done for both Alpaca (read-only snapshot
-   connectivity check) and FRED (read-only latest-observation connectivity
-   check), recorded in `DATA_CATALOG.md`/`PROJECT_STATE.md`.
+3. First connection tests — done for Alpaca market data (read-only
+   snapshot connectivity check), Alpaca news (read-only SPY-news
+   connectivity check), and FRED (read-only latest-observation
+   connectivity check), recorded in `DATA_CATALOG.md`/`PROJECT_STATE.md`.
 4. Database initialization — done (see above): the local DuckDB storage
    foundation (infrastructure-metadata schema only) is initialized under
    `data/`.

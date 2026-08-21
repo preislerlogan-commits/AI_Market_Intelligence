@@ -69,6 +69,31 @@ The following tickers are the known initial universe of interest:
   inspected, so no dataset entry with verified Schema/Coverage/Known
   limitations exists yet. This is a connectivity check only and must not be
   described as a validated data pipeline.
+- **Alpaca News** — news provider. A read-only connector,
+  `AlpacaNewsClient` in `market_intelligence/data_connectors/alpaca_news.py`,
+  exists and talks only to Alpaca's read-only data host
+  (`https://data.alpaca.markets`), and only to its news endpoint
+  (`/v1beta1/news`); it has no methods for orders, accounts, or execution,
+  and does not write to DuckDB. All symbols, result limits, sort
+  direction, and optional start/end timestamps are strictly
+  validated/normalized before any request is built, so malformed or
+  malicious input never reaches the network. Normalized news items contain
+  only provider-reported metadata (provider article ID, headline, source,
+  URL, summary when available, publication/update timestamps when
+  available, related symbols, retrieval timestamp in UTC, provider name) —
+  no sentiment, impact, or direction is inferred. Status:
+  connection-verified (read-only). On 2026-08-20, one live, read-only
+  single-symbol (SPY) news request was made via
+  `scripts/check_alpaca_news.py` using locally configured `.env`
+  credentials and returned a successful (2xx) response with 10 articles
+  and a newest publication timestamp. Only sanitized connection-status
+  metadata was recorded (configured, success, status category, requested
+  symbol, article count, newest publication timestamp) — no headline, URL,
+  summary, or raw response payload was printed or recorded, and no
+  historical/bulk news data has been captured, stored, or inspected, so no
+  dataset entry with verified Schema/Coverage/Known limitations exists
+  yet. This is a connectivity check only and must not be described as a
+  validated data pipeline.
 
 ## Local Storage
 
