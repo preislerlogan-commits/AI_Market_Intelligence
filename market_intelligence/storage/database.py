@@ -14,6 +14,15 @@ ordered (applied by ascending zero-padded version prefix), checksum-verified
 rejected rather than silently re-applied or ignored), and idempotent
 (re-running ``initialize()`` against an up-to-date database applies zero
 migrations and does not error).
+
+Both ``initialize()`` and the read-only ``check_health()`` verify that a
+database's recorded migration history can actually be reproduced from the
+current migration directory: every applied version must have a
+corresponding migration file, applied versions must form a contiguous,
+correctly ordered prefix of the available migrations (no gaps, no
+out-of-sequence history), and stored checksums must match current file
+content. A database whose history cannot be reproduced is never treated as
+current or healthy.
 """
 
 from __future__ import annotations
@@ -31,6 +40,23 @@ from market_intelligence.config.settings import Settings
 DATABASE_FILENAME = "market_intelligence.duckdb"
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 REQUIRED_TABLES = ("schema_migrations", "ingestion_runs")
+REQUIRED_COLUMNS: dict[str, frozenset[str]] = {
+    "schema_migrations": frozenset({"version", "filename", "checksum", "applied_at_utc"}),
+    "ingestion_runs": frozenset(
+        {
+            "run_id",
+            "provider",
+            "dataset_name",
+            "started_at_utc",
+            "completed_at_utc",
+            "status",
+            "records_received",
+            "error_category",
+            "code_version",
+            "schema_version",
+        }
+    ),
+}
 
 _MIGRATION_FILENAME_PATTERN = re.compile(r"^(?P<version>\d{4})_[a-z0-9_]+\.sql$")
 
@@ -76,14 +102,39 @@ class InitializationResult:
 
 @dataclass(frozen=True)
 class HealthCheckResult:
-    """Sanitized result of a read-only database health check."""
+    """Sanitized result of a read-only database health check.
+
+    Every field is a boolean or plain status value — never raw exception
+    text or file content — so this result is always safe to print or log.
+    """
 
     database_path: Path
     database_exists: bool
     schema_version: str | None
     applied_migration_count: int | None
     required_tables_present: bool
+    required_columns_present: bool
+    migration_history_valid: bool
+    checksums_valid: bool
+    is_current: bool
     healthy: bool
+
+
+@dataclass(frozen=True)
+class _MigrationIntegrityReport:
+    """Whether a database's applied migration history matches the migration directory."""
+
+    missing_migration_files: tuple[str, ...]
+    checksum_mismatches: tuple[str, ...]
+    sequence_contiguous: bool
+
+    @property
+    def history_valid(self) -> bool:
+        return not self.missing_migration_files and self.sequence_contiguous
+
+    @property
+    def checksums_valid(self) -> bool:
+        return not self.checksum_mismatches
 
 
 def default_database_path(settings: Settings) -> Path:
@@ -130,6 +181,61 @@ def _load_migrations(migrations_dir: Path) -> list[Migration]:
     return migrations
 
 
+def _diff_migration_history(
+    migrations: list[Migration], applied: dict[str, str]
+) -> _MigrationIntegrityReport:
+    """Compare a database's applied migration history against available migration files.
+
+    ``applied`` maps applied version -> stored checksum, as read from
+    ``schema_migrations``. Detects three distinct failure modes: an applied
+    version with no corresponding migration file, an applied version whose
+    stored checksum no longer matches the current file content, and an
+    applied-version sequence that is not a contiguous, correctly ordered
+    prefix of the available migrations (a gap or out-of-order history).
+    """
+    migration_versions = [migration.version for migration in migrations]
+    migration_by_version = {migration.version: migration for migration in migrations}
+
+    missing_migration_files = tuple(sorted(set(applied) - set(migration_versions)))
+    checksum_mismatches = tuple(
+        sorted(
+            version
+            for version, checksum in applied.items()
+            if version in migration_by_version
+            and migration_by_version[version].checksum != checksum
+        )
+    )
+
+    applied_sorted = sorted(applied)
+    expected_prefix = migration_versions[: len(applied_sorted)]
+    sequence_contiguous = not missing_migration_files and applied_sorted == expected_prefix
+
+    return _MigrationIntegrityReport(
+        missing_migration_files=missing_migration_files,
+        checksum_mismatches=checksum_mismatches,
+        sequence_contiguous=sequence_contiguous,
+    )
+
+
+def _required_columns_present(
+    connection: duckdb.DuckDBPyConnection, existing_tables: set[str]
+) -> bool:
+    """Return True only if every required table exists and has every required column."""
+    if not set(REQUIRED_TABLES).issubset(existing_tables):
+        return False
+    for table, required in REQUIRED_COLUMNS.items():
+        columns = {
+            row[0]
+            for row in connection.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = ?",
+                [table],
+            ).fetchall()
+        }
+        if not required.issubset(columns):
+            return False
+    return True
+
+
 class DuckDBManager:
     """Manages the local DuckDB file: path safety, migrations, and health checks."""
 
@@ -173,15 +279,30 @@ class DuckDBManager:
         connection = duckdb.connect(str(self._database_path))
         try:
             applied = self._read_applied_versions(connection)
+            report = _diff_migration_history(migrations, applied)
+            if report.missing_migration_files:
+                raise MigrationError(
+                    "Applied migration version(s) have no corresponding migration "
+                    "file: " + ", ".join(report.missing_migration_files)
+                )
+            if not report.sequence_contiguous:
+                raise MigrationError(
+                    "Applied migration history is not a contiguous, correctly "
+                    "ordered prefix of the available migrations; the version "
+                    "sequence is malformed."
+                )
+            if report.checksum_mismatches:
+                version = report.checksum_mismatches[0]
+                filename = next(m.filename for m in migrations if m.version == version)
+                raise MigrationError(
+                    f"Checksum mismatch for already-applied migration "
+                    f"'{filename}': its file content has changed "
+                    "since it was applied."
+                )
+
             applied_count = 0
             for migration in migrations:
                 if migration.version in applied:
-                    if applied[migration.version] != migration.checksum:
-                        raise MigrationError(
-                            f"Checksum mismatch for already-applied migration "
-                            f"'{migration.filename}': its file content has changed "
-                            "since it was applied."
-                        )
                     continue
                 self._apply_migration(connection, migration)
                 applied_count += 1
@@ -196,10 +317,16 @@ class DuckDBManager:
         )
 
     def check_health(self) -> HealthCheckResult:
-        """Perform a read-only health check. Never writes to the database.
+        """Perform a read-only health check. Never runs or applies migrations.
 
         If the database file does not exist, returns an unhealthy result
-        without creating it.
+        without creating it. Verifies required tables and columns are
+        present, that the database's applied migration history can be
+        reproduced from the current migration directory (no missing files,
+        no checksum mismatches, no gaps or out-of-order versions), and that
+        the database is at the latest available migration. ``healthy`` is
+        false if any of these checks fail. Every field returned is a
+        sanitized boolean or plain status value.
         """
         if not self._database_path.exists():
             return HealthCheckResult(
@@ -208,8 +335,17 @@ class DuckDBManager:
                 schema_version=None,
                 applied_migration_count=None,
                 required_tables_present=False,
+                required_columns_present=False,
+                migration_history_valid=False,
+                checksums_valid=False,
+                is_current=False,
                 healthy=False,
             )
+
+        try:
+            migrations: list[Migration] | None = _load_migrations(self._migrations_dir)
+        except MigrationError:
+            migrations = None
 
         connection = duckdb.connect(str(self._database_path), read_only=True)
         try:
@@ -220,20 +356,40 @@ class DuckDBManager:
                 ).fetchall()
             }
             required_tables_present = set(REQUIRED_TABLES).issubset(existing_tables)
+            required_columns_present = _required_columns_present(connection, existing_tables)
 
             schema_version: str | None = None
             applied_migration_count: int | None = None
+            migration_history_valid = False
+            checksums_valid = False
+            is_current = False
+
             if "schema_migrations" in existing_tables:
-                versions = [
-                    row[0]
-                    for row in connection.execute(
-                        "SELECT version FROM schema_migrations ORDER BY version"
-                    ).fetchall()
-                ]
-                applied_migration_count = len(versions)
-                schema_version = versions[-1] if versions else None
+                applied = self._read_applied_versions(connection)
+                applied_migration_count = len(applied)
+                versions_sorted = sorted(applied)
+                schema_version = versions_sorted[-1] if versions_sorted else None
+
+                if migrations is not None:
+                    report = _diff_migration_history(migrations, applied)
+                    migration_history_valid = report.history_valid
+                    checksums_valid = report.checksums_valid
+                    latest_available = migrations[-1].version if migrations else None
+                    is_current = (
+                        report.history_valid
+                        and report.checksums_valid
+                        and schema_version == latest_available
+                    )
         finally:
             connection.close()
+
+        healthy = (
+            required_tables_present
+            and required_columns_present
+            and migration_history_valid
+            and checksums_valid
+            and is_current
+        )
 
         return HealthCheckResult(
             database_path=self._database_path,
@@ -241,7 +397,11 @@ class DuckDBManager:
             schema_version=schema_version,
             applied_migration_count=applied_migration_count,
             required_tables_present=required_tables_present,
-            healthy=required_tables_present,
+            required_columns_present=required_columns_present,
+            migration_history_valid=migration_history_valid,
+            checksums_valid=checksums_valid,
+            is_current=is_current,
+            healthy=healthy,
         )
 
     @staticmethod

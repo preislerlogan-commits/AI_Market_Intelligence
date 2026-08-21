@@ -84,17 +84,25 @@ only — see Status below), but no forecasting or trading logic exists yet.
   no forecasting/trading tables exist. The schema currently defines only
   two infrastructure-metadata tables: `schema_migrations` (tracks applied
   migrations and their checksums) and `ingestion_runs` (records
-  provider/dataset/timing/status/record-count/sanitized-error-category
-  metadata for future ingestion runs — the table exists but nothing has
-  written to it yet, since no ingestion code exists). The database file
+  provider/dataset/timing/status/record-count/sanitized-error-category/
+  code-version/schema-version metadata for future ingestion runs — the
+  table exists but nothing has written to it yet, since no ingestion code
+  exists). Migration `0003` added a separate `schema_version` column to
+  `ingestion_runs`, distinct from `code_version`. The database file
   defaults to `data/market_intelligence.duckdb` (inside this repository's
   own `data/` directory, per `Settings.project_data_path`) and is excluded
   from version control via `.gitignore`. `scripts/initialize_database.py`
   applies pending migrations and prints only the database path, schema
   version, and applied migration count; `scripts/check_database.py`
-  performs a read-only health check. On 2026-08-20 the local database was
-  initialized once (schema version `0002`, 2 migrations applied) and the
-  health check reported healthy. See
+  performs a read-only health check that also verifies required columns,
+  that the applied migration history matches the migration directory (no
+  missing files, no checksum mismatches, no gaps/out-of-order versions),
+  and that the database is at the latest available migration —
+  `healthy` is false if any of these fail. On 2026-08-20 the local
+  database was first initialized (schema version `0002`, 2 migrations
+  applied), and on the same day was upgraded to schema version `0003` (1
+  additional migration applied, 3 total) after migration `0003` was added;
+  the health check reported healthy at `0003`. See
   [docs/STORAGE_ARCHITECTURE.md](docs/STORAGE_ARCHITECTURE.md). No market
   bar, macro observation, news, forecast, or trade tables exist yet —
   those require separate, reviewed data contracts.

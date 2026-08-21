@@ -74,15 +74,17 @@ The following tickers are the known initial universe of interest:
 
 A local DuckDB storage foundation exists at `data/market_intelligence.duckdb`
 (`market_intelligence/storage/`, documented in
-[docs/STORAGE_ARCHITECTURE.md](docs/STORAGE_ARCHITECTURE.md)). Its schema
-currently defines only two infrastructure-metadata tables:
+[docs/STORAGE_ARCHITECTURE.md](docs/STORAGE_ARCHITECTURE.md)), currently at
+schema version `0003`. Its schema currently defines only two
+infrastructure-metadata tables:
 
 - `schema_migrations` — tracks which versioned migrations have been
   applied.
 - `ingestion_runs` — records ingestion-run metadata (provider, dataset
   name, start/completion timestamps, status, records received, a
-  sanitized error category, and code/schema version). No ingestion code
-  writes to this table yet.
+  sanitized error category, `code_version`, and — since migration `0003`
+  — a separate `schema_version`). No ingestion code writes to this table
+  yet.
 
 No provider dataset has been ingested or stored in this database, and no
 forecast or trade data exists here. No market-bar, macro-observation,
