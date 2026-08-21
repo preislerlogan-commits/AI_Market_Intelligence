@@ -17,6 +17,7 @@ import pytest
 from market_intelligence.config.settings import Settings
 from market_intelligence.data_connectors.alpaca_bars import (
     BARS_BASE_URL,
+    DATA_FEED,
     MAX_LIMIT,
     MAX_PAGES,
     AlpacaBarsClient,
@@ -440,6 +441,7 @@ def test_get_bars_returns_normalized_bar_on_success(monkeypatch, isolated_env_fi
     assert bar.provider == "alpaca"
     assert bar.symbol == "SPY"
     assert bar.timeframe == "1Day"
+    assert bar.feed == DATA_FEED
     assert bar.timestamp == "2026-08-19T09:30:00Z"
     assert bar.open == Decimal("100.0")
     assert bar.high == Decimal("101.0")
@@ -998,6 +1000,7 @@ def test_check_connection_not_configured(isolated_env_file):
     assert status.status_category == "not_configured"
     assert status.symbol == "SPY"
     assert status.timeframe == "5Min"
+    assert status.feed == DATA_FEED
     assert status.bar_count == 0
     assert status.oldest_bar_timestamp is None
     assert status.newest_bar_timestamp is None
@@ -1042,6 +1045,7 @@ def test_check_connection_success(monkeypatch, isolated_env_file):
     assert status.status_category == "2xx"
     assert status.symbol == "SPY"
     assert status.timeframe == "5Min"
+    assert status.feed == DATA_FEED
     assert status.bar_count == 2
     assert status.oldest_bar_timestamp == "2026-08-18T09:30:00Z"
     assert status.newest_bar_timestamp == "2026-08-19T09:30:00Z"
@@ -1223,3 +1227,227 @@ def test_check_connection_status_repr_never_leaks_secrets(monkeypatch, isolated_
     status_repr = repr(status)
     assert FAKE_ALPACA_KEY not in status_repr
     assert FAKE_ALPACA_SECRET not in status_repr
+
+
+# --- IEX feed hardening -------------------------------------------------------
+
+
+def test_data_feed_constant_is_iex():
+    assert DATA_FEED == "iex"
+
+
+def test_get_bars_sends_feed_iex_param(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["feed"] == "iex"
+        return httpx.Response(200, json=bars_payload([sample_bar()]))
+
+    client = AlpacaBarsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        get_bars_default(client, http_client)
+
+
+def test_get_bars_sends_feed_iex_on_every_paginated_request(monkeypatch, isolated_env_file):
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        assert request.url.params["feed"] == "iex"
+        page_token = request.url.params.get("page_token")
+        if page_token is None:
+            return httpx.Response(
+                200,
+                json=bars_payload(
+                    [sample_bar(t="2026-08-19T09:30:00Z")], next_page_token="TOK1"
+                ),
+            )
+        elif page_token == "TOK1":
+            return httpx.Response(
+                200, json=bars_payload([sample_bar(t="2026-08-19T09:31:00Z")], next_page_token=None)
+            )
+        raise AssertionError("unexpected page token")
+
+    client = AlpacaBarsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        get_bars_default(client, http_client)
+
+    assert len(calls) == 2
+    assert all(call.url.params["feed"] == "iex" for call in calls)
+
+
+def test_check_connection_sends_feed_iex_param(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["feed"] == "iex"
+        return httpx.Response(200, json=bars_payload([sample_bar()]))
+
+    client = AlpacaBarsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        client.check_connection("SPY", client=http_client)
+
+
+def test_get_bars_normalized_bars_always_have_feed_iex(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=bars_payload(
+                [sample_bar(t="2026-08-19T09:30:00Z"), sample_bar(t="2026-08-19T09:31:00Z")]
+            ),
+        )
+
+    client = AlpacaBarsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        bars = get_bars_default(client, http_client)
+
+    assert len(bars) == 2
+    assert all(bar.feed == "iex" for bar in bars)
+
+
+def test_check_connection_status_always_has_feed_iex_including_on_failure(
+    monkeypatch, isolated_env_file
+):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"message": "unauthorized"})
+
+    client = AlpacaBarsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        status = client.check_connection("SPY", client=http_client)
+
+    assert status.success is False
+    assert status.feed == "iex"
+
+
+def test_check_connection_not_configured_status_has_feed_iex(isolated_env_file):
+    client = AlpacaBarsClient(settings=unconfigured_settings(isolated_env_file))
+    status = client.check_connection("SPY")
+
+    assert status.feed == "iex"
+
+
+def test_check_connection_invalid_symbol_status_has_feed_iex(isolated_env_file):
+    client = AlpacaBarsClient(settings=unconfigured_settings(isolated_env_file))
+    status = client.check_connection("")
+
+    assert status.feed == "iex"
+
+
+def test_get_bars_does_not_accept_a_feed_keyword_argument(monkeypatch, isolated_env_file):
+    """No caller-controlled feed can be injected: get_bars has no ``feed`` parameter."""
+    client = AlpacaBarsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with pytest.raises(TypeError):
+        client.get_bars(
+            "SPY",
+            "1Day",
+            DEFAULT_START,
+            DEFAULT_END,
+            feed="sip",  # type: ignore[call-arg]
+        )
+
+
+def test_check_connection_does_not_accept_a_feed_keyword_argument(monkeypatch, isolated_env_file):
+    """No caller-controlled feed can be injected: check_connection has no ``feed`` parameter."""
+    client = AlpacaBarsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with pytest.raises(TypeError):
+        client.check_connection("SPY", feed="sip")  # type: ignore[call-arg]
+
+
+def test_get_bars_feed_param_cannot_be_overridden_via_response_payload(
+    monkeypatch, isolated_env_file
+):
+    """A provider response cannot smuggle a different feed onto the normalized Bar."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = bars_payload([sample_bar()])
+        payload["feed"] = "sip"
+        return httpx.Response(200, json=payload)
+
+    client = AlpacaBarsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        bars = get_bars_default(client, http_client)
+
+    assert bars[0].feed == "iex"
+
+
+def test_dedup_identity_accounts_for_feed_with_all_same_feed_still_deduplicates(
+    monkeypatch, isolated_env_file
+):
+    """All bars from this connector share DATA_FEED, so identical (feed, timestamp)
+    duplicates must still be deduplicated exactly as before feed was added."""
+    bar = sample_bar(t="2026-08-19T09:30:00Z")
+    bars = [bar, dict(bar)]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=bars_payload(bars))
+
+    client = AlpacaBarsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        result = get_bars_default(client, http_client)
+
+    assert len(result) == 1
+    assert result[0].feed == "iex"
+
+
+def test_get_bars_credentials_absent_from_url_params_and_feed_still_present(
+    monkeypatch, isolated_env_file
+):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["feed"] == "iex"
+        assert FAKE_ALPACA_KEY not in str(request.url)
+        assert FAKE_ALPACA_SECRET not in str(request.url)
+        for value in request.url.params.values():
+            assert value not in (FAKE_ALPACA_KEY, FAKE_ALPACA_SECRET)
+        return httpx.Response(200, json=bars_payload([sample_bar()]))
+
+    client = AlpacaBarsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        get_bars_default(client, http_client)
+
+
+# --- scripts/check_alpaca_bars.py sanitized output -----------------------------
+
+
+def _load_check_alpaca_bars_module():
+    import importlib.util
+    from pathlib import Path
+
+    script_path = Path(__file__).resolve().parents[2] / "scripts" / "check_alpaca_bars.py"
+    spec = importlib.util.spec_from_file_location("check_alpaca_bars", script_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_check_alpaca_bars_script_prints_sanitized_feed(monkeypatch, isolated_env_file, capsys):
+    from market_intelligence.data_connectors.alpaca_bars import BarsConnectionStatus
+
+    def blocked_send(self, request, **kwargs):
+        raise AssertionError("Unexpected live HTTP request from check_alpaca_bars script test")
+
+    monkeypatch.setattr(httpx.Client, "send", blocked_send)
+
+    module = _load_check_alpaca_bars_module()
+    monkeypatch.setattr(
+        module, "Settings", lambda: configured_settings(monkeypatch, isolated_env_file)
+    )
+
+    fake_status = BarsConnectionStatus(
+        configured=True,
+        success=True,
+        status_category="2xx",
+        symbol="SPY",
+        timeframe="5Min",
+        feed=DATA_FEED,
+        bar_count=2,
+        oldest_bar_timestamp="2026-08-18T09:30:00Z",
+        newest_bar_timestamp="2026-08-19T09:30:00Z",
+    )
+    monkeypatch.setattr(
+        AlpacaBarsClient, "check_connection", lambda self, *args, **kwargs: fake_status
+    )
+
+    exit_code = module.main()
+
+    captured = capsys.readouterr()
+    assert "feed: iex" in captured.out
+    assert exit_code == 0
+    assert FAKE_ALPACA_KEY not in captured.out
+    assert FAKE_ALPACA_SECRET not in captured.out

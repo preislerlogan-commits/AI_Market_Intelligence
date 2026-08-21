@@ -9,6 +9,16 @@ request headers — they are never printed, logged, or included in
 exception messages. This module does not write to DuckDB or any other
 storage; it only retrieves and normalizes bars.
 
+Feed: every request explicitly passes ``feed=DATA_FEED`` ("iex"). Alpaca's
+historical single-symbol bars endpoint defaults to the SIP feed when no
+``feed`` parameter is sent, and SIP requires a market-data subscription this
+project does not have — an unauthorized request against the SIP default can
+fail with HTTP 403. ``DATA_FEED`` is a fixed module constant; it is never
+accepted as a caller-supplied argument anywhere in this module, and this
+connector never falls back to any other feed automatically. IEX is a
+single-exchange feed, not the consolidated (SIP) tape, so it has narrower
+market coverage than SIP — see DATA_CATALOG.md/PROJECT_STATE.md.
+
 Numeric representation: normalized OHLC/vwap values are stored as
 ``decimal.Decimal``, built from the provider's JSON numeric value via
 ``Decimal(str(value))`` rather than ``Decimal(value)``. Converting through
@@ -47,6 +57,17 @@ from market_intelligence.data_connectors.alpaca_market_data import (
 
 BARS_BASE_URL = "https://data.alpaca.markets"
 DEFAULT_TIMEOUT = httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0)
+
+# Alpaca's historical single-symbol bars endpoint defaults to the SIP feed
+# when no ``feed`` parameter is sent, and SIP requires a market-data
+# subscription this project does not have (an unauthorized SIP default
+# request returns HTTP 403). This project is explicitly scoped to the free,
+# always-available IEX feed. DATA_FEED is a fixed, project-approved constant
+# — it is never accepted as a caller-supplied parameter anywhere in this
+# module, so no caller can inject an unsupported or different feed. See
+# PROJECT_STATE.md/DATA_CATALOG.md for the coverage tradeoff this implies
+# (IEX is a single exchange's data, not the consolidated SIP tape).
+DATA_FEED = "iex"
 
 # Project-approved timeframes only. Alpaca supports other timeframe strings
 # (e.g. "1Hour", "1Week"), but this connector deliberately rejects anything
@@ -295,7 +316,10 @@ class Bar:
 
     Deliberately contains only provider-reported OHLCV/vwap data plus
     provenance — no indicators, returns, labels, sentiment, predictions, or
-    trade directions. ``timestamp`` is Alpaca's reported bar timestamp
+    trade directions. ``feed`` is always ``DATA_FEED`` ("iex") — this
+    connector never requests any other feed — and is recorded on every bar
+    so data provenance (which exchange feed produced these values) is
+    always explicit. ``timestamp`` is Alpaca's reported bar timestamp
     (UTC); ``retrieved_at`` is this connector's own retrieval timestamp
     (UTC, set once per request when the response was processed) and is
     always distinct from it.
@@ -304,6 +328,7 @@ class Bar:
     provider: str
     symbol: str
     timeframe: str
+    feed: str
     timestamp: str
     open: Decimal
     high: Decimal
@@ -317,13 +342,20 @@ class Bar:
 
 @dataclass(frozen=True)
 class BarsConnectionStatus:
-    """Sanitized result of a single read-only bars connection check."""
+    """Sanitized result of a single read-only bars connection check.
+
+    ``feed`` is always ``DATA_FEED`` ("iex") on every status returned by
+    ``check_connection`` — it is a fixed, project-approved constant, never
+    derived from the request outcome, so provenance is explicit even for a
+    failed/unconfigured/invalid-input check.
+    """
 
     configured: bool
     success: bool
     status_category: str
     symbol: str
     timeframe: str
+    feed: str
     bar_count: int
     oldest_bar_timestamp: str | None
     newest_bar_timestamp: str | None
@@ -334,9 +366,10 @@ def _status_category(status_code: int) -> str:
 
 
 def _bars_match(a: Bar, b: Bar) -> bool:
-    """Return True if two bars sharing the same (symbol, timeframe, timestamp) agree."""
+    """Return True if two bars sharing the same (symbol, timeframe, feed, timestamp) agree."""
     return (
-        a.open == b.open
+        a.feed == b.feed
+        and a.open == b.open
         and a.high == b.high
         and a.low == b.low
         and a.close == b.close
@@ -370,6 +403,7 @@ def _normalize_bar(raw: Any, *, symbol: str, timeframe: str, retrieved_at: str) 
         provider="alpaca",
         symbol=symbol,
         timeframe=timeframe,
+        feed=DATA_FEED,
         timestamp=timestamp,
         open=open_,
         high=high,
@@ -394,6 +428,7 @@ def _build_params(
         "start": start,
         "end": end,
         "limit": limit,
+        "feed": DATA_FEED,
     }
     if page_token is not None:
         params["page_token"] = page_token
@@ -480,7 +515,7 @@ class AlpacaBarsClient:
         http_client = client or httpx.Client(base_url=BARS_BASE_URL, timeout=self._timeout)
 
         retrieved_at = datetime.now(UTC).isoformat()
-        bars_by_timestamp: dict[str, Bar] = {}
+        bars_by_identity: dict[tuple[str, str], Bar] = {}
         seen_tokens: set[str] = set()
         page_token: str | None = None
 
@@ -532,14 +567,15 @@ class AlpacaBarsClient:
                             "Alpaca bars response contained a malformed bar."
                         ) from None
 
-                    existing = bars_by_timestamp.get(bar.timestamp)
+                    identity = (bar.feed, bar.timestamp)
+                    existing = bars_by_identity.get(identity)
                     if existing is not None:
                         if not _bars_match(existing, bar):
                             raise AlpacaBarsError(
                                 "Alpaca bars response contained conflicting duplicate bars."
                             )
                         continue
-                    bars_by_timestamp[bar.timestamp] = bar
+                    bars_by_identity[identity] = bar
 
                 next_token = payload.get("next_page_token")
                 if next_token is None:
@@ -558,7 +594,7 @@ class AlpacaBarsClient:
             if owns_client:
                 http_client.close()
 
-        return sorted(bars_by_timestamp.values(), key=lambda bar: bar.timestamp)
+        return sorted(bars_by_identity.values(), key=lambda bar: bar.timestamp)
 
     def check_connection(
         self,
@@ -575,12 +611,14 @@ class AlpacaBarsClient:
         in the returned status. Never includes OHLCV values, credentials,
         URLs, raw responses, or page tokens. Uses a small, fixed historical
         lookback window and a conservative limit, and makes at most one
-        HTTP request (no pagination). Malformed provider bar data is
-        reported as ``status_category="invalid_response"``. Bars are
-        deduplicated by timestamp using the same identity rules as
+        HTTP request (no pagination), always explicitly requesting the
+        project-approved ``DATA_FEED`` ("iex") feed. Malformed provider bar
+        data is reported as ``status_category="invalid_response"``. Bars are
+        deduplicated by (feed, timestamp) using the same identity rules as
         ``get_bars()``: exact duplicate bars count once, and duplicate
-        timestamps with conflicting OHLCV/trade_count/vwap are reported as
-        ``status_category="invalid_response"`` rather than success.
+        (feed, timestamp) pairs with conflicting OHLCV/trade_count/vwap are
+        reported as ``status_category="invalid_response"`` rather than
+        success.
         ``bar_count``/``oldest_bar_timestamp``/``newest_bar_timestamp``
         reflect the deduplicated set.
         """
@@ -593,6 +631,7 @@ class AlpacaBarsClient:
                 status_category="invalid_symbol",
                 symbol="",
                 timeframe="",
+                feed=DATA_FEED,
                 bar_count=0,
                 oldest_bar_timestamp=None,
                 newest_bar_timestamp=None,
@@ -607,6 +646,7 @@ class AlpacaBarsClient:
                 status_category="invalid_input",
                 symbol=normalized_symbol,
                 timeframe="",
+                feed=DATA_FEED,
                 bar_count=0,
                 oldest_bar_timestamp=None,
                 newest_bar_timestamp=None,
@@ -619,6 +659,7 @@ class AlpacaBarsClient:
                 status_category="not_configured",
                 symbol=normalized_symbol,
                 timeframe=normalized_timeframe,
+                feed=DATA_FEED,
                 bar_count=0,
                 oldest_bar_timestamp=None,
                 newest_bar_timestamp=None,
@@ -646,6 +687,7 @@ class AlpacaBarsClient:
                     status_category="network_error",
                     symbol=normalized_symbol,
                     timeframe=normalized_timeframe,
+                    feed=DATA_FEED,
                     bar_count=0,
                     oldest_bar_timestamp=None,
                     newest_bar_timestamp=None,
@@ -658,6 +700,7 @@ class AlpacaBarsClient:
                     status_category=_status_category(response.status_code),
                     symbol=normalized_symbol,
                     timeframe=normalized_timeframe,
+                    feed=DATA_FEED,
                     bar_count=0,
                     oldest_bar_timestamp=None,
                     newest_bar_timestamp=None,
@@ -675,6 +718,7 @@ class AlpacaBarsClient:
                     status_category="invalid_response",
                     symbol=normalized_symbol,
                     timeframe=normalized_timeframe,
+                    feed=DATA_FEED,
                     bar_count=0,
                     oldest_bar_timestamp=None,
                     newest_bar_timestamp=None,
@@ -688,13 +732,14 @@ class AlpacaBarsClient:
                     status_category="invalid_response",
                     symbol=normalized_symbol,
                     timeframe=normalized_timeframe,
+                    feed=DATA_FEED,
                     bar_count=0,
                     oldest_bar_timestamp=None,
                     newest_bar_timestamp=None,
                 )
 
             retrieved_at = datetime.now(UTC).isoformat()
-            bars_by_timestamp: dict[str, Bar] = {}
+            bars_by_identity: dict[tuple[str, str], Bar] = {}
             for raw_bar in raw_bars:
                 try:
                     bar = _normalize_bar(
@@ -710,12 +755,14 @@ class AlpacaBarsClient:
                         status_category="invalid_response",
                         symbol=normalized_symbol,
                         timeframe=normalized_timeframe,
+                        feed=DATA_FEED,
                         bar_count=0,
                         oldest_bar_timestamp=None,
                         newest_bar_timestamp=None,
                     )
 
-                existing = bars_by_timestamp.get(bar.timestamp)
+                identity = (bar.feed, bar.timestamp)
+                existing = bars_by_identity.get(identity)
                 if existing is not None:
                     if not _bars_match(existing, bar):
                         return BarsConnectionStatus(
@@ -724,14 +771,15 @@ class AlpacaBarsClient:
                             status_category="invalid_response",
                             symbol=normalized_symbol,
                             timeframe=normalized_timeframe,
+                            feed=DATA_FEED,
                             bar_count=0,
                             oldest_bar_timestamp=None,
                             newest_bar_timestamp=None,
                         )
                     continue
-                bars_by_timestamp[bar.timestamp] = bar
+                bars_by_identity[identity] = bar
 
-            bars = sorted(bars_by_timestamp.values(), key=lambda bar: bar.timestamp)
+            bars = sorted(bars_by_identity.values(), key=lambda bar: bar.timestamp)
 
             return BarsConnectionStatus(
                 configured=True,
@@ -739,6 +787,7 @@ class AlpacaBarsClient:
                 status_category=_status_category(response.status_code),
                 symbol=normalized_symbol,
                 timeframe=normalized_timeframe,
+                feed=DATA_FEED,
                 bar_count=len(bars),
                 oldest_bar_timestamp=bars[0].timestamp if bars else None,
                 newest_bar_timestamp=bars[-1].timestamp if bars else None,

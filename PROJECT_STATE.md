@@ -20,8 +20,12 @@ verified (a single read-only SPY-news request — see Status below), and one
 explicitly authorized live SPY news ingestion has succeeded through the
 storage pipeline (10 received, 10 inserted, 0 failed — see Status below).
 A read-only Alpaca historical stock-bars connector now also exists
-(`AlpacaBarsClient`) but has not yet been used for a live request — see
-Status below. Connectivity/one successful ingestion run is not the same as
+(`AlpacaBarsClient`). Its first authorized live connectivity check reached
+Alpaca but was configured yet unsuccessful (sanitized status
+`configured=True, success=False, status_category=4xx`); the connector has
+since been hardened to explicitly request the IEX feed, and live IEX
+connectivity remains unverified — see Status below. Connectivity/one
+successful ingestion run is not the same as
 a validated, cataloged data pipeline: no historical or bulk live dataset
 has been stored, cataloged, or validated yet. A local DuckDB storage
 foundation exists; the real local database is at schema version `0004`
@@ -126,7 +130,7 @@ stored or validated, and no AI analysis or agent orchestration exists yet.
   strictly before `end`. The per-page limit and page count are both
   strictly bounded, so a malformed or endless provider pagination sequence
   cannot loop indefinitely. The normalized `Bar` model contains only
-  provider, symbol, timeframe, bar timestamp (UTC, kept distinct from
+  provider, symbol, timeframe, feed, bar timestamp (UTC, kept distinct from
   local retrieval time), open/high/low/close (as `Decimal`, to avoid
   binary-float rounding artifacts in values intended for reproducible
   analysis), volume, trade_count (nullable), vwap (nullable), and
@@ -136,17 +140,42 @@ stored or validated, and no AI analysis or agent orchestration exists yet.
   are rejected. If a non-empty provider bars list contains any malformed
   bar, the entire request fails with a sanitized error rather than
   returning a misleading partial series; exact duplicate bars (by symbol,
-  timeframe, timestamp) are deduplicated, while conflicting duplicates fail
-  the request. Results are returned in chronological order. A companion
-  script, `scripts/check_alpaca_bars.py`, and a `check_connection` method
-  report only sanitized connection status (configured, success, status
-  category, symbol, timeframe, bar count, oldest/newest bar timestamp) —
-  never OHLCV values, credentials, URLs, raw responses, or page tokens.
-  **This connector has not yet been used for a live request.** No
-  historical bars dataset has been retrieved, stored, or validated —
-  running a live connectivity check requires separate, explicit
-  authorization, and this connector does not store bars in DuckDB in any
-  case (bars storage is future, separately reviewed work).
+  timeframe, feed, timestamp) are deduplicated, while conflicting
+  duplicates fail the request. Results are returned in chronological
+  order. A companion script, `scripts/check_alpaca_bars.py`, and a
+  `check_connection` method report only sanitized connection status
+  (configured, success, status category, symbol, timeframe, feed, bar
+  count, oldest/newest bar timestamp) — never OHLCV values, credentials,
+  URLs, raw responses, or page tokens.
+
+  **First authorized live check and feed hardening (2026-08-20):** the
+  first authorized live connectivity check (single-symbol SPY, using the
+  connector's then-default request, which sent no explicit `feed`
+  parameter) reached Alpaca and returned a sanitized status of
+  `configured=True, success=False, status_category=4xx` — only this
+  sanitized status was recorded; the raw response body, headers, and
+  credentials were never printed or stored. Per Alpaca's official
+  documentation, the historical single-symbol bars endpoint defaults to
+  the SIP feed when no `feed` parameter is sent, and SIP access requires a
+  market-data subscription; the likely cause of the observed 4xx is that
+  default SIP routing combined with this project's Alpaca subscription not
+  covering SIP (Alpaca returns HTTP 403 in that case), not a credentials or
+  code defect. In response, the connector was hardened: it now explicitly
+  sends `feed=iex` (a fixed constant, `DATA_FEED`, never a caller-supplied
+  argument) on every request, including every paginated page and
+  `check_connection`, with no automatic fallback between feeds, and `feed`
+  is now recorded on every normalized `Bar` and `BarsConnectionStatus` for
+  explicit data provenance. **Known limitation:** IEX is a single
+  exchange's feed, not the consolidated SIP tape, so it reflects narrower
+  market coverage (fewer trades, potentially different prices/volume) than
+  SIP. **Live IEX connectivity remains unverified** — no live request has
+  been made using the now-hardened, explicit-IEX connector; the 4xx above
+  was observed under the prior, pre-hardening default (SIP) request. A
+  live IEX connectivity check requires separate, explicit authorization
+  and must be recorded here before IEX connectivity can be described as
+  verified. No historical bars dataset has been retrieved, stored, or
+  validated, and this connector does not store bars in DuckDB in any case
+  (bars storage is future, separately reviewed work).
 - A local DuckDB storage foundation has been initialized
   (`market_intelligence/storage/`, `DuckDBManager` in
   `market_intelligence/storage/database.py`). It provides a versioned,
@@ -255,9 +284,13 @@ stored or validated, and no AI analysis or agent orchestration exists yet.
    future work.
 6. Historical bars connector — done (see above): a read-only,
    single-symbol historical-bars connector exists and is unit-tested
-   (`AlpacaBarsClient`), but has not been used for a live request and does
-   not store bars in DuckDB. A live connectivity check requires separate,
-   explicit authorization.
+   (`AlpacaBarsClient`) and does not store bars in DuckDB. Its first
+   authorized live check reached Alpaca but failed (sanitized 4xx) under
+   the connector's prior default (implicit SIP) request; the connector has
+   since been hardened to explicitly request the IEX feed on every
+   request. Live IEX connectivity remains unverified — a separately
+   authorized live connectivity check against the hardened connector is
+   still required before it can be recorded here.
 7. Reviewed data contracts for actual provider data — design and add
    versioned migrations for market-bar and macro-observation tables (and
    the ingestion code that writes to `ingestion_runs`), each as its own

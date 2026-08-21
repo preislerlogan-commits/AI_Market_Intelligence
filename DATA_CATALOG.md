@@ -113,25 +113,57 @@ The following tickers are the known initial universe of interest:
   (`1Min`, `5Min`, `1Day`). `start`/`end` are strictly validated RFC3339
   timestamps normalized to UTC, with `start` required to be strictly before
   `end`; the per-page limit and page count are both strictly bounded. The
-  normalized `Bar` model contains only provider, symbol, timeframe, bar
-  timestamp (UTC), OHLC (as `Decimal`), volume, trade_count (nullable),
+  normalized `Bar` model contains only provider, symbol, timeframe, feed,
+  bar timestamp (UTC), OHLC (as `Decimal`), volume, trade_count (nullable),
   vwap (nullable), and a UTC retrieval timestamp kept distinct from the bar
   timestamp — no indicators, returns, labels, sentiment, predictions, or
   trade directions are inferred. A non-empty provider bars list containing
   any malformed bar fails the entire request rather than returning a
-  misleading partial series; exact duplicate bars are deduplicated,
-  conflicting duplicates fail the request, and results are returned in
-  chronological order. Status: **implemented, not yet connection-verified
-  live.** A companion script, `scripts/check_alpaca_bars.py`, and a
-  `check_connection` method exist and report only sanitized connection
-  status (configured, success, status category, symbol, timeframe, bar
-  count, oldest/newest bar timestamp — never OHLCV values, credentials,
-  URLs, raw responses, or page tokens), but neither has been run live as
-  part of adding this connector. No historical bars dataset has been
-  captured, stored, or inspected, so no dataset entry with verified
+  misleading partial series; exact duplicate bars (matched on symbol,
+  timeframe, feed, and timestamp) are deduplicated, conflicting duplicates
+  fail the request, and results are returned in chronological order.
+
+  **Feed:** every request — including every paginated page and
+  `check_connection` — explicitly sends `feed=iex`, via a fixed module
+  constant (`DATA_FEED`) that is never accepted as a caller-supplied
+  argument anywhere in this connector, so no unsupported or different feed
+  can be injected by a caller, and this connector never falls back
+  automatically between feeds. `feed` is recorded on every normalized `Bar`
+  and on every `BarsConnectionStatus` (including failed/unconfigured/
+  invalid-input statuses) so data provenance is always explicit. **Why IEX,
+  not the default:** on 2026-08-20, the first authorized live connectivity
+  check (`scripts/check_alpaca_bars.py`, single-symbol SPY, via the
+  connector's then-default request with no `feed` parameter) reached
+  Alpaca and returned `configured=True, success=False, status_category=4xx`
+  — only this sanitized status was recorded, never the raw response body,
+  headers, or credentials. Per Alpaca's official documentation, the
+  historical single-symbol bars endpoint defaults to the SIP feed when no
+  `feed` parameter is sent, and SIP requires a market-data subscription;
+  the likely cause of the observed 4xx is that default SIP routing hitting
+  insufficient SIP subscription access (Alpaca returns HTTP 403 in that
+  case), not a credentials or code defect. The connector was hardened in
+  response to explicitly request the free, always-available IEX feed on
+  every request instead of relying on the endpoint's SIP default. **Known
+  limitation:** IEX is a single exchange's feed, not the consolidated SIP
+  tape — it reflects trades on IEX only, not the full U.S. market, and so
+  has narrower coverage (fewer trades, potentially different prices/volume)
+  than SIP. **Live IEX connectivity remains unverified** — the 2026-08-20
+  check above failed under the pre-hardening default (SIP) request; no
+  live request has been made using the now-hardened, explicit-IEX
+  connector. A live IEX connectivity check requires separate, explicit
+  authorization and must be recorded here (with its sanitized outcome)
+  before IEX connectivity can be described as verified.
+
+  Status: **implemented, not yet connection-verified live on IEX.** A
+  companion script, `scripts/check_alpaca_bars.py`, and a `check_connection`
+  method exist and report only sanitized connection status (configured,
+  success, status category, symbol, timeframe, feed, bar count,
+  oldest/newest bar timestamp — never OHLCV values, credentials, URLs, raw
+  responses, or page tokens). No historical bars dataset has been captured,
+  stored, or inspected, so no dataset entry with verified
   Schema/Coverage/Known limitations exists yet, and none should be
-  described as validated until an explicitly authorized live connectivity
-  check succeeds and is recorded here.
+  described as validated until a separately authorized live IEX
+  connectivity check succeeds and is recorded here.
 
 ## Local Storage
 

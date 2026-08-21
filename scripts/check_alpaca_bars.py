@@ -9,6 +9,8 @@ prints only sanitized status information:
 - HTTP/status category
 - requested symbol
 - requested timeframe
+- data feed (always the fixed, project-approved "iex" feed — never
+  caller-supplied)
 - bar count
 - oldest bar timestamp
 - newest bar timestamp
@@ -35,6 +37,7 @@ def main(symbol: str = "SPY", timeframe: str = "5Min") -> int:
     print(f"status category: {status.status_category}")
     print(f"symbol: {status.symbol}")
     print(f"timeframe: {status.timeframe}")
+    print(f"feed: {status.feed}")
     print(f"bar count: {status.bar_count}")
     print(f"oldest bar timestamp: {status.oldest_bar_timestamp}")
     print(f"newest bar timestamp: {status.newest_bar_timestamp}")
