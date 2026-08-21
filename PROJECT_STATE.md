@@ -92,8 +92,8 @@ stored or validated, and no AI analysis or agent orchestration exists yet.
   2026-08-20 one live, read-only FEDFUNDS latest-observation connection
   check was run using local `.env` credentials and succeeded (2xx,
   observation date returned). This confirms connectivity only; it is not
-  the same as a validated data pipeline. No historical or live dataset has
-  been stored, cataloged, or validated yet — see `DATA_CATALOG.md`.
+  the same as a validated data pipeline. No FRED observations have been
+  stored or validated as a dataset yet — see `DATA_CATALOG.md`.
 - A read-only Alpaca news connector
   (`market_intelligence/data_connectors/alpaca_news.py`,
   `AlpacaNewsClient`) has been added, covering only Alpaca's read-only
@@ -120,8 +120,10 @@ stored or validated, and no AI analysis or agent orchestration exists yet.
   summaries, or raw payloads. On 2026-08-20 one live, read-only SPY-news
   connection check was run using local `.env` credentials and succeeded
   (2xx, 10 articles, newest publication timestamp returned). This confirms
-  connectivity only; it is not the same as a validated data pipeline. No
-  news data has been stored, cataloged, or validated yet — see
+  connectivity only; it is not the same as a validated data pipeline.
+  Separately, one explicitly authorized SPY ingestion stored 10 normalized
+  news articles, as described below. That verifies one successful ingestion
+  run; it is not yet a complete or validated news dataset — see
   `DATA_CATALOG.md`.
 - A read-only Alpaca historical stock-bars connector
   (`market_intelligence/data_connectors/alpaca_bars.py`, `AlpacaBarsClient`)
@@ -270,10 +272,11 @@ stored or validated, and no AI analysis or agent orchestration exists yet.
   logic has been built or tested.
 - **This is an independent project.** It does not depend on, read from, or
   otherwise access the separate ORB_Project. Read-only Alpaca provider
-  connectivity has been verified, but no historical or live dataset has
-  been stored, cataloged, or validated yet. The settings layer's only
-  data-path configuration is `project_data_path`, which defaults to this
-  repository's own `data/`
+  connectivity has been verified, and one authorized ingestion run stored
+  10 normalized SPY news articles. No historical bars or FRED observations
+  have been stored, and no complete provider dataset has been cataloged or
+  validated yet. The settings layer's only data-path configuration is
+  `project_data_path`, which defaults to this repository's own `data/`
   directory. No code in this repository may access files outside the
   repository unless the user explicitly authorizes a specific source.
 
@@ -290,9 +293,11 @@ stored or validated, and no AI analysis or agent orchestration exists yet.
    snapshot connectivity check) and FRED (read-only latest-observation
    connectivity check), recorded in `DATA_CATALOG.md`/`PROJECT_STATE.md`.
    Done live for Alpaca news (one authorized SPY-news request, see above).
-   Not yet run live for Alpaca historical bars — the connector exists and
-   is unit-tested, but a live connectivity check requires separate,
-   explicit authorization.
+   Alpaca historical bars was checked twice with separate authorization:
+   the first implicit-SIP check failed with a sanitized 4xx, and the second
+   explicit-IEX check succeeded with a sanitized 2xx. Connectivity and
+   response normalization are verified on IEX only. No bars were stored or
+   validated as a dataset.
 4. Database initialization — done (see above): the local DuckDB storage
    foundation is initialized under `data/`, now at schema version `0004`
    (`news_articles` applied) after the authorized live news ingestion

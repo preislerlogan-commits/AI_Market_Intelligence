@@ -10,10 +10,13 @@ details, and any unverified claims below should be corrected or removed.
 
 This is an independent project. It does not depend on or access the
 separate ORB_Project, or any other data outside this repository.
-Read-only Alpaca provider connectivity has been verified, but no
-historical or live dataset has been stored, cataloged, or validated yet —
-connectivity is not the same as a validated data pipeline. No code in
-this repository may access files outside the repository unless the user
+Read-only Alpaca provider connectivity has been verified, and one
+authorized ingestion run stored 10 normalized SPY news articles. That
+collection verifies one ingestion run but is not a complete or validated
+news dataset. Historical bars and FRED observations have not been stored,
+and no complete provider dataset has been cataloged or validated yet —
+connectivity is not the same as a validated data pipeline. No code in this
+repository may access files outside the repository unless the user
 explicitly authorizes a specific source. Future data will come through
 this project's own reviewed connectors under
 `market_intelligence/data_connectors/`, with
@@ -89,12 +92,12 @@ The following tickers are the known initial universe of interest:
   and a newest publication timestamp. Only sanitized connection-status
   metadata was recorded (configured, success, status category, requested
   symbol, article count, newest publication timestamp) — no headline, URL,
-  summary, or raw response payload was printed or recorded, and no
-  historical/bulk news data has been captured, stored, or inspected, so no
-  dataset entry with verified Schema/Coverage/Known limitations exists
-  yet. This is a connectivity check only and must not be described as a
-  validated data pipeline. Separately, on 2026-08-20, one explicitly
-  authorized live SPY news ingestion was run via
+  summary, or raw response payload from that connectivity check was printed
+  or recorded. No historical/bulk or complete news dataset has been captured
+  or validated, so no dataset entry with verified Schema/Coverage/Known
+  limitations exists yet. This is a connectivity check only and must not be
+  described as a validated data pipeline. Separately, on 2026-08-20, one
+  explicitly authorized live SPY news ingestion was run via
   `scripts/ingest_alpaca_news.py` and succeeded: 10 articles received, 10
   inserted, 0 updated, 0 failed, recorded via the `news_articles` table and
   storage service described under "Local Storage" below. This confirms
