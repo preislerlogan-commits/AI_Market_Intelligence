@@ -214,6 +214,15 @@ INVALID_TIMESTAMPS = [
     "A" * 41,
     123,
     None,
+    True,
+    False,
+    "2026-08-20",  # date-only, no time component
+    "2026-08-20T12:00:00",  # naive, no UTC offset
+    "2026-08-20T12:00:00+0000",  # malformed offset, missing colon
+    "2026-08-20T12:00:00+25:00",  # out-of-range offset hour
+    "2026-08-20T12:00:00-04",  # incomplete offset
+    "2026-02-30T00:00:00Z",  # invalid calendar date (no Feb 30)
+    "2026-08-20 12:00:00Z",  # space instead of "T" separator
 ]
 
 # ``start``/``end`` of None means "not provided" at the get_news layer (it is
@@ -366,6 +375,104 @@ def test_normalize_timestamp_accepts_valid_rfc3339():
     assert normalize_timestamp("2026-08-20T12:00:00Z", field_name="start") == "2026-08-20T12:00:00Z"
 
 
+def test_normalize_timestamp_accepts_numeric_offset_and_normalizes_to_utc():
+    # -04:00 offset should be converted to the equivalent UTC "Z" timestamp.
+    assert (
+        normalize_timestamp("2026-08-20T08:00:00-04:00", field_name="start")
+        == "2026-08-20T12:00:00Z"
+    )
+
+
+def test_normalize_timestamp_positive_offset_normalizes_to_utc():
+    assert (
+        normalize_timestamp("2026-08-20T14:30:00+02:30", field_name="start")
+        == "2026-08-20T12:00:00Z"
+    )
+
+
+def test_normalize_timestamp_z_offset_normalized_representation_is_utc_z():
+    normalized = normalize_timestamp("2026-08-20T12:00:00Z", field_name="start")
+    assert normalized.endswith("Z")
+    assert normalized == "2026-08-20T12:00:00Z"
+
+
+def test_normalize_timestamp_rejects_naive_datetime():
+    with pytest.raises(AlpacaNewsInvalidInputError):
+        normalize_timestamp("2026-08-20T12:00:00", field_name="start")
+
+
+def test_normalize_timestamp_rejects_date_only():
+    with pytest.raises(AlpacaNewsInvalidInputError):
+        normalize_timestamp("2026-08-20", field_name="start")
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "2026-08-20T12:00:00+0000",  # missing colon in offset
+        "2026-08-20T12:00:00+25:00",  # out-of-range offset hour
+        "2026-08-20T12:00:00-04",  # incomplete offset
+        "2026-08-20T12:00:00+00:60",  # out-of-range offset minute
+    ],
+)
+def test_normalize_timestamp_rejects_malformed_offset(raw):
+    with pytest.raises(AlpacaNewsInvalidInputError):
+        normalize_timestamp(raw, field_name="start")
+
+
+def test_normalize_timestamp_rejects_invalid_calendar_date():
+    with pytest.raises(AlpacaNewsInvalidInputError):
+        normalize_timestamp("2026-02-30T00:00:00Z", field_name="start")
+
+
+def test_normalize_timestamp_error_never_echoes_untrusted_input():
+    secret_marker = "SUPER-SECRET-INPUT-VALUE"
+    with pytest.raises(AlpacaNewsInvalidInputError) as exc_info:
+        normalize_timestamp(f"not-a-date-{secret_marker}", field_name="start")
+
+    assert secret_marker not in str(exc_info.value)
+
+
+# --- start/end ordering -------------------------------------------------------
+
+
+def test_get_news_rejects_start_after_end_with_zero_requests(monkeypatch, isolated_env_file):
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json=news_payload([sample_article()]))
+
+    client = AlpacaNewsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(AlpacaNewsInvalidInputError):
+        client.get_news(
+            "SPY",
+            start="2026-08-20T00:00:00Z",
+            end="2026-08-01T00:00:00Z",
+            client=http_client,
+        )
+
+    assert calls == []
+
+
+def test_get_news_accepts_equal_start_and_end(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["start"] == "2026-08-20T00:00:00Z"
+        assert request.url.params["end"] == "2026-08-20T00:00:00Z"
+        return httpx.Response(200, json=news_payload([sample_article()]))
+
+    client = AlpacaNewsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        items = client.get_news(
+            "SPY",
+            start="2026-08-20T00:00:00Z",
+            end="2026-08-20T00:00:00Z",
+            client=http_client,
+        )
+
+    assert len(items) == 1
+
+
 # --- HTTP/network errors -----------------------------------------------------
 
 
@@ -493,6 +600,130 @@ def test_get_news_missing_optional_fields_default_to_none(monkeypatch, isolated_
     assert item.created_at is None
     assert item.updated_at is None
     assert item.related_symbols == ()
+
+
+# --- systemic article-schema failure vs. individual skips ---------------------
+
+
+def test_get_news_empty_provider_list_succeeds_with_zero_articles(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=news_payload([]))
+
+    client = AlpacaNewsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        items = client.get_news("SPY", client=http_client)
+
+    assert items == []
+
+
+def test_get_news_raises_when_all_articles_are_malformed(monkeypatch, isolated_env_file):
+    articles = [
+        {"id": 1},  # missing headline/source/url
+        {"id": 2, "headline": "", "source": "benzinga", "url": "https://x"},  # blank headline
+        "not-a-dict",
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=news_payload(articles))
+
+    client = AlpacaNewsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(AlpacaNewsError):
+        client.get_news("SPY", client=http_client)
+
+
+def test_get_news_all_malformed_error_never_leaks_article_contents(monkeypatch, isolated_env_file):
+    secret_headline = "SECRET-HEADLINE-CONTENT"
+    secret_url = "https://internal.example.com/SECRET-URL-PATH"
+    articles = [
+        {"id": 1, "headline": secret_headline, "url": secret_url},  # missing source
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=news_payload(articles))
+
+    client = AlpacaNewsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(AlpacaNewsError) as exc_info:
+        client.get_news("SPY", client=http_client)
+
+    message = str(exc_info.value)
+    assert secret_headline not in message
+    assert secret_url not in message
+    assert FAKE_ALPACA_KEY not in message
+    assert FAKE_ALPACA_SECRET not in message
+
+
+def test_get_news_mixed_valid_and_malformed_succeeds_with_valid_only(
+    monkeypatch, isolated_env_file
+):
+    articles = [
+        {"id": 1},  # malformed: missing headline/source/url
+        sample_article(article_id=2, headline="Valid article"),
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=news_payload(articles))
+
+    client = AlpacaNewsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        items = client.get_news("SPY", client=http_client)
+
+    assert [item.provider_article_id for item in items] == ["2"]
+
+
+def test_check_connection_all_malformed_returns_invalid_response(monkeypatch, isolated_env_file):
+    articles = [
+        {"id": 1},  # missing headline/source/url
+        "not-a-dict",
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=news_payload(articles))
+
+    client = AlpacaNewsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        status = client.check_connection("SPY", client=http_client)
+
+    assert status.success is False
+    assert status.status_category == "invalid_response"
+    assert status.article_count == 0
+    assert status.newest_publication_timestamp is None
+
+
+def test_check_connection_all_malformed_repr_never_leaks_contents(monkeypatch, isolated_env_file):
+    secret_headline = "SECRET-HEADLINE-CONTENT"
+    articles = [{"id": 1, "headline": secret_headline}]  # missing source/url
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=news_payload(articles))
+
+    client = AlpacaNewsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        status = client.check_connection("SPY", client=http_client)
+
+    status_repr = repr(status)
+    assert secret_headline not in status_repr
+    assert FAKE_ALPACA_KEY not in status_repr
+    assert FAKE_ALPACA_SECRET not in status_repr
+
+
+def test_check_connection_mixed_valid_and_malformed_succeeds_with_valid_only(
+    monkeypatch, isolated_env_file
+):
+    articles = [
+        {"id": 1},  # malformed
+        sample_article(article_id=2),
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=news_payload(articles))
+
+    client = AlpacaNewsClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        status = client.check_connection("SPY", client=http_client)
+
+    assert status.success is True
+    assert status.status_category == "2xx"
+    assert status.article_count == 1
 
 
 # --- timestamps remain distinct ----------------------------------------------

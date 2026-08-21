@@ -16,6 +16,7 @@ locally in UTC when this connector processes the response).
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -38,6 +39,16 @@ MIN_LIMIT = 1
 MAX_LIMIT = 50
 MAX_TIMESTAMP_LENGTH = 40
 _VALID_SORT_DIRECTIONS = ("asc", "desc")
+
+# Strict RFC3339 date-time: a complete calendar date and time-of-day with an
+# explicit "Z" or numeric UTC offset. Deliberately rejects date-only values,
+# naive (offset-free) timestamps, and anything with trailing/embedded junk —
+# the pattern is fully anchored, so nothing outside this shape can match.
+_RFC3339_PATTERN = re.compile(
+    r"^(?P<year>\d{4})-(?P<month>0[1-9]|1[0-2])-(?P<day>0[1-9]|[12]\d|3[01])"
+    r"[Tt](?P<hour>[01]\d|2[0-3]):(?P<minute>[0-5]\d):(?P<second>[0-5]\d)(?:\.\d+)?"
+    r"(?P<offset>[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)$"
+)
 
 
 class AlpacaNewsCredentialsMissingError(RuntimeError):
@@ -130,34 +141,62 @@ def normalize_sort(sort: str) -> str:
     return normalized
 
 
-def normalize_timestamp(value: str, *, field_name: str) -> str:
-    """Normalize and validate an optional start/end RFC3339 timestamp.
+def normalize_timestamp(value: Any, *, field_name: str) -> str:
+    """Normalize and validate a required start/end RFC3339 timestamp.
 
-    Raises ``AlpacaNewsInvalidInputError`` unless ``value`` is a non-empty,
-    length-bounded string that parses as a valid ISO 8601 / RFC3339
-    timestamp. This rejects malformed dates, embedded junk, and
-    non-timestamp-shaped input before any request is built. The original,
-    trimmed string is returned (not a reformatted one) so the request sent
-    to Alpaca matches what was validated.
+    Raises ``AlpacaNewsInvalidInputError`` unless ``value`` is a string
+    (booleans and other non-string types are rejected) that, once
+    trimmed, is a strict, fully-specified RFC3339 date-time: a complete
+    calendar date and time-of-day with an explicit "Z" or numeric UTC
+    offset. Naive (offset-free) timestamps, date-only values, malformed
+    timestamps, and embedded junk are all rejected before any request is
+    built. The calendar date and UTC offset are validated for real
+    values (not just shape), and the result is always returned as one
+    consistent normalized representation: UTC with a "Z" suffix. The
+    error message never echoes the untrusted input.
     """
     if not isinstance(value, str):
-        raise AlpacaNewsInvalidInputError(f"Invalid {field_name}: expected a string.")
+        raise AlpacaNewsInvalidInputError(
+            f"Invalid {field_name}: must be a valid RFC3339 timestamp."
+        )
 
     trimmed = value.strip()
     if not trimmed or len(trimmed) > MAX_TIMESTAMP_LENGTH:
         raise AlpacaNewsInvalidInputError(
-            f"Invalid {field_name}: must be a non-empty RFC3339 timestamp."
+            f"Invalid {field_name}: must be a valid RFC3339 timestamp."
         )
 
-    candidate = trimmed[:-1] + "+00:00" if trimmed.endswith("Z") else trimmed
+    match = _RFC3339_PATTERN.match(trimmed)
+    if match is None:
+        raise AlpacaNewsInvalidInputError(
+            f"Invalid {field_name}: must be a valid RFC3339 timestamp."
+        )
+
+    offset = match.group("offset")
+    candidate = trimmed[:-1] + "+00:00" if offset in ("Z", "z") else trimmed
+
     try:
-        datetime.fromisoformat(candidate)
+        parsed = datetime.fromisoformat(candidate)
     except ValueError:
         raise AlpacaNewsInvalidInputError(
             f"Invalid {field_name}: must be a valid RFC3339 timestamp."
         ) from None
 
-    return trimmed
+    if parsed.tzinfo is None:
+        raise AlpacaNewsInvalidInputError(
+            f"Invalid {field_name}: must be a valid RFC3339 timestamp."
+        )
+
+    return parsed.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _parse_normalized_timestamp(value: str) -> datetime:
+    """Parse a value already produced by ``normalize_timestamp`` back into a datetime.
+
+    Only ever called on this connector's own normalized output (UTC, "Z"
+    suffix), never on raw user input.
+    """
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 @dataclass(frozen=True)
@@ -340,10 +379,15 @@ class AlpacaNewsClient:
         All inputs are strictly validated and normalized before any HTTP
         request is constructed, so malformed or malicious input never
         reaches the network. Raises ``AlpacaNewsInvalidInputError`` for
-        invalid ``symbols``/``limit``/``sort``/``start``/``end``,
+        invalid ``symbols``/``limit``/``sort``/``start``/``end``, or if
+        both ``start`` and ``end`` are provided and ``start`` is after
+        ``end`` (equal values are valid),
         ``AlpacaNewsCredentialsMissingError`` if credentials are not
         configured, or ``AlpacaNewsError`` (sanitized) on request failure,
-        malformed JSON, or an unusable response shape.
+        malformed JSON, an unusable response shape, or a non-empty
+        provider news list in which every article was rejected as
+        malformed (an empty provider news list is a valid, successful
+        zero-article response).
         """
         normalized_symbols = normalize_symbols(symbols)
         normalized_limit = normalize_limit(limit)
@@ -352,6 +396,12 @@ class AlpacaNewsClient:
             normalize_timestamp(start, field_name="start") if start is not None else None
         )
         normalized_end = normalize_timestamp(end, field_name="end") if end is not None else None
+
+        if normalized_start is not None and normalized_end is not None:
+            start_dt = _parse_normalized_timestamp(normalized_start)
+            end_dt = _parse_normalized_timestamp(normalized_end)
+            if start_dt > end_dt:
+                raise AlpacaNewsInvalidInputError("Invalid start/end: start must not be after end.")
 
         headers = self._auth_headers()
         params = _build_params(
@@ -384,7 +434,14 @@ class AlpacaNewsClient:
             raise AlpacaNewsError("Alpaca news response payload did not include a news list.")
 
         retrieved_at = datetime.now(UTC).isoformat()
-        return _normalize_articles(raw_articles, retrieved_at=retrieved_at)
+        items = _normalize_articles(raw_articles, retrieved_at=retrieved_at)
+
+        if raw_articles and not items:
+            raise AlpacaNewsError(
+                "Alpaca news response contained articles but none were usable."
+            )
+
+        return items
 
     def check_connection(
         self,
@@ -399,7 +456,12 @@ class AlpacaNewsClient:
         failed request, missing credentials, or invalid input. Invalid
         input is rejected before any request is made and never echoed back
         in the returned status. Never includes headlines, URLs, summaries,
-        or the raw response.
+        or the raw response. If the provider returns a non-empty news list
+        in which every article is rejected as malformed, this reports
+        ``success=False`` with ``status_category="invalid_response"``
+        rather than a false-successful zero-article result (an empty
+        provider news list remains a valid successful zero-article
+        result).
         """
         try:
             normalized_symbols = normalize_symbols(symbol)
@@ -492,6 +554,16 @@ class AlpacaNewsClient:
 
             retrieved_at = datetime.now(UTC).isoformat()
             items = _normalize_articles(raw_articles, retrieved_at=retrieved_at)
+
+            if raw_articles and not items:
+                return NewsConnectionStatus(
+                    configured=True,
+                    success=False,
+                    status_category="invalid_response",
+                    symbol=symbol_display,
+                    article_count=0,
+                    newest_publication_timestamp=None,
+                )
 
             return NewsConnectionStatus(
                 configured=True,
