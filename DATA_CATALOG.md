@@ -93,7 +93,45 @@ The following tickers are the known initial universe of interest:
   historical/bulk news data has been captured, stored, or inspected, so no
   dataset entry with verified Schema/Coverage/Known limitations exists
   yet. This is a connectivity check only and must not be described as a
-  validated data pipeline.
+  validated data pipeline. Separately, on 2026-08-20, one explicitly
+  authorized live SPY news ingestion was run via
+  `scripts/ingest_alpaca_news.py` and succeeded: 10 articles received, 10
+  inserted, 0 updated, 0 failed, recorded via the `news_articles` table and
+  storage service described under "Local Storage" below. This confirms
+  the storage pipeline succeeded for one ingestion run — only sanitized
+  counts and status are recorded, no article content — and is still not a
+  validated, cataloged news dataset (Schema/Coverage/Known limitations
+  below still require direct inspection of stored data before they can be
+  recorded).
+- **Alpaca Bars** — historical stock-bars provider. A read-only connector,
+  `AlpacaBarsClient` in `market_intelligence/data_connectors/alpaca_bars.py`,
+  exists and talks only to Alpaca's read-only data host
+  (`https://data.alpaca.markets`), and only to its single-symbol historical
+  bars endpoint (`/v2/stocks/{symbol}/bars`); it has no methods for orders,
+  accounts, or execution, and does not write to DuckDB. It supports exactly
+  one symbol per request and only the three project-approved timeframes
+  (`1Min`, `5Min`, `1Day`). `start`/`end` are strictly validated RFC3339
+  timestamps normalized to UTC, with `start` required to be strictly before
+  `end`; the per-page limit and page count are both strictly bounded. The
+  normalized `Bar` model contains only provider, symbol, timeframe, bar
+  timestamp (UTC), OHLC (as `Decimal`), volume, trade_count (nullable),
+  vwap (nullable), and a UTC retrieval timestamp kept distinct from the bar
+  timestamp — no indicators, returns, labels, sentiment, predictions, or
+  trade directions are inferred. A non-empty provider bars list containing
+  any malformed bar fails the entire request rather than returning a
+  misleading partial series; exact duplicate bars are deduplicated,
+  conflicting duplicates fail the request, and results are returned in
+  chronological order. Status: **implemented, not yet connection-verified
+  live.** A companion script, `scripts/check_alpaca_bars.py`, and a
+  `check_connection` method exist and report only sanitized connection
+  status (configured, success, status category, symbol, timeframe, bar
+  count, oldest/newest bar timestamp — never OHLCV values, credentials,
+  URLs, raw responses, or page tokens), but neither has been run live as
+  part of adding this connector. No historical bars dataset has been
+  captured, stored, or inspected, so no dataset entry with verified
+  Schema/Coverage/Known limitations exists yet, and none should be
+  described as validated until an explicitly authorized live connectivity
+  check succeeds and is recorded here.
 
 ## Local Storage
 
@@ -103,10 +141,10 @@ A local DuckDB storage foundation exists at `data/market_intelligence.duckdb`
 `0004` (a `news_articles` table, plus `market_intelligence/storage/news_repository.py`
 and `scripts/ingest_alpaca_news.py`) has been added to this repository's
 migration/storage code and is covered by tests using temporary DuckDB
-files, but has **not** been applied to the real local database file — as of
-this entry the real database is still at schema version `0003`, since
-`scripts/initialize_database.py` has not been re-run against it. Its
-schema defines four tables:
+files. As of this entry, the real local database file has been upgraded to
+and is healthy at schema version `0004` (4 migrations applied), following
+the authorized live news ingestion described above. Its schema defines
+four tables:
 
 - `schema_migrations` — tracks which versioned migrations have been
   applied.
@@ -124,19 +162,26 @@ schema defines four tables:
   [docs/STORAGE_ARCHITECTURE.md](docs/STORAGE_ARCHITECTURE.md) for full
   column/behavior detail.
 
-**This is a schema/storage-capability change, not a validated dataset.**
-No live news ingestion has been run and no persistent news dataset exists
-yet — `scripts/ingest_alpaca_news.py` performs at most one explicit,
-read-only, strictly-validated request and has been deliberately not run
-live as part of adding this storage layer; that requires separate,
-explicit authorization. Once an authorized live ingestion succeeds, this
-entry must be updated with a real dataset record (Source, Status,
-Provenance, Schema, Coverage, Known limitations) per the "Required Fields"
-section below — it must not be described as validated before that.
+**This is a schema/storage-capability change, not yet a validated,
+cataloged dataset.** `scripts/ingest_alpaca_news.py` performs at most one
+explicit, read-only, strictly-validated request per run. On 2026-08-20,
+one explicitly authorized live run (single-symbol SPY, default limit)
+succeeded: 10 articles received, 10 inserted, 0 updated, 0 failed,
+recorded as a `succeeded` `ingestion_runs` row — this is the run that
+upgraded the real database to schema `0004` above. Only sanitized counts
+and status are recorded in this catalog, never article content. This
+confirms the storage pipeline succeeded for one ingestion run; it is not
+yet a validated, cataloged news dataset — a full dataset record (Source,
+Status, Provenance, Schema, Coverage, Known limitations) per the "Required
+Fields" section below still requires direct inspection of the stored rows,
+which has not been done as part of this entry.
 
 No market-bar, macro-observation, forecast, or trade table has been
 created — each requires its own reviewed data contract and a
-corresponding versioned migration before it is added.
+corresponding versioned migration before it is added. The Alpaca historical
+bars connector (see "Planned Data Providers" above) retrieves and
+normalizes bars only; it does not write to DuckDB, so no bars data exists
+in local storage.
 
 ## Required Fields for Every Future Dataset
 

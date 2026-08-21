@@ -16,15 +16,17 @@ connectivity has been verified (a single read-only snapshot request — see
 Status below). Read-only FRED macroeconomic-data provider connectivity has
 also been verified (a single read-only latest-observation request — see
 Status below). Read-only Alpaca news provider connectivity has also been
-verified (a single read-only SPY-news request — see Status below).
-Connectivity is not the same as a validated data pipeline: no historical
-or live dataset has been stored, cataloged, or validated yet. A local
-DuckDB storage foundation exists (infrastructure metadata only), and a
-first persistent news-storage table/schema (`news_articles`, migration
-`0004`) plus a news storage service and manual ingestion script now exist
-(schema/storage capability only — see Status below; no live news ingestion
-has been run and no persistent news dataset is validated yet). No
-forecasting or trading logic exists yet.
+verified (a single read-only SPY-news request — see Status below), and one
+explicitly authorized live SPY news ingestion has succeeded through the
+storage pipeline (10 received, 10 inserted, 0 failed — see Status below).
+A read-only Alpaca historical stock-bars connector now also exists
+(`AlpacaBarsClient`) but has not yet been used for a live request — see
+Status below. Connectivity/one successful ingestion run is not the same as
+a validated, cataloged data pipeline: no historical or bulk live dataset
+has been stored, cataloged, or validated yet. A local DuckDB storage
+foundation exists; the real local database is at schema version `0004`
+and reports healthy (see Status below). No historical bars dataset is
+stored or validated, and no AI analysis or agent orchestration exists yet.
 
 ## Status
 
@@ -111,18 +113,52 @@ forecasting or trading logic exists yet.
   connectivity only; it is not the same as a validated data pipeline. No
   news data has been stored, cataloged, or validated yet — see
   `DATA_CATALOG.md`.
+- A read-only Alpaca historical stock-bars connector
+  (`market_intelligence/data_connectors/alpaca_bars.py`, `AlpacaBarsClient`)
+  has been added, covering only Alpaca's read-only data host
+  (`https://data.alpaca.markets`) and only its single-symbol historical
+  bars endpoint (`/v2/stocks/{symbol}/bars`) — no order, account, or
+  execution functionality, and it does not write to DuckDB. It supports
+  exactly one symbol per request and only the three project-approved
+  timeframes (`1Min`, `5Min`, `1Day`; case/spacing variants are normalized
+  to those exact values). `start`/`end` must be strict RFC3339 timestamps
+  with an explicit UTC offset, are normalized to UTC, and `start` must be
+  strictly before `end`. The per-page limit and page count are both
+  strictly bounded, so a malformed or endless provider pagination sequence
+  cannot loop indefinitely. The normalized `Bar` model contains only
+  provider, symbol, timeframe, bar timestamp (UTC, kept distinct from
+  local retrieval time), open/high/low/close (as `Decimal`, to avoid
+  binary-float rounding artifacts in values intended for reproducible
+  analysis), volume, trade_count (nullable), vwap (nullable), and
+  retrieved_at — no indicators, returns, labels, sentiment, predictions, or
+  trade directions. Numeric fields reject booleans, non-numeric types, and
+  non-finite values (NaN/infinity); candles failing basic OHLC consistency
+  are rejected. If a non-empty provider bars list contains any malformed
+  bar, the entire request fails with a sanitized error rather than
+  returning a misleading partial series; exact duplicate bars (by symbol,
+  timeframe, timestamp) are deduplicated, while conflicting duplicates fail
+  the request. Results are returned in chronological order. A companion
+  script, `scripts/check_alpaca_bars.py`, and a `check_connection` method
+  report only sanitized connection status (configured, success, status
+  category, symbol, timeframe, bar count, oldest/newest bar timestamp) —
+  never OHLCV values, credentials, URLs, raw responses, or page tokens.
+  **This connector has not yet been used for a live request.** No
+  historical bars dataset has been retrieved, stored, or validated —
+  running a live connectivity check requires separate, explicit
+  authorization, and this connector does not store bars in DuckDB in any
+  case (bars storage is future, separately reviewed work).
 - A local DuckDB storage foundation has been initialized
   (`market_intelligence/storage/`, `DuckDBManager` in
-  `market_intelligence/storage/database.py`). It provides only a
-  versioned, checksum-verified, transactional migration runner and the
-  local database file — no provider data has been ingested or stored, and
-  no forecasting/trading tables exist. The schema currently defines only
-  two infrastructure-metadata tables: `schema_migrations` (tracks applied
-  migrations and their checksums) and `ingestion_runs` (records
+  `market_intelligence/storage/database.py`). It provides a versioned,
+  checksum-verified, transactional migration runner and the local
+  database file — no forecasting/trading tables exist. The schema
+  currently defines four tables: `schema_migrations` (tracks applied
+  migrations and their checksums), `ingestion_runs` (records
   provider/dataset/timing/status/record-count/sanitized-error-category/
-  code-version/schema-version metadata for future ingestion runs — the
-  table exists but nothing has written to it yet, since no ingestion code
-  exists). Migration `0003` added a separate `schema_version` column to
+  code-version/schema-version metadata for ingestion runs — now written
+  to by the news ingestion run described below), and `news_articles`
+  (migration `0004`, the first table to store actual provider data — see
+  below). Migration `0003` added a separate `schema_version` column to
   `ingestion_runs`, distinct from `code_version`. The database file
   defaults to `data/market_intelligence.duckdb` (inside this repository's
   own `data/` directory, per `Settings.project_data_path`) and is excluded
@@ -135,9 +171,13 @@ forecasting or trading logic exists yet.
   and that the database is at the latest available migration —
   `healthy` is false if any of these fail. On 2026-08-20 the local
   database was first initialized (schema version `0002`, 2 migrations
-  applied), and on the same day was upgraded to schema version `0003` (1
-  additional migration applied, 3 total) after migration `0003` was added;
-  the health check reported healthy at `0003`. See
+  applied), was upgraded to schema version `0003` (1 additional migration
+  applied, 3 total) after migration `0003` was added, and — after the
+  authorized live news ingestion described below — was upgraded again to
+  schema version `0004` (4 migrations applied). A read-only health check
+  on 2026-08-20 reported the real local database healthy at `0004`
+  (required tables/columns present, migration history and checksums
+  valid, at the latest available migration). See
   [docs/STORAGE_ARCHITECTURE.md](docs/STORAGE_ARCHITECTURE.md).
 - A first persistent news-storage table, `news_articles`, has been added
   via migration `0004`
@@ -161,13 +201,17 @@ forecasting or trading logic exists yet.
   entire batch (nothing partially persists) and the corresponding
   `ingestion_runs` row is recorded `failed` with a sanitized error
   category. See [docs/STORAGE_ARCHITECTURE.md](docs/STORAGE_ARCHITECTURE.md)
-  for full detail. **This is a schema/storage capability only.**
-  `scripts/ingest_alpaca_news.py` has deliberately not been run live as
-  part of adding this layer, so the real local database file is still at
-  schema version `0003` (not yet upgraded to `0004`), and no persistent
-  news dataset has been stored, cataloged, or validated — see
-  `DATA_CATALOG.md`. Live ingestion requires separate, explicit
-  authorization.
+  for full detail. On 2026-08-20, one explicitly authorized live SPY news
+  ingestion was run via `scripts/ingest_alpaca_news.py` against the real
+  local database and succeeded: 10 articles received, 10 inserted, 0
+  updated, 0 failed, and the corresponding `ingestion_runs` row recorded
+  status `succeeded`. This run upgraded the real local database file to
+  schema version `0004`. Only sanitized counts and status are recorded
+  here — no article headline, URL, or summary content is reproduced in
+  this document. This confirms the storage pipeline succeeded for one
+  ingestion run; it is not the same as a validated, cataloged news
+  dataset — see `DATA_CATALOG.md` for the dataset-level record and
+  required-fields status.
 - No market-bar or macro-observation table exists yet — those require
   separate, reviewed data contracts.
 - No trading execution connected. No brokerage integration exists or is
@@ -185,28 +229,36 @@ forecasting or trading logic exists yet.
 
 ## Next Planned Work
 
-1. Data connector design — read-only Alpaca market-data, Alpaca news, and
-   FRED connectors now exist (see above). Verified schema/provenance
-   details belong in `DATA_CATALOG.md` once bulk data is actually pulled
-   and inspected, not just a connectivity check.
+1. Data connector design — read-only Alpaca market-data, Alpaca news,
+   Alpaca historical bars, and FRED connectors now exist (see above).
+   Verified schema/provenance details belong in `DATA_CATALOG.md` once
+   bulk data is actually pulled and inspected, not just a connectivity
+   check.
 2. Provider configuration — Alpaca and FRED credential handling (via
    `.env`, never committed) is in place.
 3. First connection tests — done for Alpaca market data (read-only
-   snapshot connectivity check), Alpaca news (read-only SPY-news
-   connectivity check), and FRED (read-only latest-observation
+   snapshot connectivity check) and FRED (read-only latest-observation
    connectivity check), recorded in `DATA_CATALOG.md`/`PROJECT_STATE.md`.
+   Done live for Alpaca news (one authorized SPY-news request, see above).
+   Not yet run live for Alpaca historical bars — the connector exists and
+   is unit-tested, but a live connectivity check requires separate,
+   explicit authorization.
 4. Database initialization — done (see above): the local DuckDB storage
-   foundation (infrastructure-metadata schema only) is initialized under
-   `data/` at schema version `0003`; migration `0004` (`news_articles`)
-   exists in this repository's migration code and is covered by tests
-   against temporary databases, but has not yet been applied to the real
-   local database file.
+   foundation is initialized under `data/`, now at schema version `0004`
+   (`news_articles` applied) after the authorized live news ingestion
+   described above.
 5. News storage — done (see above): `news_articles` schema, storage
-   service, and a manual ingestion script exist, but no live ingestion has
-   been run and no persistent news dataset is validated yet. Running
-   `scripts/ingest_alpaca_news.py` live (which will also upgrade the real
-   database to schema `0004`) requires separate, explicit authorization.
-6. Reviewed data contracts for actual provider data — design and add
+   service, and manual ingestion script exist, and one authorized live
+   ingestion has succeeded (10 received, 10 inserted, 0 failed). This
+   confirms the storage pipeline for one run; a validated, cataloged news
+   dataset (per `DATA_CATALOG.md`'s Required Fields) is still separate,
+   future work.
+6. Historical bars connector — done (see above): a read-only,
+   single-symbol historical-bars connector exists and is unit-tested
+   (`AlpacaBarsClient`), but has not been used for a live request and does
+   not store bars in DuckDB. A live connectivity check requires separate,
+   explicit authorization.
+7. Reviewed data contracts for actual provider data — design and add
    versioned migrations for market-bar and macro-observation tables (and
    the ingestion code that writes to `ingestion_runs`), each as its own
    reviewed change, before any provider data is stored.
