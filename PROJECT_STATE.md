@@ -17,7 +17,8 @@ Status below). Read-only FRED macroeconomic-data provider connectivity has
 also been verified (a single read-only latest-observation request — see
 Status below). Connectivity is not the same as a validated data pipeline:
 no historical or live dataset has been stored, cataloged, or validated
-yet, and no database, forecasting, or trading logic exists yet.
+yet. A local DuckDB storage foundation now exists (infrastructure metadata
+only — see Status below), but no forecasting or trading logic exists yet.
 
 ## Status
 
@@ -75,8 +76,36 @@ yet, and no database, forecasting, or trading logic exists yet.
   observation date returned). This confirms connectivity only; it is not
   the same as a validated data pipeline. No historical or live dataset has
   been stored, cataloged, or validated yet — see `DATA_CATALOG.md`.
-- No database initialized. DuckDB is included as a runtime dependency but
-  no database file has been created and no schema exists yet.
+- A local DuckDB storage foundation has been initialized
+  (`market_intelligence/storage/`, `DuckDBManager` in
+  `market_intelligence/storage/database.py`). It provides only a
+  versioned, checksum-verified, transactional migration runner and the
+  local database file — no provider data has been ingested or stored, and
+  no forecasting/trading tables exist. The schema currently defines only
+  two infrastructure-metadata tables: `schema_migrations` (tracks applied
+  migrations and their checksums) and `ingestion_runs` (records
+  provider/dataset/timing/status/record-count/sanitized-error-category/
+  code-version/schema-version metadata for future ingestion runs — the
+  table exists but nothing has written to it yet, since no ingestion code
+  exists). Migration `0003` added a separate `schema_version` column to
+  `ingestion_runs`, distinct from `code_version`. The database file
+  defaults to `data/market_intelligence.duckdb` (inside this repository's
+  own `data/` directory, per `Settings.project_data_path`) and is excluded
+  from version control via `.gitignore`. `scripts/initialize_database.py`
+  applies pending migrations and prints only the database path, schema
+  version, and applied migration count; `scripts/check_database.py`
+  performs a read-only health check that also verifies required columns,
+  that the applied migration history matches the migration directory (no
+  missing files, no checksum mismatches, no gaps/out-of-order versions),
+  and that the database is at the latest available migration —
+  `healthy` is false if any of these fail. On 2026-08-20 the local
+  database was first initialized (schema version `0002`, 2 migrations
+  applied), and on the same day was upgraded to schema version `0003` (1
+  additional migration applied, 3 total) after migration `0003` was added;
+  the health check reported healthy at `0003`. See
+  [docs/STORAGE_ARCHITECTURE.md](docs/STORAGE_ARCHITECTURE.md). No market
+  bar, macro observation, news, forecast, or trade tables exist yet —
+  those require separate, reviewed data contracts.
 - No trading execution connected. No brokerage integration exists or is
   planned; Robinhood is used manually, outside this system.
 - No validated predictive model. No forecasting, scoring, or evaluation
@@ -101,8 +130,13 @@ yet, and no database, forecasting, or trading logic exists yet.
 3. First connection tests — done for both Alpaca (read-only snapshot
    connectivity check) and FRED (read-only latest-observation connectivity
    check), recorded in `DATA_CATALOG.md`/`PROJECT_STATE.md`.
-4. Database initialization — local DuckDB/Parquet storage layout under
-   `data/`, once a schema has been designed.
+4. Database initialization — done (see above): the local DuckDB storage
+   foundation (infrastructure-metadata schema only) is initialized under
+   `data/`.
+5. Reviewed data contracts for actual provider data — design and add
+   versioned migrations for market-bar and macro-observation tables (and
+   the ingestion code that writes to `ingestion_runs`), each as its own
+   reviewed change, before any provider data is stored.
 
 ## Notes
 

@@ -1,0 +1,599 @@
+"""Tests for market_intelligence.storage.database.
+
+These tests never touch the real repository database or any network/API.
+Every manager under test is pointed at an isolated temporary directory by
+constructing a ``Settings`` whose ``project_data_path`` is ``tmp_path`` (or a
+subdirectory of it), mirroring how the connector tests isolate ``Settings``
+via an env file that does not exist.
+"""
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+from pathlib import Path
+
+import duckdb
+import pytest
+
+from market_intelligence.config.settings import REPO_ROOT, Settings
+from market_intelligence.storage.database import (
+    DATABASE_FILENAME,
+    DatabasePathSafetyError,
+    DuckDBManager,
+    MigrationError,
+    default_database_path,
+)
+
+CREDENTIAL_ENV_VARS = [
+    "ALPACA_API_KEY",
+    "ALPACA_API_SECRET",
+    "FRED_API_KEY",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+]
+
+
+@pytest.fixture(autouse=True)
+def clear_credential_env(monkeypatch):
+    for var in CREDENTIAL_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+
+
+@pytest.fixture
+def isolated_env_file(tmp_path) -> Path:
+    return tmp_path / "does-not-exist.env"
+
+
+def isolated_settings(tmp_path: Path, isolated_env_file: Path) -> Settings:
+    """Settings scoped to an isolated project data directory under tmp_path."""
+    return Settings(project_data_path=tmp_path / "data", _env_file=isolated_env_file)
+
+
+def write_migration(migrations_dir: Path, filename: str, sql: str) -> None:
+    migrations_dir.mkdir(parents=True, exist_ok=True)
+    (migrations_dir / filename).write_text(sql, encoding="utf-8")
+
+
+def table_names(connection: duckdb.DuckDBPyConnection) -> set[str]:
+    rows = connection.execute("SELECT table_name FROM information_schema.tables").fetchall()
+    return {row[0] for row in rows}
+
+
+MIGRATION_0001 = (
+    "0001_create_schema_migrations.sql",
+    "CREATE TABLE schema_migrations (\n"
+    "    version VARCHAR PRIMARY KEY,\n"
+    "    filename VARCHAR NOT NULL,\n"
+    "    checksum VARCHAR NOT NULL,\n"
+    "    applied_at_utc TIMESTAMP NOT NULL\n"
+    ");\n",
+)
+
+MIGRATION_0002 = (
+    "0002_create_ingestion_runs.sql",
+    "CREATE TABLE ingestion_runs (\n"
+    "    run_id VARCHAR PRIMARY KEY,\n"
+    "    provider VARCHAR NOT NULL,\n"
+    "    dataset_name VARCHAR NOT NULL,\n"
+    "    started_at_utc TIMESTAMP NOT NULL,\n"
+    "    completed_at_utc TIMESTAMP,\n"
+    "    status VARCHAR NOT NULL CHECK (status IN ('running', 'succeeded', 'failed')),\n"
+    "    records_received BIGINT,\n"
+    "    error_category VARCHAR,\n"
+    "    code_version VARCHAR NOT NULL\n"
+    ");\n",
+)
+
+MIGRATION_0003 = (
+    "0003_add_schema_version_to_ingestion_runs.sql",
+    "ALTER TABLE ingestion_runs ADD COLUMN schema_version VARCHAR;\n",
+)
+
+
+def real_migrations_manager(tmp_path: Path, isolated_env_file: Path) -> DuckDBManager:
+    """A manager wired to the project's real (non-test-fixture) migration files."""
+    return DuckDBManager(settings=isolated_settings(tmp_path, isolated_env_file))
+
+
+# --- first initialization ---------------------------------------------------
+
+
+def test_initialize_creates_database_file(tmp_path, isolated_env_file):
+    manager = real_migrations_manager(tmp_path, isolated_env_file)
+    result = manager.initialize()
+
+    assert result.database_path.exists()
+    assert result.database_path.name == DATABASE_FILENAME
+    assert result.applied_migration_count == 3
+    assert result.schema_version == "0003"
+
+
+def test_initialize_creates_required_tables_and_columns(tmp_path, isolated_env_file):
+    manager = real_migrations_manager(tmp_path, isolated_env_file)
+    result = manager.initialize()
+
+    connection = duckdb.connect(str(result.database_path), read_only=True)
+    try:
+        tables = table_names(connection)
+        assert "schema_migrations" in tables
+        assert "ingestion_runs" in tables
+
+        migration_columns = {
+            row[0]
+            for row in connection.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'schema_migrations'"
+            ).fetchall()
+        }
+        assert migration_columns == {"version", "filename", "checksum", "applied_at_utc"}
+
+        run_columns = {
+            row[0]
+            for row in connection.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'ingestion_runs'"
+            ).fetchall()
+        }
+        assert run_columns == {
+            "run_id",
+            "provider",
+            "dataset_name",
+            "started_at_utc",
+            "completed_at_utc",
+            "status",
+            "records_received",
+            "error_category",
+            "code_version",
+            "schema_version",
+        }
+    finally:
+        connection.close()
+
+
+def test_initialize_creates_parent_directory(tmp_path, isolated_env_file):
+    settings = Settings(project_data_path=tmp_path / "nested" / "data", _env_file=isolated_env_file)
+    manager = DuckDBManager(settings=settings)
+
+    assert not settings.project_data_path.exists()
+    manager.initialize()
+    assert settings.project_data_path.exists()
+
+
+# --- repeated initialization (idempotency) ----------------------------------
+
+
+def test_repeated_initialize_applies_zero_new_migrations(tmp_path, isolated_env_file):
+    manager = real_migrations_manager(tmp_path, isolated_env_file)
+    first = manager.initialize()
+    second = manager.initialize()
+
+    assert first.applied_migration_count == 3
+    assert second.applied_migration_count == 0
+    assert second.schema_version == first.schema_version
+
+
+def test_repeated_initialize_does_not_duplicate_rows(tmp_path, isolated_env_file):
+    manager = real_migrations_manager(tmp_path, isolated_env_file)
+    manager.initialize()
+    result = manager.initialize()
+
+    connection = duckdb.connect(str(result.database_path), read_only=True)
+    try:
+        count = connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0]
+    finally:
+        connection.close()
+    assert count == 3
+
+
+# --- migration order ---------------------------------------------------------
+
+
+def test_migrations_apply_in_ascending_order_and_respect_dependencies(tmp_path, isolated_env_file):
+    """0002 depends on a table created by 0001; wrong order would fail."""
+    migrations_dir = tmp_path / "migrations"
+    write_migration(migrations_dir, *MIGRATION_0001)
+    write_migration(
+        migrations_dir,
+        "0002_add_ingestion_runs_referencing_schema_migrations.sql",
+        "CREATE TABLE ingestion_runs (\n"
+        "    run_id VARCHAR PRIMARY KEY,\n"
+        "    code_version VARCHAR NOT NULL REFERENCES schema_migrations(version)\n"
+        ");\n",
+    )
+    settings = isolated_settings(tmp_path, isolated_env_file)
+    manager = DuckDBManager(settings=settings, migrations_dir=migrations_dir)
+
+    result = manager.initialize()
+
+    connection = duckdb.connect(str(result.database_path), read_only=True)
+    try:
+        rows = connection.execute(
+            "SELECT version, filename FROM schema_migrations ORDER BY version"
+        ).fetchall()
+    finally:
+        connection.close()
+    assert [row[0] for row in rows] == ["0001", "0002"]
+
+
+def test_duplicate_migration_version_is_rejected(tmp_path, isolated_env_file):
+    migrations_dir = tmp_path / "migrations"
+    write_migration(migrations_dir, "0001_create_schema_migrations.sql", MIGRATION_0001[1])
+    write_migration(migrations_dir, "0001_duplicate.sql", "CREATE TABLE dup (id INTEGER);\n")
+    settings = isolated_settings(tmp_path, isolated_env_file)
+    manager = DuckDBManager(settings=settings, migrations_dir=migrations_dir)
+
+    with pytest.raises(MigrationError, match="Duplicate"):
+        manager.initialize()
+
+
+def test_malformed_migration_filename_is_rejected(tmp_path, isolated_env_file):
+    migrations_dir = tmp_path / "migrations"
+    write_migration(
+        migrations_dir, "not_a_versioned_migration.sql", "CREATE TABLE x (id INTEGER);\n"
+    )
+    settings = isolated_settings(tmp_path, isolated_env_file)
+    manager = DuckDBManager(settings=settings, migrations_dir=migrations_dir)
+
+    with pytest.raises(MigrationError, match="does not match"):
+        manager.initialize()
+
+
+# --- checksum mismatch --------------------------------------------------------
+
+
+def test_checksum_mismatch_on_already_applied_migration_is_rejected(tmp_path, isolated_env_file):
+    migrations_dir = tmp_path / "migrations"
+    write_migration(migrations_dir, *MIGRATION_0001)
+    settings = isolated_settings(tmp_path, isolated_env_file)
+    manager = DuckDBManager(settings=settings, migrations_dir=migrations_dir)
+    manager.initialize()
+
+    # Mutate the already-applied migration's content.
+    write_migration(
+        migrations_dir, MIGRATION_0001[0], "CREATE TABLE schema_migrations_altered (id INTEGER);\n"
+    )
+
+    with pytest.raises(MigrationError, match="Checksum mismatch"):
+        manager.initialize()
+
+
+def test_checksum_mismatch_does_not_reapply_or_corrupt_state(tmp_path, isolated_env_file):
+    migrations_dir = tmp_path / "migrations"
+    write_migration(migrations_dir, *MIGRATION_0001)
+    settings = isolated_settings(tmp_path, isolated_env_file)
+    manager = DuckDBManager(settings=settings, migrations_dir=migrations_dir)
+    first = manager.initialize()
+
+    write_migration(migrations_dir, MIGRATION_0001[0], "CREATE TABLE altered (id INTEGER);\n")
+    with pytest.raises(MigrationError):
+        manager.initialize()
+
+    connection = duckdb.connect(str(first.database_path), read_only=True)
+    try:
+        tables = table_names(connection)
+    finally:
+        connection.close()
+    assert "altered" not in tables
+    assert "schema_migrations" in tables
+
+
+# --- transaction rollback -----------------------------------------------------
+
+
+def test_failed_migration_rolls_back_all_its_ddl(tmp_path, isolated_env_file):
+    migrations_dir = tmp_path / "migrations"
+    write_migration(migrations_dir, *MIGRATION_0001)
+    write_migration(
+        migrations_dir,
+        "0002_partially_fails.sql",
+        "CREATE TABLE should_not_persist (id INTEGER);\n"
+        "CREATE TABLE should_not_persist (id INTEGER);\n",  # duplicate -> fails
+    )
+    settings = isolated_settings(tmp_path, isolated_env_file)
+    manager = DuckDBManager(settings=settings, migrations_dir=migrations_dir)
+
+    with pytest.raises(MigrationError, match="0002_partially_fails.sql"):
+        manager.initialize()
+
+    connection = duckdb.connect(str(default_database_path(settings)), read_only=True)
+    try:
+        tables = table_names(connection)
+        applied_versions = {
+            row[0] for row in connection.execute("SELECT version FROM schema_migrations").fetchall()
+        }
+    finally:
+        connection.close()
+
+    assert "should_not_persist" not in tables
+    assert applied_versions == {"0001"}
+
+
+def test_fixing_a_failed_migration_allows_recovery_on_next_run(tmp_path, isolated_env_file):
+    migrations_dir = tmp_path / "migrations"
+    write_migration(migrations_dir, *MIGRATION_0001)
+    write_migration(
+        migrations_dir,
+        "0002_partially_fails.sql",
+        "CREATE TABLE should_not_persist (id INTEGER);\n"
+        "CREATE TABLE should_not_persist (id INTEGER);\n",
+    )
+    settings = isolated_settings(tmp_path, isolated_env_file)
+    manager = DuckDBManager(settings=settings, migrations_dir=migrations_dir)
+    with pytest.raises(MigrationError):
+        manager.initialize()
+
+    # Replace the broken migration with a valid one under the same version+name is not
+    # allowed once applied would-be, but 0002 was never recorded as applied, so it can
+    # simply be corrected in place and re-run.
+    write_migration(
+        migrations_dir, "0002_partially_fails.sql", "CREATE TABLE fixed (id INTEGER);\n"
+    )
+    result = manager.initialize()
+
+    assert result.applied_migration_count == 1
+    assert result.schema_version == "0002"
+
+
+# --- path safety ---------------------------------------------------------
+
+
+def test_default_path_is_inside_configured_project_data_path(tmp_path, isolated_env_file):
+    settings = isolated_settings(tmp_path, isolated_env_file)
+    manager = DuckDBManager(settings=settings)
+    assert manager.database_path.parent == settings.project_data_path.resolve()
+
+
+def test_explicit_path_outside_project_data_path_is_rejected(tmp_path, isolated_env_file):
+    settings = isolated_settings(tmp_path, isolated_env_file)
+    outside_path = tmp_path / "elsewhere" / DATABASE_FILENAME
+
+    with pytest.raises(DatabasePathSafetyError):
+        DuckDBManager(settings=settings, database_path=outside_path)
+
+
+def test_path_traversal_outside_project_data_path_is_rejected(tmp_path, isolated_env_file):
+    settings = isolated_settings(tmp_path, isolated_env_file)
+    traversal_path = settings.project_data_path / ".." / "escaped.duckdb"
+
+    with pytest.raises(DatabasePathSafetyError):
+        DuckDBManager(settings=settings, database_path=traversal_path)
+
+
+def test_test_injected_temp_path_via_settings_is_accepted(tmp_path, isolated_env_file):
+    """A test pointing project_data_path at tmp_path is the sanctioned override path."""
+    settings = isolated_settings(tmp_path, isolated_env_file)
+    manager = DuckDBManager(settings=settings)  # no explicit database_path override needed
+    result = manager.initialize()
+    assert tmp_path.resolve() in result.database_path.parents
+
+
+def test_real_default_database_path_is_under_repo_data_directory(isolated_env_file):
+    """Constructing (not initializing) a manager with default settings must never touch disk."""
+    settings = Settings(_env_file=isolated_env_file)
+    manager = DuckDBManager(settings=settings)
+    assert manager.database_path == (REPO_ROOT / "data" / DATABASE_FILENAME).resolve()
+
+
+# --- check_health -------------------------------------------------------------
+
+
+def test_check_health_before_initialization_reports_unhealthy_without_creating_file(
+    tmp_path, isolated_env_file
+):
+    manager = real_migrations_manager(tmp_path, isolated_env_file)
+    health = manager.check_health()
+
+    assert health.healthy is False
+    assert health.database_exists is False
+    assert health.required_tables_present is False
+    assert health.required_columns_present is False
+    assert health.migration_history_valid is False
+    assert health.checksums_valid is False
+    assert health.is_current is False
+    assert health.schema_version is None
+    assert health.applied_migration_count is None
+    assert not health.database_path.exists()
+
+
+def test_check_health_after_initialization_reports_healthy(tmp_path, isolated_env_file):
+    manager = real_migrations_manager(tmp_path, isolated_env_file)
+    manager.initialize()
+    health = manager.check_health()
+
+    assert health.healthy is True
+    assert health.database_exists is True
+    assert health.required_tables_present is True
+    assert health.required_columns_present is True
+    assert health.migration_history_valid is True
+    assert health.checksums_valid is True
+    assert health.is_current is True
+    assert health.schema_version == "0003"
+    assert health.applied_migration_count == 3
+
+
+def test_check_health_is_read_only(tmp_path, isolated_env_file):
+    """check_health must never write, even implicitly (e.g. via schema creation)."""
+    manager = real_migrations_manager(tmp_path, isolated_env_file)
+    manager.initialize()
+    before = manager.database_path.stat().st_mtime_ns
+
+    manager.check_health()
+
+    after = manager.database_path.stat().st_mtime_ns
+    assert before == after
+
+
+# --- migration integrity: missing applied migration file ---------------------
+
+
+def test_initialize_rejects_missing_applied_migration_file(tmp_path, isolated_env_file):
+    """A version recorded as applied whose migration file no longer exists is rejected."""
+    migrations_dir = tmp_path / "migrations"
+    write_migration(migrations_dir, *MIGRATION_0001)
+    settings = isolated_settings(tmp_path, isolated_env_file)
+    manager = DuckDBManager(settings=settings, migrations_dir=migrations_dir)
+    manager.initialize()
+
+    missing_dir = tmp_path / "migrations_missing"
+    missing_dir.mkdir()
+    reduced_manager = DuckDBManager(settings=settings, migrations_dir=missing_dir)
+
+    with pytest.raises(MigrationError, match="no corresponding migration file"):
+        reduced_manager.initialize()
+
+
+def test_check_health_missing_applied_migration_file_is_unhealthy(tmp_path, isolated_env_file):
+    migrations_dir = tmp_path / "migrations"
+    write_migration(migrations_dir, *MIGRATION_0001)
+    settings = isolated_settings(tmp_path, isolated_env_file)
+    manager = DuckDBManager(settings=settings, migrations_dir=migrations_dir)
+    manager.initialize()
+
+    missing_dir = tmp_path / "migrations_missing"
+    missing_dir.mkdir()
+    reduced_manager = DuckDBManager(settings=settings, migrations_dir=missing_dir)
+
+    health = reduced_manager.check_health()
+
+    assert health.database_exists is True
+    assert health.migration_history_valid is False
+    assert health.healthy is False
+
+
+# --- migration integrity: stale database behind the latest migration ---------
+
+
+def test_check_health_stale_database_is_unhealthy(tmp_path, isolated_env_file):
+    migrations_dir = tmp_path / "migrations"
+    write_migration(migrations_dir, *MIGRATION_0001)
+    settings = isolated_settings(tmp_path, isolated_env_file)
+    manager = DuckDBManager(settings=settings, migrations_dir=migrations_dir)
+    manager.initialize()
+
+    # A new migration becomes available, but is never applied.
+    write_migration(migrations_dir, *MIGRATION_0002)
+
+    health = manager.check_health()
+
+    assert health.schema_version == "0001"
+    assert health.migration_history_valid is True
+    assert health.checksums_valid is True
+    assert health.is_current is False
+    assert health.healthy is False
+
+
+# --- migration integrity: checksum mismatch -----------------------------------
+
+
+def test_check_health_checksum_mismatch_is_unhealthy(tmp_path, isolated_env_file):
+    migrations_dir = tmp_path / "migrations"
+    write_migration(migrations_dir, *MIGRATION_0001)
+    settings = isolated_settings(tmp_path, isolated_env_file)
+    manager = DuckDBManager(settings=settings, migrations_dir=migrations_dir)
+    manager.initialize()
+
+    write_migration(
+        migrations_dir, MIGRATION_0001[0], "CREATE TABLE schema_migrations_altered (id INTEGER);\n"
+    )
+
+    health = manager.check_health()
+
+    assert health.checksums_valid is False
+    assert health.is_current is False
+    assert health.healthy is False
+
+
+# --- required-column failure ---------------------------------------------------
+
+
+def test_check_health_missing_required_column_is_unhealthy(tmp_path, isolated_env_file):
+    """A required column dropped outside the migration runner is caught independently."""
+    manager = real_migrations_manager(tmp_path, isolated_env_file)
+    manager.initialize()
+
+    connection = duckdb.connect(str(manager.database_path))
+    try:
+        connection.execute("ALTER TABLE ingestion_runs DROP COLUMN code_version")
+    finally:
+        connection.close()
+
+    health = manager.check_health()
+
+    assert health.required_tables_present is True
+    assert health.required_columns_present is False
+    assert health.healthy is False
+
+
+# --- 0002 -> 0003 upgrade -------------------------------------------------------
+
+
+def test_0002_to_0003_upgrade_preserves_existing_infrastructure_state(tmp_path, isolated_env_file):
+    """A database already at 0002 upgrades to 0003 without losing existing rows."""
+    migrations_dir = tmp_path / "migrations"
+    write_migration(migrations_dir, *MIGRATION_0001)
+    write_migration(migrations_dir, *MIGRATION_0002)
+    settings = isolated_settings(tmp_path, isolated_env_file)
+    manager = DuckDBManager(settings=settings, migrations_dir=migrations_dir)
+    first = manager.initialize()
+    assert first.schema_version == "0002"
+
+    # Simulate pre-existing infrastructure state written before the 0003 upgrade.
+    connection = duckdb.connect(str(manager.database_path))
+    try:
+        connection.execute(
+            "INSERT INTO ingestion_runs "
+            "(run_id, provider, dataset_name, started_at_utc, status, code_version) "
+            "VALUES ('run-1', 'alpaca', 'snapshot', now(), 'succeeded', 'v0')"
+        )
+    finally:
+        connection.close()
+
+    # 0003 becomes available.
+    write_migration(migrations_dir, *MIGRATION_0003)
+    second = manager.initialize()
+
+    assert second.applied_migration_count == 1
+    assert second.schema_version == "0003"
+
+    connection = duckdb.connect(str(manager.database_path), read_only=True)
+    try:
+        columns = {
+            row[0]
+            for row in connection.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'ingestion_runs'"
+            ).fetchall()
+        }
+        assert "schema_version" in columns
+
+        row = connection.execute(
+            "SELECT run_id, provider, schema_version FROM ingestion_runs WHERE run_id = 'run-1'"
+        ).fetchone()
+    finally:
+        connection.close()
+
+    assert row is not None
+    assert row[0] == "run-1"
+    assert row[1] == "alpaca"
+    assert row[2] is None  # pre-existing row has no backfilled value for the new column
+
+    health = manager.check_health()
+    assert health.healthy is True
+    assert health.schema_version == "0003"
+
+
+# --- database file remains ignored by Git ------------------------------------
+
+
+def test_database_file_is_git_ignored():
+    if shutil.which("git") is None:
+        pytest.skip("git executable not available")
+
+    candidate = REPO_ROOT / "data" / DATABASE_FILENAME
+    result = subprocess.run(
+        ["git", "check-ignore", "-q", str(candidate)],
+        cwd=REPO_ROOT,
+        check=False,
+    )
+    assert result.returncode == 0, "expected data/*.duckdb to be git-ignored"
