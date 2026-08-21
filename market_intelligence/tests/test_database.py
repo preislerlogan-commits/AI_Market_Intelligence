@@ -105,8 +105,8 @@ def test_initialize_creates_database_file(tmp_path, isolated_env_file):
 
     assert result.database_path.exists()
     assert result.database_path.name == DATABASE_FILENAME
-    assert result.applied_migration_count == 3
-    assert result.schema_version == "0003"
+    assert result.applied_migration_count == 4
+    assert result.schema_version == "0004"
 
 
 def test_initialize_creates_required_tables_and_columns(tmp_path, isolated_env_file):
@@ -147,6 +147,30 @@ def test_initialize_creates_required_tables_and_columns(tmp_path, isolated_env_f
             "code_version",
             "schema_version",
         }
+
+        assert "news_articles" in tables
+        news_columns = {
+            row[0]
+            for row in connection.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'news_articles'"
+            ).fetchall()
+        }
+        assert news_columns == {
+            "provider",
+            "provider_article_id",
+            "headline",
+            "source",
+            "article_url",
+            "summary",
+            "created_at",
+            "updated_at",
+            "related_symbols",
+            "retrieved_at",
+            "first_ingested_at",
+            "last_seen_at",
+            "ingestion_run_id",
+        }
     finally:
         connection.close()
 
@@ -168,7 +192,7 @@ def test_repeated_initialize_applies_zero_new_migrations(tmp_path, isolated_env_
     first = manager.initialize()
     second = manager.initialize()
 
-    assert first.applied_migration_count == 3
+    assert first.applied_migration_count == 4
     assert second.applied_migration_count == 0
     assert second.schema_version == first.schema_version
 
@@ -183,7 +207,7 @@ def test_repeated_initialize_does_not_duplicate_rows(tmp_path, isolated_env_file
         count = connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0]
     finally:
         connection.close()
-    assert count == 3
+    assert count == 4
 
 
 # --- migration order ---------------------------------------------------------
@@ -408,8 +432,8 @@ def test_check_health_after_initialization_reports_healthy(tmp_path, isolated_en
     assert health.migration_history_valid is True
     assert health.checksums_valid is True
     assert health.is_current is True
-    assert health.schema_version == "0003"
-    assert health.applied_migration_count == 3
+    assert health.schema_version == "0004"
+    assert health.applied_migration_count == 4
 
 
 def test_check_health_is_read_only(tmp_path, isolated_env_file):

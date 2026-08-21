@@ -7,7 +7,7 @@ for what data has (and has not) actually been ingested.
 
 ## Scope
 
-This foundation defines and applies exactly two tables:
+This foundation defines and applies four tables:
 
 - **`schema_migrations`** — tracks which versioned migrations have been
   applied, with a checksum of each migration file's content.
@@ -17,10 +17,69 @@ This foundation defines and applies exactly two tables:
   ingestion code ran — and `schema_version` — which database schema
   version was active at run time, added in migration `0003`). It does not
   store any provider data itself.
+- **`news_articles`** (added in migration `0004`) — stores normalized news
+  articles with provenance and idempotency. See "News article storage"
+  below. This is the first table in this database to store actual provider
+  data; it is schema/storage infrastructure only — no persistent news
+  dataset is validated here until an explicitly authorized live ingestion
+  succeeds and is recorded in `DATA_CATALOG.md`.
 
-No market-bar, macroeconomic-observation, news, forecast, or trade tables
-exist yet. Those each require a separate, reviewed data contract before
-they are added as their own versioned migration.
+No market-bar, macroeconomic-observation, forecast, or trade tables exist
+yet. Those each require a separate, reviewed data contract before they are
+added as their own versioned migration.
+
+## News article storage
+
+`news_articles` (`market_intelligence/storage/migrations/0004_create_news_articles.sql`)
+stores only provider-reported article metadata plus this project's own
+provenance/ingestion bookkeeping — never sentiment, impact, direction,
+confidence, model output, recommendations, option-contract data, orders,
+credentials, request headers, or raw API responses.
+
+Columns: `provider`, `provider_article_id`, `headline`, `source`,
+`article_url`, `summary` (nullable), `created_at`/`updated_at` (nullable —
+the provider's reported publication/update timestamps, kept distinct from
+retrieval/ingestion time), `related_symbols` (a `VARCHAR[]`, always stored
+sorted and deduplicated so the on-disk representation is deterministic
+regardless of the order the provider reported symbols in), `retrieved_at`
+(when the connector fetched the response that produced the currently-stored
+values), `first_ingested_at` (set once, on first insert, never changed
+afterward), `last_seen_at` (refreshed every time the article is
+re-ingested), and `ingestion_run_id` (the `ingestion_runs.run_id` of the
+run that most recently wrote this row — recorded, not enforced as a
+DuckDB foreign key, so that `ingestion_runs` can still evolve its own
+schema independently). The primary key is `(provider, provider_article_id)`,
+which is this table's idempotency mechanism: re-ingesting an already-known
+article never creates a duplicate row.
+
+`market_intelligence/storage/news_repository.py` (`NewsArticleRepository`)
+is the only code that writes to this table. It accepts already-normalized
+`NewsItem` objects (from
+`market_intelligence/data_connectors/alpaca_news.py`) — it makes no network
+requests itself and does not apply migrations; the database must already be
+initialized to at least migration `0004`. Every call to
+`store_news_items()` validates its input before any write, records a
+`running` `ingestion_runs` row, and then writes the entire batch inside one
+DuckDB transaction: an unseen article is inserted; an already-known article
+whose stable identity fields (headline, source, URL, publication time)
+still match has its mutable fields (summary, `updated_at`,
+`related_symbols`) and provenance (`retrieved_at`, `last_seen_at`,
+`ingestion_run_id`) refreshed; an already-known article whose stable fields
+*conflict* with the incoming value aborts the entire batch — nothing in
+that batch persists — and the `ingestion_runs` row is recorded as `failed`
+with a sanitized `error_category` (`content_conflict` or `storage_error`),
+never a raw exception message or article content. The returned
+`NewsStorageResult` reports only sanitized counts (`received`, `inserted`,
+`updated`, `failed`) and the ingestion-run id/status — never article text,
+URLs, database internals, or credentials.
+
+`scripts/ingest_alpaca_news.py` is the one manual ingestion entry point: it
+makes at most one explicit, read-only `AlpacaNewsClient.get_news()` request
+for a single, strictly-validated command-line symbol/limit (default `SPY`,
+limit `10`), then stores the results through `NewsArticleRepository`.
+Invalid `--symbol`/`--limit` values are rejected before any network request
+is constructed. It has not been run live as part of adding this storage
+layer — see "Status" in `PROJECT_STATE.md`.
 
 ## Components
 
@@ -28,12 +87,16 @@ they are added as their own versioned migration.
   migration runner, and the path-safety check.
 - `market_intelligence/storage/migrations/*.sql` — versioned schema
   migrations, applied in ascending filename order.
+- `market_intelligence/storage/news_repository.py` — `NewsArticleRepository`,
+  the news-article storage service (see "News article storage" above).
 - `scripts/initialize_database.py` — applies pending migrations to the
   configured local database; prints only the database path, schema
   version, and applied migration count.
 - `scripts/check_database.py` — read-only health check; verifies the
   database file exists and the required tables are present without
   writing anything.
+- `scripts/ingest_alpaca_news.py` — one-shot manual news ingestion (see
+  "News article storage" above); not run live as part of this change.
 
 ## Database location and path safety
 
