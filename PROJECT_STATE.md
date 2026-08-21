@@ -30,13 +30,26 @@ check against the hardened, explicit-IEX connector has now succeeded
 single-symbol SPY, `5Min` timeframe, `feed=iex`, 5 bars returned — see
 Status below). This confirms live connectivity and response normalization
 on the IEX feed only; it does not confirm SIP connectivity, and IEX's
-narrower single-exchange coverage still applies. Connectivity/one
-successful ingestion run is not the same as
-a validated, cataloged data pipeline: no historical or bulk live dataset
-has been stored, cataloged, or validated yet. A local DuckDB storage
-foundation exists; the real local database is at schema version `0004`
-and reports healthy (see Status below). No historical bars dataset is
-stored or validated, and no AI analysis or agent orchestration exists yet.
+narrower single-exchange coverage still applies. **The explicit-IEX bars
+connector remains live connectivity-verified as described above** — it has
+since also been hardened to explicitly send fixed `adjustment=raw` and
+`currency=USD` provenance (alongside the existing `feed=iex`), but no new
+live check has been run against that additional hardening as part of this
+entry. Connectivity/one successful ingestion run is not the same as a
+validated, cataloged data pipeline: no historical or bulk live dataset has
+been stored, cataloged, or validated yet. A market-bar storage schema and
+repository (`market_bars`, migration `0005`, `BarRepository`) now also
+exist as schema/storage-capability infrastructure, covered by tests using
+temporary databases only — **no real bars have been stored yet, and no
+bars dataset is complete or validated.** A local DuckDB storage foundation
+exists; the real local database is at schema version `0004` and reports
+healthy (see Status below), and **remains at migration `0004` until a
+separately authorized initialization/ingestion run applies migration
+`0005` to it** — migration `0005` exists in this repository's migration
+code only. **One stored news ingestion still exists** (10 SPY articles, see
+below) and remains the only provider data stored in the real database. No
+historical bars dataset is stored or validated, and **no AI analysis or
+agent orchestration exists yet.**
 
 ## Status
 
@@ -152,9 +165,9 @@ stored or validated, and no AI analysis or agent orchestration exists yet.
   duplicates fail the request. Results are returned in chronological
   order. A companion script, `scripts/check_alpaca_bars.py`, and a
   `check_connection` method report only sanitized connection status
-  (configured, success, status category, symbol, timeframe, feed, bar
-  count, oldest/newest bar timestamp) — never OHLCV values, credentials,
-  URLs, raw responses, or page tokens.
+  (configured, success, status category, symbol, timeframe, feed,
+  adjustment, currency, bar count, oldest/newest bar timestamp) — never
+  OHLCV values, credentials, URLs, raw responses, or page tokens.
 
   **First authorized live check and feed hardening (2026-08-20):** the
   first authorized live connectivity check (single-symbol SPY, using the
@@ -199,22 +212,69 @@ stored or validated, and no AI analysis or agent orchestration exists yet.
   reviewed work), and no coverage, gap, or quality analysis has been
   performed. No historical bars dataset has been retrieved, stored, or
   validated.
+
+  **Adjustment/currency provenance hardening (2026-08-20):** alongside
+  `feed=iex`, every request — including every paginated page and
+  `check_connection` — now also explicitly sends `adjustment=raw` (fixed
+  constant `DATA_ADJUSTMENT`; split/dividend-unadjusted prices as
+  originally reported, matching this project's "no corporate-action
+  adjustment applied" policy) and `currency=USD` (fixed constant
+  `DATA_CURRENCY`). Neither is ever accepted as a caller-supplied argument
+  anywhere in the connector, and both are recorded on every normalized
+  `Bar` and `BarsConnectionStatus`, including failed/unconfigured/
+  invalid-input statuses. **The explicit-IEX bars connector remains live
+  connectivity-verified** as described in the two authorized checks above;
+  no new live check has been run against this additional adjustment/
+  currency hardening as part of this entry, so it is verified by unit tests
+  (mocked HTTP transport) only, not by a live request.
+- A market-bar storage schema and repository now exist as
+  schema/storage-capability infrastructure — **no real bars have been
+  stored yet, and no bars dataset is complete or validated.** Migration
+  `0005` (`market_intelligence/storage/migrations/0005_create_market_bars.sql`)
+  defines a `market_bars` table, and
+  `market_intelligence/storage/bar_repository.py` (`BarRepository`) accepts
+  already-normalized `Bar` objects from `AlpacaBarsClient` and writes them
+  transactionally, mirroring `NewsArticleRepository`'s pattern; a manual
+  ingestion script, `scripts/ingest_alpaca_bars.py`, also now exists. The
+  table stores only provider-reported OHLCV/vwap data plus provenance
+  (`provider`, `symbol`, `timeframe`, `feed`, `adjustment`, `currency`,
+  `bar_timestamp`, `open`/`high`/`low`/`close`/`vwap` as `DECIMAL(18,6)`,
+  `volume`/`trade_count` as `BIGINT`, `retrieved_at`, `first_ingested_at`,
+  `last_seen_at`, `ingestion_run_id`) — no indicator, return, label,
+  sentiment, prediction, recommendation, option-contract, order, or
+  execution field exists. Idempotency is enforced via a `(provider, symbol,
+  timeframe, feed, adjustment, currency, bar_timestamp)` primary key; an
+  already-known bar identity whose OHLCV/trade_count/vwap values still
+  match has only its retrieval/last-seen/run provenance refreshed, while an
+  already-known bar identity whose values conflict aborts the entire batch
+  (nothing partially persists) and the corresponding `ingestion_runs` row
+  is recorded `failed` with a sanitized error category. See
+  [docs/STORAGE_ARCHITECTURE.md](docs/STORAGE_ARCHITECTURE.md) for full
+  detail. **This entire capability has been built and tested against
+  temporary databases only** (mocked bars, no live Alpaca requests);
+  `scripts/ingest_alpaca_bars.py` has not been run, migration `0005` has
+  not been applied to the real local database, and **the real local
+  database remains at migration `0004`** (see below) — it will only be
+  upgraded to `0005` by a separately authorized initialization/ingestion
+  run.
 - A local DuckDB storage foundation has been initialized
   (`market_intelligence/storage/`, `DuckDBManager` in
   `market_intelligence/storage/database.py`). It provides a versioned,
   checksum-verified, transactional migration runner and the local
-  database file — no forecasting/trading tables exist. The schema
-  currently defines four tables: `schema_migrations` (tracks applied
-  migrations and their checksums), `ingestion_runs` (records
+  database file — no forecasting/trading tables exist. The migration code
+  now defines five tables: `schema_migrations` (tracks applied migrations
+  and their checksums), `ingestion_runs` (records
   provider/dataset/timing/status/record-count/sanitized-error-category/
   code-version/schema-version metadata for ingestion runs — now written
-  to by the news ingestion run described below), and `news_articles`
+  to by the news ingestion run described below), `news_articles`
   (migration `0004`, the first table to store actual provider data — see
-  below). Migration `0003` added a separate `schema_version` column to
-  `ingestion_runs`, distinct from `code_version`. The database file
-  defaults to `data/market_intelligence.duckdb` (inside this repository's
-  own `data/` directory, per `Settings.project_data_path`) and is excluded
-  from version control via `.gitignore`. `scripts/initialize_database.py`
+  below), and `market_bars` (migration `0005`, schema/storage-capability
+  only — see below; not yet applied to the real database). Migration
+  `0003` added a separate `schema_version` column to `ingestion_runs`,
+  distinct from `code_version`. The database file defaults to
+  `data/market_intelligence.duckdb` (inside this repository's own `data/`
+  directory, per `Settings.project_data_path`) and is excluded from
+  version control via `.gitignore`. `scripts/initialize_database.py`
   applies pending migrations and prints only the database path, schema
   version, and applied migration count; `scripts/check_database.py`
   performs a read-only health check that also verifies required columns,
@@ -229,7 +289,16 @@ stored or validated, and no AI analysis or agent orchestration exists yet.
   schema version `0004` (4 migrations applied). A read-only health check
   on 2026-08-20 reported the real local database healthy at `0004`
   (required tables/columns present, migration history and checksums
-  valid, at the latest available migration). See
+  valid, at the latest available migration). **The real database remains
+  at migration `0004` as of this entry** — migration `0005` (`market_bars`)
+  was added to this repository's migration code in this same entry but has
+  not been applied to the real database; a read-only health check against
+  the real database after adding migration `0005` reports
+  `schema_version=0004, applied_migration_count=4, healthy=False` (`False`
+  only because the database is now behind the latest available migration —
+  every other health check, including migration-history validity and
+  checksums, still passes). It will only be upgraded to `0005` by a
+  separately authorized initialization/ingestion run. See
   [docs/STORAGE_ARCHITECTURE.md](docs/STORAGE_ARCHITECTURE.md).
 - A first persistent news-storage table, `news_articles`, has been added
   via migration `0004`
@@ -318,13 +387,22 @@ stored or validated, and no AI analysis or agent orchestration exists yet.
    authorized live check against the hardened connector has now succeeded
    (sanitized 2xx, SPY, `5Min`, `feed=iex`, 5 bars). This verifies live
    connectivity and response normalization on IEX only — not SIP, and not
-   a stored/complete/validated dataset. Remaining future work: reviewed
-   bars storage (a DuckDB table and migration) and, separately, a
-   validated, cataloged historical bars dataset per `DATA_CATALOG.md`.
-7. Reviewed data contracts for actual provider data — design and add
-   versioned migrations for market-bar and macro-observation tables (and
-   the ingestion code that writes to `ingestion_runs`), each as its own
-   reviewed change, before any provider data is stored.
+   a stored/complete/validated dataset. The connector has since also been
+   hardened to explicitly fix `adjustment=raw`/`currency=USD` (see above);
+   this additional hardening has been unit-tested but not live-checked.
+7. Market-bar storage — done (see above): `market_bars` schema (migration
+   `0005`), `BarRepository`, and `scripts/ingest_alpaca_bars.py` exist and
+   are covered by tests using temporary databases and mocked bars only. No
+   live ingestion has been run, migration `0005` has not been applied to
+   the real database, and no bars dataset is stored, complete, or
+   validated. Remaining future work: a separately authorized real-database
+   initialization/ingestion run, and — separately — a validated, cataloged
+   historical bars dataset per `DATA_CATALOG.md`.
+8. Reviewed data contracts for actual provider data — a versioned
+   migration and storage/repository now exist for market bars (see above);
+   a macro-observation table (and the ingestion code that writes to
+   `ingestion_runs` for it) remains future, reviewed work before any FRED
+   provider data is stored.
 
 ## Notes
 

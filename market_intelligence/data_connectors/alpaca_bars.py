@@ -19,6 +19,17 @@ connector never falls back to any other feed automatically. IEX is a
 single-exchange feed, not the consolidated (SIP) tape, so it has narrower
 market coverage than SIP — see DATA_CATALOG.md/PROJECT_STATE.md.
 
+Adjustment and currency: every request also explicitly passes
+``adjustment=DATA_ADJUSTMENT`` ("raw") and ``currency=DATA_CURRENCY``
+("USD"), both fixed module constants, for the same reason ``feed`` is
+fixed — this project depends on explicit, reproducible provenance rather
+than a provider default that could silently change. "raw" means split/
+dividend-unadjusted prices as originally reported; this project does not
+apply any corporate-action adjustment. Neither ``adjustment`` nor
+``currency`` is ever accepted as a caller-supplied argument anywhere in
+this module, and both are recorded on every normalized ``Bar`` and
+``BarsConnectionStatus`` alongside ``feed``.
+
 Numeric representation: normalized OHLC/vwap values are stored as
 ``decimal.Decimal``, built from the provider's JSON numeric value via
 ``Decimal(str(value))`` rather than ``Decimal(value)``. Converting through
@@ -68,6 +79,13 @@ DEFAULT_TIMEOUT = httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0)
 # PROJECT_STATE.md/DATA_CATALOG.md for the coverage tradeoff this implies
 # (IEX is a single exchange's data, not the consolidated SIP tape).
 DATA_FEED = "iex"
+
+# Split/dividend-unadjusted ("raw") prices as originally reported, and USD
+# pricing, are this project's fixed provenance choices — see the module
+# docstring. Like DATA_FEED, neither is ever accepted as a caller-supplied
+# parameter anywhere in this module.
+DATA_ADJUSTMENT = "raw"
+DATA_CURRENCY = "USD"
 
 # Project-approved timeframes only. Alpaca supports other timeframe strings
 # (e.g. "1Hour", "1Week"), but this connector deliberately rejects anything
@@ -316,19 +334,22 @@ class Bar:
 
     Deliberately contains only provider-reported OHLCV/vwap data plus
     provenance — no indicators, returns, labels, sentiment, predictions, or
-    trade directions. ``feed`` is always ``DATA_FEED`` ("iex") — this
-    connector never requests any other feed — and is recorded on every bar
-    so data provenance (which exchange feed produced these values) is
-    always explicit. ``timestamp`` is Alpaca's reported bar timestamp
-    (UTC); ``retrieved_at`` is this connector's own retrieval timestamp
-    (UTC, set once per request when the response was processed) and is
-    always distinct from it.
+    trade directions. ``feed`` is always ``DATA_FEED`` ("iex"), ``adjustment``
+    is always ``DATA_ADJUSTMENT`` ("raw"), and ``currency`` is always
+    ``DATA_CURRENCY`` ("USD") — this connector never requests any other
+    value for any of the three — and all three are recorded on every bar so
+    data provenance is always explicit. ``timestamp`` is Alpaca's reported
+    bar timestamp (UTC); ``retrieved_at`` is this connector's own retrieval
+    timestamp (UTC, set once per request when the response was processed)
+    and is always distinct from it.
     """
 
     provider: str
     symbol: str
     timeframe: str
     feed: str
+    adjustment: str
+    currency: str
     timestamp: str
     open: Decimal
     high: Decimal
@@ -344,10 +365,12 @@ class Bar:
 class BarsConnectionStatus:
     """Sanitized result of a single read-only bars connection check.
 
-    ``feed`` is always ``DATA_FEED`` ("iex") on every status returned by
-    ``check_connection`` — it is a fixed, project-approved constant, never
-    derived from the request outcome, so provenance is explicit even for a
-    failed/unconfigured/invalid-input check.
+    ``feed``, ``adjustment``, and ``currency`` are always ``DATA_FEED``
+    ("iex"), ``DATA_ADJUSTMENT`` ("raw"), and ``DATA_CURRENCY`` ("USD") on
+    every status returned by ``check_connection`` — all three are fixed,
+    project-approved constants, never derived from the request outcome, so
+    provenance is explicit even for a failed/unconfigured/invalid-input
+    check.
     """
 
     configured: bool
@@ -356,6 +379,8 @@ class BarsConnectionStatus:
     symbol: str
     timeframe: str
     feed: str
+    adjustment: str
+    currency: str
     bar_count: int
     oldest_bar_timestamp: str | None
     newest_bar_timestamp: str | None
@@ -369,6 +394,8 @@ def _bars_match(a: Bar, b: Bar) -> bool:
     """Return True if two bars sharing the same (symbol, timeframe, feed, timestamp) agree."""
     return (
         a.feed == b.feed
+        and a.adjustment == b.adjustment
+        and a.currency == b.currency
         and a.open == b.open
         and a.high == b.high
         and a.low == b.low
@@ -391,12 +418,17 @@ def _normalize_bar(raw: Any, *, symbol: str, timeframe: str, retrieved_at: str) 
     low = _to_decimal(raw.get("l"), field_name="low")
     close = _to_decimal(raw.get("c"), field_name="close")
 
+    if open_ <= 0 or high <= 0 or low <= 0 or close <= 0:
+        raise _MalformedBarError("OHLC values must be greater than zero")
+
     if not (high >= low and high >= open_ and high >= close and low <= open_ and low <= close):
         raise _MalformedBarError("candle values are inconsistent")
 
     volume = _to_nonneg_int(raw.get("v"), field_name="volume", allow_none=False)
     trade_count = _to_nonneg_int(raw.get("n"), field_name="trade_count", allow_none=True)
     vwap = _to_optional_decimal(raw.get("vw"), field_name="vwap")
+    if vwap is not None and vwap < 0:
+        raise _MalformedBarError("vwap must not be negative")
 
     assert volume is not None  # allow_none=False guarantees this
     return Bar(
@@ -404,6 +436,8 @@ def _normalize_bar(raw: Any, *, symbol: str, timeframe: str, retrieved_at: str) 
         symbol=symbol,
         timeframe=timeframe,
         feed=DATA_FEED,
+        adjustment=DATA_ADJUSTMENT,
+        currency=DATA_CURRENCY,
         timestamp=timestamp,
         open=open_,
         high=high,
@@ -429,6 +463,8 @@ def _build_params(
         "end": end,
         "limit": limit,
         "feed": DATA_FEED,
+        "adjustment": DATA_ADJUSTMENT,
+        "currency": DATA_CURRENCY,
     }
     if page_token is not None:
         params["page_token"] = page_token
@@ -632,6 +668,8 @@ class AlpacaBarsClient:
                 symbol="",
                 timeframe="",
                 feed=DATA_FEED,
+                adjustment=DATA_ADJUSTMENT,
+                currency=DATA_CURRENCY,
                 bar_count=0,
                 oldest_bar_timestamp=None,
                 newest_bar_timestamp=None,
@@ -647,6 +685,8 @@ class AlpacaBarsClient:
                 symbol=normalized_symbol,
                 timeframe="",
                 feed=DATA_FEED,
+                adjustment=DATA_ADJUSTMENT,
+                currency=DATA_CURRENCY,
                 bar_count=0,
                 oldest_bar_timestamp=None,
                 newest_bar_timestamp=None,
@@ -660,6 +700,8 @@ class AlpacaBarsClient:
                 symbol=normalized_symbol,
                 timeframe=normalized_timeframe,
                 feed=DATA_FEED,
+                adjustment=DATA_ADJUSTMENT,
+                currency=DATA_CURRENCY,
                 bar_count=0,
                 oldest_bar_timestamp=None,
                 newest_bar_timestamp=None,
@@ -688,6 +730,8 @@ class AlpacaBarsClient:
                     symbol=normalized_symbol,
                     timeframe=normalized_timeframe,
                     feed=DATA_FEED,
+                    adjustment=DATA_ADJUSTMENT,
+                    currency=DATA_CURRENCY,
                     bar_count=0,
                     oldest_bar_timestamp=None,
                     newest_bar_timestamp=None,
@@ -701,6 +745,8 @@ class AlpacaBarsClient:
                     symbol=normalized_symbol,
                     timeframe=normalized_timeframe,
                     feed=DATA_FEED,
+                    adjustment=DATA_ADJUSTMENT,
+                    currency=DATA_CURRENCY,
                     bar_count=0,
                     oldest_bar_timestamp=None,
                     newest_bar_timestamp=None,
@@ -719,6 +765,8 @@ class AlpacaBarsClient:
                     symbol=normalized_symbol,
                     timeframe=normalized_timeframe,
                     feed=DATA_FEED,
+                    adjustment=DATA_ADJUSTMENT,
+                    currency=DATA_CURRENCY,
                     bar_count=0,
                     oldest_bar_timestamp=None,
                     newest_bar_timestamp=None,
@@ -733,6 +781,8 @@ class AlpacaBarsClient:
                     symbol=normalized_symbol,
                     timeframe=normalized_timeframe,
                     feed=DATA_FEED,
+                    adjustment=DATA_ADJUSTMENT,
+                    currency=DATA_CURRENCY,
                     bar_count=0,
                     oldest_bar_timestamp=None,
                     newest_bar_timestamp=None,
@@ -756,6 +806,8 @@ class AlpacaBarsClient:
                         symbol=normalized_symbol,
                         timeframe=normalized_timeframe,
                         feed=DATA_FEED,
+                        adjustment=DATA_ADJUSTMENT,
+                        currency=DATA_CURRENCY,
                         bar_count=0,
                         oldest_bar_timestamp=None,
                         newest_bar_timestamp=None,
@@ -772,6 +824,8 @@ class AlpacaBarsClient:
                             symbol=normalized_symbol,
                             timeframe=normalized_timeframe,
                             feed=DATA_FEED,
+                            adjustment=DATA_ADJUSTMENT,
+                            currency=DATA_CURRENCY,
                             bar_count=0,
                             oldest_bar_timestamp=None,
                             newest_bar_timestamp=None,
@@ -788,6 +842,8 @@ class AlpacaBarsClient:
                 symbol=normalized_symbol,
                 timeframe=normalized_timeframe,
                 feed=DATA_FEED,
+                adjustment=DATA_ADJUSTMENT,
+                currency=DATA_CURRENCY,
                 bar_count=len(bars),
                 oldest_bar_timestamp=bars[0].timestamp if bars else None,
                 newest_bar_timestamp=bars[-1].timestamp if bars else None,

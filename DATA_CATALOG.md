@@ -174,13 +174,27 @@ The following tickers are the known initial universe of interest:
   feed only (not SIP).** A companion script, `scripts/check_alpaca_bars.py`,
   and a `check_connection` method exist and report only sanitized
   connection status (configured, success, status category, symbol,
-  timeframe, feed, bar count, oldest/newest bar timestamp — never OHLCV
-  values, credentials, URLs, raw responses, or page tokens). No historical
-  bars dataset has been captured, stored, or inspected, so no dataset entry
-  with verified Schema/Coverage/Known limitations exists yet, and this
-  connector's output must not be described as a validated or complete
-  dataset — only connectivity and response normalization have been
-  verified.
+  timeframe, feed, adjustment, currency, bar count, oldest/newest bar
+  timestamp — never OHLCV values, credentials, URLs, raw responses, or page
+  tokens). No historical bars dataset has been captured, stored, or
+  inspected, so no dataset entry with verified Schema/Coverage/Known
+  limitations exists yet, and this connector's output must not be described
+  as a validated or complete dataset — only connectivity and response
+  normalization have been verified.
+
+  **Adjustment/currency provenance hardening:** alongside `feed=iex`, every
+  request — including every paginated page and `check_connection` — now
+  also explicitly sends `adjustment=raw` and `currency=USD`, via fixed
+  module constants (`DATA_ADJUSTMENT`, `DATA_CURRENCY`) that are never
+  accepted as caller-supplied arguments anywhere in this connector, for the
+  same explicit-provenance reasoning as the `feed` hardening above. "raw"
+  means split/dividend-unadjusted prices as originally reported; this
+  project applies no corporate-action adjustment. Both values are recorded
+  on every normalized `Bar` and `BarsConnectionStatus` and cannot be
+  overridden by a provider response. This hardening has not yet had a new
+  live connectivity check run against it as part of this entry — the
+  2026-08-20 live check recorded above was made before this hardening and
+  remains valid evidence of IEX connectivity/normalization only.
 
 ## Local Storage
 
@@ -192,8 +206,17 @@ and `scripts/ingest_alpaca_news.py`) has been added to this repository's
 migration/storage code and is covered by tests using temporary DuckDB
 files. As of this entry, the real local database file has been upgraded to
 and is healthy at schema version `0004` (4 migrations applied), following
-the authorized live news ingestion described above. Its schema defines
-four tables:
+the authorized live news ingestion described above.
+
+Migration `0005` (a `market_bars` table, plus
+`market_intelligence/storage/bar_repository.py` and
+`scripts/ingest_alpaca_bars.py`) has also now been added to this
+repository's migration/storage code and is covered by tests using
+temporary DuckDB files — this is a schema/storage-capability change only.
+**No bars have been ingested through it, and the real local database file
+has not been upgraded to schema `0005`** — it remains at `0004` until a
+separately authorized initialization/ingestion run applies migration
+`0005` to it. Its migration code now defines five tables:
 
 - `schema_migrations` — tracks which versioned migrations have been
   applied.
@@ -208,6 +231,17 @@ four tables:
   `(provider, provider_article_id)` idempotency. No sentiment, impact,
   direction, confidence, model output, recommendation, or option-contract
   field exists on this table. See
+  [docs/STORAGE_ARCHITECTURE.md](docs/STORAGE_ARCHITECTURE.md) for full
+  column/behavior detail.
+- `market_bars` (migration `0005`) — stores normalized historical stock-bar
+  data (provider, symbol, timeframe, feed, adjustment, currency, bar
+  timestamp, OHLCV, trade count and vwap as `DECIMAL(18,6)`/nullable where
+  the connector allows, retrieval/ingestion provenance timestamps, and the
+  writing ingestion run's ID) with `(provider, symbol, timeframe, feed,
+  adjustment, currency, bar_timestamp)` idempotency. No indicator, return,
+  label, sentiment, prediction, recommendation, option-contract, order, or
+  execution field exists on this table. **Not yet applied to the real local
+  database and no bars have been stored through it** — see above. See
   [docs/STORAGE_ARCHITECTURE.md](docs/STORAGE_ARCHITECTURE.md) for full
   column/behavior detail.
 
@@ -225,12 +259,27 @@ Status, Provenance, Schema, Coverage, Known limitations) per the "Required
 Fields" section below still requires direct inspection of the stored rows,
 which has not been done as part of this entry.
 
-No market-bar, macro-observation, forecast, or trade table has been
-created — each requires its own reviewed data contract and a
-corresponding versioned migration before it is added. The Alpaca historical
-bars connector (see "Planned Data Providers" above) retrieves and
-normalizes bars only; it does not write to DuckDB, so no bars data exists
-in local storage.
+**Market bars: schema/storage-capability change only — no bars stored.**
+The `AlpacaBarsClient` connector (see "Planned Data Providers" above) now
+also explicitly requests and records `adjustment=raw` and `currency=USD` on
+every request/page, as fixed project constants alongside the existing
+`feed=iex`, so every normalized `Bar` carries complete, explicit
+IEX/raw/USD provenance. `market_intelligence/storage/bar_repository.py`
+(`BarRepository`) and `scripts/ingest_alpaca_bars.py` have been added,
+mirroring the news-storage pattern: strict pre-write validation (including
+that every bar's feed/adjustment/currency/timeframe matches this project's
+fixed values), atomic batch writes tied to an `ingestion_runs` row, and
+conflict rollback for any existing bar identity whose OHLCV/trade_count/
+vwap values would be overwritten. **`scripts/ingest_alpaca_bars.py` has not
+been run live, and the real local database file has not been upgraded to
+schema `0005`** — it remains at `0004` (see "Local Storage" above). No
+bars have been retrieved, stored, or validated as a dataset — the earlier
+live IEX connectivity check recorded above still only confirms connectivity
+and response normalization, not storage.
+
+No macro-observation, forecast, or trade table has been created — each
+requires its own reviewed data contract and a corresponding versioned
+migration before it is added.
 
 ## Required Fields for Every Future Dataset
 
