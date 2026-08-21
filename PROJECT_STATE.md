@@ -22,9 +22,15 @@ storage pipeline (10 received, 10 inserted, 0 failed — see Status below).
 A read-only Alpaca historical stock-bars connector now also exists
 (`AlpacaBarsClient`). Its first authorized live connectivity check reached
 Alpaca but was configured yet unsuccessful (sanitized status
-`configured=True, success=False, status_category=4xx`); the connector has
-since been hardened to explicitly request the IEX feed, and live IEX
-connectivity remains unverified — see Status below. Connectivity/one
+`configured=True, success=False, status_category=4xx`) under the prior,
+implicit-SIP default request; the connector was then hardened to
+explicitly request the IEX feed, and a second authorized live connectivity
+check against the hardened, explicit-IEX connector has now succeeded
+(sanitized status `configured=True, success=True, status_category=2xx`,
+single-symbol SPY, `5Min` timeframe, `feed=iex`, 5 bars returned — see
+Status below). This confirms live connectivity and response normalization
+on the IEX feed only; it does not confirm SIP connectivity, and IEX's
+narrower single-exchange coverage still applies. Connectivity/one
 successful ingestion run is not the same as
 a validated, cataloged data pipeline: no historical or bulk live dataset
 has been stored, cataloged, or validated yet. A local DuckDB storage
@@ -168,14 +174,29 @@ stored or validated, and no AI analysis or agent orchestration exists yet.
   explicit data provenance. **Known limitation:** IEX is a single
   exchange's feed, not the consolidated SIP tape, so it reflects narrower
   market coverage (fewer trades, potentially different prices/volume) than
-  SIP. **Live IEX connectivity remains unverified** — no live request has
-  been made using the now-hardened, explicit-IEX connector; the 4xx above
-  was observed under the prior, pre-hardening default (SIP) request. A
-  live IEX connectivity check requires separate, explicit authorization
-  and must be recorded here before IEX connectivity can be described as
-  verified. No historical bars dataset has been retrieved, stored, or
-  validated, and this connector does not store bars in DuckDB in any case
-  (bars storage is future, separately reviewed work).
+  SIP. The 4xx above was observed under the prior, pre-hardening default
+  (SIP) request; that failed check is preserved here as an honest
+  diagnostic record and is not being retracted or overwritten.
+
+  **Second authorized live check, on the hardened explicit-IEX connector
+  (2026-08-20):** a separately authorized live connectivity check was run
+  against the now-hardened, explicit-IEX connector (single-symbol SPY,
+  `5Min` timeframe) and succeeded, returning a sanitized status of
+  `configured=True, success=True, status_category=2xx, symbol=SPY,
+  timeframe=5Min, feed=iex, bar_count=5, oldest_bar_timestamp=
+  2026-08-17T12:25:00Z, newest_bar_timestamp=2026-08-17T13:30:00Z`. Only
+  this sanitized status was recorded — no OHLCV values, credentials, URLs,
+  raw response body, or page tokens were printed or stored. **This
+  confirms only that the hardened, explicit-IEX connector can reach
+  Alpaca, authenticate, and normalize a small live response — it verifies
+  connectivity and response normalization only.** It does not confirm SIP
+  connectivity (SIP remains unverified and is not requested by this
+  connector), and it is not a stored, complete, or validated historical
+  bars dataset: no bars from this check were written to DuckDB (this
+  connector still does not store bars — bars storage is future, separately
+  reviewed work), and no coverage, gap, or quality analysis has been
+  performed. No historical bars dataset has been retrieved, stored, or
+  validated.
 - A local DuckDB storage foundation has been initialized
   (`market_intelligence/storage/`, `DuckDBManager` in
   `market_intelligence/storage/database.py`). It provides a versioned,
@@ -286,11 +307,15 @@ stored or validated, and no AI analysis or agent orchestration exists yet.
    single-symbol historical-bars connector exists and is unit-tested
    (`AlpacaBarsClient`) and does not store bars in DuckDB. Its first
    authorized live check reached Alpaca but failed (sanitized 4xx) under
-   the connector's prior default (implicit SIP) request; the connector has
-   since been hardened to explicitly request the IEX feed on every
-   request. Live IEX connectivity remains unverified — a separately
-   authorized live connectivity check against the hardened connector is
-   still required before it can be recorded here.
+   the connector's prior default (implicit SIP) request — preserved above
+   as an honest diagnostic record; the connector was then hardened to
+   explicitly request the IEX feed on every request, and a second
+   authorized live check against the hardened connector has now succeeded
+   (sanitized 2xx, SPY, `5Min`, `feed=iex`, 5 bars). This verifies live
+   connectivity and response normalization on IEX only — not SIP, and not
+   a stored/complete/validated dataset. Remaining future work: reviewed
+   bars storage (a DuckDB table and migration) and, separately, a
+   validated, cataloged historical bars dataset per `DATA_CATALOG.md`.
 7. Reviewed data contracts for actual provider data — design and add
    versioned migrations for market-bar and macro-observation tables (and
    the ingestion code that writes to `ingestion_runs`), each as its own

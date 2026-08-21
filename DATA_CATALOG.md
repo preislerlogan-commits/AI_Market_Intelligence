@@ -143,27 +143,41 @@ The following tickers are the known initial universe of interest:
   insufficient SIP subscription access (Alpaca returns HTTP 403 in that
   case), not a credentials or code defect. The connector was hardened in
   response to explicitly request the free, always-available IEX feed on
-  every request instead of relying on the endpoint's SIP default. **Known
+  every request instead of relying on the endpoint's SIP default. This
+  failed 4xx check is preserved here as an honest diagnostic record and is
+  not retracted by the successful check recorded below. **Known
   limitation:** IEX is a single exchange's feed, not the consolidated SIP
   tape — it reflects trades on IEX only, not the full U.S. market, and so
   has narrower coverage (fewer trades, potentially different prices/volume)
-  than SIP. **Live IEX connectivity remains unverified** — the 2026-08-20
-  check above failed under the pre-hardening default (SIP) request; no
-  live request has been made using the now-hardened, explicit-IEX
-  connector. A live IEX connectivity check requires separate, explicit
-  authorization and must be recorded here (with its sanitized outcome)
-  before IEX connectivity can be described as verified.
+  than SIP.
 
-  Status: **implemented, not yet connection-verified live on IEX.** A
-  companion script, `scripts/check_alpaca_bars.py`, and a `check_connection`
-  method exist and report only sanitized connection status (configured,
-  success, status category, symbol, timeframe, feed, bar count,
-  oldest/newest bar timestamp — never OHLCV values, credentials, URLs, raw
-  responses, or page tokens). No historical bars dataset has been captured,
-  stored, or inspected, so no dataset entry with verified
-  Schema/Coverage/Known limitations exists yet, and none should be
-  described as validated until a separately authorized live IEX
-  connectivity check succeeds and is recorded here.
+  **Live IEX connectivity verified (2026-08-20):** a second, separately
+  authorized live connectivity check was run against the now-hardened,
+  explicit-IEX connector (`scripts/check_alpaca_bars.py`, single-symbol
+  SPY, `5Min` timeframe) and succeeded, returning a sanitized status of
+  `configured=True, success=True, status_category=2xx, symbol=SPY,
+  timeframe=5Min, feed=iex, bar_count=5, oldest_bar_timestamp=
+  2026-08-17T12:25:00Z, newest_bar_timestamp=2026-08-17T13:30:00Z`. Only
+  this sanitized status was recorded — no OHLCV values, credentials, URLs,
+  raw response body, or page tokens were printed or stored. **This
+  confirms connectivity and response normalization only** — it does not
+  confirm SIP connectivity (SIP is not requested by this connector), IEX's
+  narrower coverage still applies, and this is not a stored, complete, or
+  validated historical bars dataset: no bars from this check were written
+  to DuckDB (this connector does not store bars), and no coverage, gap, or
+  quality analysis has been performed.
+
+  Status: **implemented, live-connectivity-verified on the explicit IEX
+  feed only (not SIP).** A companion script, `scripts/check_alpaca_bars.py`,
+  and a `check_connection` method exist and report only sanitized
+  connection status (configured, success, status category, symbol,
+  timeframe, feed, bar count, oldest/newest bar timestamp — never OHLCV
+  values, credentials, URLs, raw responses, or page tokens). No historical
+  bars dataset has been captured, stored, or inspected, so no dataset entry
+  with verified Schema/Coverage/Known limitations exists yet, and this
+  connector's output must not be described as a validated or complete
+  dataset — only connectivity and response normalization have been
+  verified.
 
 ## Local Storage
 
