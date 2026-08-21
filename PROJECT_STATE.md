@@ -13,6 +13,8 @@ Last updated: 2026-08-20
 The project is in initial scaffolding. Python environment and dependency
 configuration are in place. Read-only Alpaca market-data provider
 connectivity has been verified (a single read-only snapshot request — see
+Status below). Read-only FRED macroeconomic-data provider connectivity has
+also been verified (a single read-only latest-observation request — see
 Status below). Connectivity is not the same as a validated data pipeline:
 no historical or live dataset has been stored, cataloged, or validated
 yet, and no database, forecasting, or trading logic exists yet.
@@ -51,10 +53,28 @@ yet, and no database, forecasting, or trading logic exists yet.
   symbol, timestamp). On 2026-08-20 one live, read-only SPY snapshot
   connection check was run using local `.env` credentials and succeeded
   (2xx, market timestamp returned). This confirms connectivity only; it is
-  not the same as a validated data pipeline. FRED remains a planned
-  provider with no credentials, client, or connection test yet. No
-  historical or live dataset has been stored, cataloged, or validated
-  yet — see `DATA_CATALOG.md`.
+  not the same as a validated data pipeline.
+- A read-only FRED macroeconomic-data connector
+  (`market_intelligence/data_connectors/fred_macro_data.py`,
+  `FredMacroDataClient`) has been added, covering only FRED's official API
+  (`https://api.stlouisfed.org`) — no methods beyond fetching published
+  series observations. It validates that a FRED API key is configured
+  before requesting, uses explicit timeouts, and returns only sanitized
+  results (never the API key, request URL, query parameters, raw response,
+  or observation value). All series IDs are normalized/validated (trimmed,
+  uppercased, restricted to a conservative alphanumeric/underscore
+  character set) before any request is built, so invalid or malicious
+  input never reaches the network; malformed or non-object JSON responses,
+  FRED-reported API error payloads, and missing/malformed observations are
+  also rejected with a sanitized error/status rather than surfaced raw. A
+  companion script, `scripts/check_fred_connection.py`, reports a
+  sanitized connection status (configured, success, status category,
+  series ID, latest observation date — never the observation value). On
+  2026-08-20 one live, read-only FEDFUNDS latest-observation connection
+  check was run using local `.env` credentials and succeeded (2xx,
+  observation date returned). This confirms connectivity only; it is not
+  the same as a validated data pipeline. No historical or live dataset has
+  been stored, cataloged, or validated yet — see `DATA_CATALOG.md`.
 - No database initialized. DuckDB is included as a runtime dependency but
   no database file has been created and no schema exists yet.
 - No trading execution connected. No brokerage integration exists or is
@@ -72,15 +92,15 @@ yet, and no database, forecasting, or trading logic exists yet.
 
 ## Next Planned Work
 
-1. Data connector design — an Alpaca read-only market-data connector now
-   exists (see above); a FRED connector is still to be designed. Verified
-   schema/provenance details belong in `DATA_CATALOG.md` once bulk data is
-   actually pulled and inspected, not just a connectivity check.
-2. Provider configuration — Alpaca credential handling is in place; FRED
-   credential handling (via `.env`, never committed) is still planned.
-3. First connection tests — done for Alpaca (read-only snapshot
-   connectivity check, recorded in `DATA_CATALOG.md`/`PROJECT_STATE.md`);
-   still planned for FRED.
+1. Data connector design — read-only Alpaca and FRED connectors now exist
+   (see above). Verified schema/provenance details belong in
+   `DATA_CATALOG.md` once bulk data is actually pulled and inspected, not
+   just a connectivity check.
+2. Provider configuration — Alpaca and FRED credential handling (via
+   `.env`, never committed) is in place.
+3. First connection tests — done for both Alpaca (read-only snapshot
+   connectivity check) and FRED (read-only latest-observation connectivity
+   check), recorded in `DATA_CATALOG.md`/`PROJECT_STATE.md`.
 4. Database initialization — local DuckDB/Parquet storage layout under
    `data/`, once a schema has been designed.
 
