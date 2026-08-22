@@ -25,13 +25,13 @@ This foundation defines and applies five tables:
   succeeds and is recorded in `DATA_CATALOG.md`.
 - **`market_bars`** (added in migration `0005`) — stores normalized
   historical stock bars with provenance and idempotency. See "Market-bar
-  storage" below. As with `news_articles`, this is schema/storage
-  infrastructure only: as of this entry, no bars have been ingested through
-  it, and no bars dataset is validated here until an explicitly authorized
-  live ingestion succeeds and is recorded in `DATA_CATALOG.md`. Migration
-  `0005` exists in this repository's migration code only — the real local
-  database file has not been upgraded to `0005` as part of adding this
-  capability; see "Status" in `PROJECT_STATE.md`.
+  storage" below. Migration `0005` has been applied to the real local
+  database (backed up beforehand), and one explicitly authorized live
+  ingestion has succeeded and stored 248 SPY bars (IEX, `5Min`, `raw`,
+  `USD`) through it — see "Status" in `PROJECT_STATE.md` and the
+  bars entry in `DATA_CATALOG.md`. This confirms one controlled ingestion
+  run and transactional storage; it is not a complete, gap-free, or
+  research-validated bars dataset.
 
 No macroeconomic-observation, forecast, or trade tables exist yet. Those
 each require a separate, reviewed data contract before they are added as
@@ -176,9 +176,22 @@ small, fully completed historical window ending at the start of the current
 UTC day, so the default never includes a partial/live bar), then stores the
 results through `BarRepository`. Invalid `--symbol`/`--timeframe`/`--start`/
 `--end`/`--limit`/`--max-pages` values are rejected before any network
-request is constructed or any database write occurs. It has not been run
-live as part of adding this storage layer — see "Status" in
-`PROJECT_STATE.md`.
+request is constructed or any database write occurs.
+
+**First authorized live run (2026-08-21):** `data/market_intelligence.duckdb`
+was backed up, migration `0005` was applied to the real database, and this
+script was then run once, live, against the real database: single-symbol
+SPY, `5Min` timeframe, `feed=iex`, `adjustment=raw`, `currency=USD`,
+requested interval 2026-08-15T00:00:00Z through 2026-08-20T00:00:00Z,
+`max_pages=1`, `limit=500`. 248 bars were received, 248 inserted, 0
+existing/updated, 0 failed, and the corresponding `ingestion_runs` row was
+recorded `succeeded`; the latest `ingestion_runs` record for this dataset
+is `('alpaca', 'bars', 'succeeded', 248, None)`. A subsequent read-only
+query verified 248 stored rows covering 2026-08-17T12:25:00Z through
+2026-08-19T20:00:00Z. This confirms one controlled ingestion run and
+transactional storage; it is not a complete, gap-free, or
+research-validated bars dataset — see "Status" in `PROJECT_STATE.md` and
+the bars entry in `DATA_CATALOG.md`.
 
 ## Components
 
@@ -199,7 +212,8 @@ live as part of adding this storage layer — see "Status" in
 - `scripts/ingest_alpaca_news.py` — one-shot manual news ingestion (see
   "News article storage" above); not run live as part of this change.
 - `scripts/ingest_alpaca_bars.py` — one-shot manual bars ingestion (see
-  "Market-bar storage" above); not run live as part of this change.
+  "Market-bar storage" above); first authorized live run succeeded
+  2026-08-21 (see above).
 
 ## Database location and path safety
 

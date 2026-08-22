@@ -10,13 +10,15 @@ details, and any unverified claims below should be corrected or removed.
 
 This is an independent project. It does not depend on or access the
 separate ORB_Project, or any other data outside this repository.
-Read-only Alpaca provider connectivity has been verified, and one
-authorized ingestion run stored 10 normalized SPY news articles. That
-collection verifies one ingestion run but is not a complete or validated
-news dataset. Historical bars and FRED observations have not been stored,
-and no complete provider dataset has been cataloged or validated yet —
-connectivity is not the same as a validated data pipeline. No code in this
-repository may access files outside the repository unless the user
+Read-only Alpaca provider connectivity has been verified. One authorized
+ingestion run stored 10 normalized SPY news articles, and a separate
+authorized ingestion run stored 248 normalized SPY historical bars (IEX,
+`5Min`, `raw`, `USD` — see "Local Storage" below). Each collection
+verifies one ingestion run; neither is a complete, gap-free, or validated
+dataset. FRED observations have not been stored, and no complete provider
+dataset has been cataloged or validated yet — connectivity, or a single
+ingestion run, is not the same as a validated data pipeline. No code in
+this repository may access files outside the repository unless the user
 explicitly authorizes a specific source. Future data will come through
 this project's own reviewed connectors under
 `market_intelligence/data_connectors/`, with
@@ -176,11 +178,16 @@ The following tickers are the known initial universe of interest:
   connection status (configured, success, status category, symbol,
   timeframe, feed, adjustment, currency, bar count, oldest/newest bar
   timestamp — never OHLCV values, credentials, URLs, raw responses, or page
-  tokens). No historical bars dataset has been captured, stored, or
-  inspected, so no dataset entry with verified Schema/Coverage/Known
-  limitations exists yet, and this connector's output must not be described
-  as a validated or complete dataset — only connectivity and response
-  normalization have been verified.
+  tokens); this connector itself makes no network requests beyond a single
+  bounded page fetch and does not write to DuckDB. Separately, one
+  authorized live ingestion run has used this connector's output to store
+  248 SPY bars via `BarRepository` — see "Local Storage" below for that
+  run's details. That is one controlled ingestion run, not a complete,
+  gap-free, or validated historical bars dataset, so no dataset entry with
+  verified Schema/Coverage/Known limitations exists yet in this catalog,
+  and this connector's output must not be described as validated or
+  research-ready — only connectivity, response normalization, and one
+  successful storage run have been verified.
 
   **Adjustment/currency provenance hardening:** alongside `feed=iex`, every
   request — including every paginated page and `check_connection` — now
@@ -191,10 +198,12 @@ The following tickers are the known initial universe of interest:
   means split/dividend-unadjusted prices as originally reported; this
   project applies no corporate-action adjustment. Both values are recorded
   on every normalized `Bar` and `BarsConnectionStatus` and cannot be
-  overridden by a provider response. This hardening has not yet had a new
-  live connectivity check run against it as part of this entry — the
-  2026-08-20 live check recorded above was made before this hardening and
-  remains valid evidence of IEX connectivity/normalization only.
+  overridden by a provider response. The 2026-08-20 connectivity check
+  recorded above was made before this hardening and remains valid evidence
+  of IEX connectivity/normalization only; the hardening has since been
+  exercised by the first live bars ingestion (2026-08-21, see "Local
+  Storage" below), which used `feed=iex`, `adjustment=raw`, and
+  `currency=USD` throughout.
 
 ## Local Storage
 
@@ -204,19 +213,22 @@ A local DuckDB storage foundation exists at `data/market_intelligence.duckdb`
 `0004` (a `news_articles` table, plus `market_intelligence/storage/news_repository.py`
 and `scripts/ingest_alpaca_news.py`) has been added to this repository's
 migration/storage code and is covered by tests using temporary DuckDB
-files. As of this entry, the real local database file has been upgraded to
-and is healthy at schema version `0004` (4 migrations applied), following
-the authorized live news ingestion described above.
+files. As of 2026-08-20, the real local database file had been upgraded to
+and was healthy at schema version `0004` (4 migrations applied), following
+the authorized live news ingestion described below.
 
 Migration `0005` (a `market_bars` table, plus
 `market_intelligence/storage/bar_repository.py` and
-`scripts/ingest_alpaca_bars.py`) has also now been added to this
-repository's migration/storage code and is covered by tests using
-temporary DuckDB files — this is a schema/storage-capability change only.
-**No bars have been ingested through it, and the real local database file
-has not been upgraded to schema `0005`** — it remains at `0004` until a
-separately authorized initialization/ingestion run applies migration
-`0005` to it. Its migration code now defines five tables:
+`scripts/ingest_alpaca_bars.py`) was also added to this repository's
+migration/storage code and is covered by tests using temporary DuckDB
+files. **On 2026-08-21, `data/market_intelligence.duckdb` was backed up,
+and a separately authorized initialization run then applied migration
+`0005` to the real local database.** A subsequent read-only health check
+reported: schema version `0005`, 5 migrations applied, required tables
+present, required columns present, migration history valid, checksums
+valid, database at the latest available migration, and `healthy=True`.
+**The real database is now at migration `0005` and reports healthy.** Its
+migration code defines five tables:
 
 - `schema_migrations` — tracks which versioned migrations have been
   applied.
@@ -240,15 +252,16 @@ separately authorized initialization/ingestion run applies migration
   writing ingestion run's ID) with `(provider, symbol, timeframe, feed,
   adjustment, currency, bar_timestamp)` idempotency. No indicator, return,
   label, sentiment, prediction, recommendation, option-contract, order, or
-  execution field exists on this table. **Not yet applied to the real local
-  database and no bars have been stored through it** — see above. See
+  execution field exists on this table. **Now applied to the real local
+  database, and a first batch of real bars has been stored through it** —
+  see below. See
   [docs/STORAGE_ARCHITECTURE.md](docs/STORAGE_ARCHITECTURE.md) for full
   column/behavior detail.
 
-**This is a schema/storage-capability change, not yet a validated,
-cataloged dataset.** `scripts/ingest_alpaca_news.py` performs at most one
-explicit, read-only, strictly-validated request per run. On 2026-08-20,
-one explicitly authorized live run (single-symbol SPY, default limit)
+**News: one authorized ingestion run, not yet a validated, cataloged
+dataset.** `scripts/ingest_alpaca_news.py` performs at most one explicit,
+read-only, strictly-validated request per run. On 2026-08-20, one
+explicitly authorized live run (single-symbol SPY, default limit)
 succeeded: 10 articles received, 10 inserted, 0 updated, 0 failed,
 recorded as a `succeeded` `ingestion_runs` row — this is the run that
 upgraded the real database to schema `0004` above. Only sanitized counts
@@ -259,23 +272,45 @@ Status, Provenance, Schema, Coverage, Known limitations) per the "Required
 Fields" section below still requires direct inspection of the stored rows,
 which has not been done as part of this entry.
 
-**Market bars: schema/storage-capability change only — no bars stored.**
-The `AlpacaBarsClient` connector (see "Planned Data Providers" above) now
-also explicitly requests and records `adjustment=raw` and `currency=USD` on
-every request/page, as fixed project constants alongside the existing
-`feed=iex`, so every normalized `Bar` carries complete, explicit
-IEX/raw/USD provenance. `market_intelligence/storage/bar_repository.py`
-(`BarRepository`) and `scripts/ingest_alpaca_bars.py` have been added,
-mirroring the news-storage pattern: strict pre-write validation (including
-that every bar's feed/adjustment/currency/timeframe matches this project's
-fixed values), atomic batch writes tied to an `ingestion_runs` row, and
-conflict rollback for any existing bar identity whose OHLCV/trade_count/
-vwap values would be overwritten. **`scripts/ingest_alpaca_bars.py` has not
-been run live, and the real local database file has not been upgraded to
-schema `0005`** — it remains at `0004` (see "Local Storage" above). No
-bars have been retrieved, stored, or validated as a dataset — the earlier
-live IEX connectivity check recorded above still only confirms connectivity
-and response normalization, not storage.
+**Market bars: first authorized live ingestion succeeded (2026-08-21).**
+The `AlpacaBarsClient` connector (see "Planned Data Providers" above)
+explicitly requests and records `feed=iex`, `adjustment=raw`, and
+`currency=USD` on every request/page, as fixed project constants, so every
+normalized `Bar` carries complete, explicit IEX/raw/USD provenance.
+`market_intelligence/storage/bar_repository.py` (`BarRepository`) and
+`scripts/ingest_alpaca_bars.py` mirror the news-storage pattern: strict
+pre-write validation (including that every bar's
+feed/adjustment/currency/timeframe matches this project's fixed values),
+atomic batch writes tied to an `ingestion_runs` row, and conflict rollback
+for any existing bar identity whose OHLCV/trade_count/vwap values would be
+overwritten.
+
+`data/market_intelligence.duckdb` was backed up, migration `0005` was
+applied (see "Local Storage" above), and `scripts/ingest_alpaca_bars.py`
+was then run once, live, against the real database with an explicit,
+bounded request: single-symbol SPY, `5Min` timeframe, `feed=iex`,
+`adjustment=raw`, `currency=USD`, requested interval
+2026-08-15T00:00:00Z through 2026-08-20T00:00:00Z, `max_pages=1`,
+`limit=500`. The run received 248 bars, inserted 248, had 0
+existing/updated and 0 failed, and the corresponding `ingestion_runs` row
+was recorded `succeeded`; the latest `ingestion_runs` record for this
+dataset is `('alpaca', 'bars', 'succeeded', 248, None)`. A subsequent
+read-only query of `market_bars` verified 248 stored rows for this
+symbol/timeframe/feed, covering 2026-08-17T12:25:00Z through
+2026-08-19T20:00:00Z.
+
+**This confirms one controlled ingestion run, transactional storage, and
+successful local retrieval.** It does not establish a complete,
+gap-free, consolidated, or research-validated historical bars dataset;
+coverage is IEX only, which is narrower than SIP; and it carries no claim
+of predictive value, strategy validity, production readiness, or
+options-trading capability. Only sanitized counts, status, and the
+verified row count/coverage window are recorded in this catalog — no
+OHLCV values are reproduced here. A full dataset record (Source, Status,
+Provenance, Schema, Coverage, Known limitations) per the "Required
+Fields" section below still requires broader coverage and direct
+gap/quality inspection of the stored data, which has not been done as
+part of this entry.
 
 No macro-observation, forecast, or trade table has been created — each
 requires its own reviewed data contract and a corresponding versioned
