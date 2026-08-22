@@ -213,7 +213,7 @@ impact, recommendation, option-contract, order, execution, credentials,
 request headers, or raw API responses. **This table, its repository, and
 its ingestion script were originally built and tested against temporary
 databases only. Migration `0006` has since been applied to the real local
-database, and one explicitly authorized live ingestion has succeeded**
+database, and one explicitly authorized live ingestion has succeeded
 (see "Scope" above and the "First authorized live run" note below).
 
 Columns: `provider` (fixed `"fred"`), `series_id`, `observation_date`
