@@ -9,12 +9,24 @@ sanitized components — status codes, exception type names, and
 FRED-reported error categories — and never from a raw exception message,
 request, or response object, any of which could embed the key or the full
 query string.
+
+Alongside the original single-latest-observation check
+(``get_latest_observation``/``check_connection``, unchanged), this module
+also exposes ``get_observations`` for fetching a bounded, paginated range of
+historical observations for one series. It returns normalized
+``FredObservation`` records containing only FRED's own reviewed fields
+(provider, series_id, observation_date, value, is_missing,
+realtime_start/realtime_end, retrieved_at) — no prediction, sentiment, or
+derived analysis. This module does not write to DuckDB; storage is handled
+separately by ``market_intelligence/storage/macro_observation_repository.py``.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import UTC, date, datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import httpx
@@ -27,6 +39,27 @@ DEFAULT_TIMEOUT = httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0)
 
 MAX_SERIES_ID_LENGTH = 64
 _SERIES_ID_PATTERN = re.compile(rf"^[A-Za-z0-9][A-Za-z0-9_]{{0,{MAX_SERIES_ID_LENGTH - 1}}}$")
+
+# Strict ISO calendar date: exactly YYYY-MM-DD, no time component. This
+# deliberately rejects datetime strings (e.g. "2026-08-01T00:00:00Z"), which
+# would otherwise silently truncate to a date and hide a caller's mistaken
+# assumption about what the value represents.
+MAX_DATE_LENGTH = 10
+_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+# Bounds for the historical-observations endpoint's own limit/offset
+# pagination. FRED's API accepts a per-page limit up to 100000; this project
+# conservatively caps it well below that to bound response size and
+# per-request cost, mirroring AlpacaBarsClient's MAX_LIMIT/MAX_PAGES
+# reasoning.
+MIN_OBSERVATIONS_LIMIT = 1
+MAX_OBSERVATIONS_LIMIT = 1000
+DEFAULT_OBSERVATIONS_LIMIT = 1000
+
+# Bounds the number of pages a single get_observations() call will follow,
+# so a malformed or endless provider pagination sequence cannot loop
+# indefinitely. No caller may raise this ceiling.
+MAX_OBSERVATION_PAGES = 50
 
 
 class FredCredentialsMissingError(RuntimeError):
@@ -48,6 +81,25 @@ class FredInvalidSeriesIdError(FredMacroDataError):
     Validation happens before any HTTP request is constructed, so an
     invalid series ID never reaches the network. The message never echoes
     the raw, unvalidated input.
+    """
+
+
+class FredInvalidObservationRequestError(FredMacroDataError):
+    """Raised when a get_observations() input fails validation before any request is made.
+
+    Covers observation_start/observation_end (calendar-date shape, real
+    calendar date, and start <= end), and the limit/max_pages pagination
+    bounds. Validation happens before any HTTP request is constructed, so
+    invalid input never reaches the network. The message never echoes the
+    raw, unvalidated input.
+    """
+
+
+class _MalformedObservationError(Exception):
+    """Internal signal that a single raw observation failed normalization.
+
+    Never raised across the public API -- callers only ever see the
+    sanitized ``FredMacroDataError`` raised when this is caught.
     """
 
 
@@ -73,6 +125,180 @@ def normalize_series_id(series_id: str) -> str:
         )
 
     return normalized
+
+
+def _parse_response_date(value: Any) -> str:
+    """Parse a provider-reported calendar date. Raises ``_MalformedObservationError`` if unusable.
+
+    Used for a raw observation's ``date``/``realtime_start``/``realtime_end``
+    fields -- an invalid value here marks the enclosing observation as
+    malformed rather than being an invalid *caller input* (see
+    ``normalize_observation_date`` for the caller-input equivalent). Requires
+    an exact ``YYYY-MM-DD`` shape and a real calendar date (rejects, e.g.,
+    a 13th month or a February 30th).
+    """
+    if isinstance(value, bool) or not isinstance(value, str):
+        raise _MalformedObservationError("date invalid")
+    trimmed = value.strip()
+    if not trimmed or len(trimmed) != MAX_DATE_LENGTH or not _DATE_PATTERN.match(trimmed):
+        raise _MalformedObservationError("date invalid")
+    try:
+        parsed = date.fromisoformat(trimmed)
+    except ValueError:
+        raise _MalformedObservationError("date invalid") from None
+    return parsed.isoformat()
+
+
+def normalize_observation_date(value: Any, *, field_name: str) -> str:
+    """Normalize and validate a required observation_start/observation_end date.
+
+    Raises ``FredInvalidObservationRequestError`` unless ``value`` is a
+    string (booleans and other non-string types are rejected) that, once
+    trimmed, is a strict, fully-specified ISO calendar date: exactly
+    ``YYYY-MM-DD``, representing a real calendar date. Datetime strings,
+    malformed dates, invalid calendar dates, and blank values are all
+    rejected before any request is built. The error message never echoes
+    the untrusted input.
+    """
+    try:
+        return _parse_response_date(value)
+    except _MalformedObservationError:
+        raise FredInvalidObservationRequestError(
+            f"Invalid {field_name}: must be a calendar date in YYYY-MM-DD format."
+        ) from None
+
+
+def normalize_observations_limit(value: Any) -> int:
+    """Normalize and validate a per-page result-count limit for get_observations().
+
+    Raises ``FredInvalidObservationRequestError`` unless ``limit`` is a plain
+    ``int`` (booleans rejected) within
+    ``[MIN_OBSERVATIONS_LIMIT, MAX_OBSERVATIONS_LIMIT]``.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise FredInvalidObservationRequestError("Invalid limit: expected an integer.")
+    if not (MIN_OBSERVATIONS_LIMIT <= value <= MAX_OBSERVATIONS_LIMIT):
+        raise FredInvalidObservationRequestError(
+            f"Invalid limit: must be between {MIN_OBSERVATIONS_LIMIT} and "
+            f"{MAX_OBSERVATIONS_LIMIT}."
+        )
+    return value
+
+
+def normalize_observation_max_pages(value: Any) -> int:
+    """Normalize and validate the ``max_pages`` pagination bound for get_observations().
+
+    Raises ``FredInvalidObservationRequestError`` unless ``max_pages`` is a
+    plain ``int`` (booleans rejected) within ``[1, MAX_OBSERVATION_PAGES]``.
+    This enforces ``MAX_OBSERVATION_PAGES`` as a hard ceiling that no caller
+    can raise.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise FredInvalidObservationRequestError("Invalid max_pages: expected an integer.")
+    if not (1 <= value <= MAX_OBSERVATION_PAGES):
+        raise FredInvalidObservationRequestError(
+            f"Invalid max_pages: must be between 1 and {MAX_OBSERVATION_PAGES}."
+        )
+    return value
+
+
+def _parse_observation_value(raw_value: Any) -> tuple[Decimal | None, bool]:
+    """Parse a raw observation's ``value`` field into ``(value, is_missing)``.
+
+    FRED's official convention for a missing observation is the literal
+    string ``"."`` -- this is a legitimate, expected value, never treated as
+    malformed. Every other value must be a string parseable as a finite
+    ``Decimal`` (built directly from FRED's string representation, so no
+    IEEE-754 binary-float rounding is ever introduced); non-string values,
+    unparseable strings, and non-finite values (``NaN``, ``Infinity``) all
+    raise ``_MalformedObservationError``.
+    """
+    if not isinstance(raw_value, str):
+        raise _MalformedObservationError("value invalid")
+    if raw_value == ".":
+        return None, True
+    try:
+        value = Decimal(raw_value)
+    except InvalidOperation:
+        raise _MalformedObservationError("value invalid") from None
+    if not value.is_finite():
+        raise _MalformedObservationError("value invalid")
+    return value, False
+
+
+@dataclass(frozen=True)
+class FredObservation:
+    """A single normalized FRED historical observation.
+
+    Deliberately contains only FRED's own reviewed fields plus this
+    project's retrieval provenance -- no prediction, sentiment, or derived
+    analysis. ``provider`` is always ``"fred"``. ``value`` is ``None`` and
+    ``is_missing`` is ``True`` for FRED's own missing-observation marker
+    (``"."``); otherwise ``value`` is a finite ``Decimal`` and ``is_missing``
+    is ``False`` -- the two are always mutually consistent. ``realtime_start``
+    and ``realtime_end`` are FRED's reported revision/vintage window for this
+    observation, preserved as normalized calendar dates rather than
+    discarded, so a later revision of the same ``series_id``/
+    ``observation_date`` is never silently conflated with this one.
+    ``retrieved_at`` is this connector's own UTC retrieval timestamp, kept
+    distinct from every FRED-reported date.
+    """
+
+    provider: str
+    series_id: str
+    observation_date: str
+    value: Decimal | None
+    is_missing: bool
+    realtime_start: str
+    realtime_end: str
+    retrieved_at: str
+
+
+def _normalize_observation(raw: Any, *, series_id: str, retrieved_at: str) -> FredObservation:
+    """Normalize a single raw observation. Raises ``_MalformedObservationError`` if unusable."""
+    if not isinstance(raw, dict):
+        raise _MalformedObservationError("observation is not an object")
+
+    observation_date = _parse_response_date(raw.get("date"))
+    realtime_start = _parse_response_date(raw.get("realtime_start"))
+    realtime_end = _parse_response_date(raw.get("realtime_end"))
+    value, is_missing = _parse_observation_value(raw.get("value"))
+
+    return FredObservation(
+        provider="fred",
+        series_id=series_id,
+        observation_date=observation_date,
+        value=value,
+        is_missing=is_missing,
+        realtime_start=realtime_start,
+        realtime_end=realtime_end,
+        retrieved_at=retrieved_at,
+    )
+
+
+def _observations_match(a: FredObservation, b: FredObservation) -> bool:
+    """Return True if two observations sharing the same identity agree on value/is_missing."""
+    return a.value == b.value and a.is_missing == b.is_missing
+
+
+def _build_observations_params(
+    series_id: str,
+    api_key: str,
+    observation_start: str,
+    observation_end: str,
+    limit: int,
+    offset: int,
+) -> dict[str, Any]:
+    return {
+        "series_id": series_id,
+        "api_key": api_key,
+        "file_type": "json",
+        "sort_order": "asc",
+        "observation_start": observation_start,
+        "observation_end": observation_end,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @dataclass(frozen=True)
@@ -206,6 +432,171 @@ class FredMacroDataClient:
             )
 
         return payload
+
+    def get_observations(
+        self,
+        series_id: str,
+        observation_start: str,
+        observation_end: str,
+        *,
+        limit: int = DEFAULT_OBSERVATIONS_LIMIT,
+        max_pages: int = MAX_OBSERVATION_PAGES,
+        client: httpx.Client | None = None,
+    ) -> list[FredObservation]:
+        """Fetch historical observations for a single FRED series. Read-only.
+
+        All inputs are strictly validated and normalized before any HTTP
+        request is constructed, so malformed or malicious input never
+        reaches the network. Raises ``FredInvalidSeriesIdError`` for an
+        invalid ``series_id``; ``FredInvalidObservationRequestError`` for an
+        invalid ``observation_start``/``observation_end``/``limit``/
+        ``max_pages``, or if ``observation_start`` is after
+        ``observation_end``; ``FredCredentialsMissingError`` if no API key is
+        configured; or ``FredMacroDataError`` (sanitized) on request/network
+        failure, malformed JSON, a FRED-reported error payload, an unusable
+        response shape, a non-empty observations list containing any
+        malformed observation, conflicting duplicate observations, a
+        repeated pagination offset, or pagination exceeding ``max_pages``. An
+        empty observations list is a valid, successful result. On any
+        failure -- including a later-page failure -- no partial result is
+        returned; exact duplicate observations (matched on series_id,
+        observation_date, realtime_start, realtime_end) are deduplicated,
+        and results are returned in chronological, deterministic order
+        (observation_date, then realtime_start, then realtime_end).
+        """
+        normalized_series_id = normalize_series_id(series_id)
+        normalized_start = normalize_observation_date(
+            observation_start, field_name="observation_start"
+        )
+        normalized_end = normalize_observation_date(observation_end, field_name="observation_end")
+        if date.fromisoformat(normalized_start) > date.fromisoformat(normalized_end):
+            raise FredInvalidObservationRequestError(
+                "Invalid observation_start/observation_end: observation_start must not be "
+                "after observation_end."
+            )
+        normalized_limit = normalize_observations_limit(limit)
+        normalized_max_pages = normalize_observation_max_pages(max_pages)
+        api_key = self._api_key()
+
+        owns_client = client is None
+        http_client = client or httpx.Client(base_url=FRED_BASE_URL, timeout=self._timeout)
+
+        retrieved_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        observations_by_identity: dict[tuple[str, str, str, str], FredObservation] = {}
+        seen_offsets: set[int] = set()
+        offset = 0
+        total_count: int | None = None
+
+        try:
+            for _ in range(normalized_max_pages):
+                params = _build_observations_params(
+                    normalized_series_id,
+                    api_key,
+                    normalized_start,
+                    normalized_end,
+                    normalized_limit,
+                    offset,
+                )
+                try:
+                    response = http_client.get(OBSERVATIONS_PATH, params=params)
+                except httpx.RequestError as exc:
+                    raise FredMacroDataError(
+                        f"FRED observations request failed: {type(exc).__name__}."
+                    ) from None
+
+                try:
+                    payload = response.json()
+                except ValueError:
+                    payload = None
+
+                if _is_fred_error_payload(payload):
+                    raise FredMacroDataError("FRED reported an API error for this request.")
+
+                if not response.is_success:
+                    raise FredMacroDataError(
+                        f"FRED observations request failed with status {response.status_code}."
+                    )
+
+                if not isinstance(payload, dict):
+                    raise FredMacroDataError(
+                        "FRED observations response payload was not a JSON object."
+                    )
+
+                # Defends against a misbehaving/non-compliant response that
+                # ignores the requested offset and returns the same page
+                # repeatedly (which would otherwise loop until max_pages is
+                # exhausted): the offset FRED echoes back in the payload is
+                # trusted over our own request bookkeeping. A response that
+                # omits it falls back to the offset we requested.
+                raw_offset = payload.get("offset")
+                response_offset = (
+                    raw_offset
+                    if isinstance(raw_offset, int) and not isinstance(raw_offset, bool)
+                    else offset
+                )
+                if response_offset in seen_offsets:
+                    raise FredMacroDataError(
+                        "FRED observations pagination repeated an offset."
+                    )
+                seen_offsets.add(response_offset)
+
+                raw_observations = payload.get("observations")
+                if not isinstance(raw_observations, list):
+                    raise FredMacroDataError(
+                        "FRED observations response payload did not include an observations "
+                        "list."
+                    )
+
+                for raw_observation in raw_observations:
+                    try:
+                        observation = _normalize_observation(
+                            raw_observation,
+                            series_id=normalized_series_id,
+                            retrieved_at=retrieved_at,
+                        )
+                    except _MalformedObservationError:
+                        raise FredMacroDataError(
+                            "FRED observations response contained a malformed observation."
+                        ) from None
+
+                    identity = (
+                        observation.series_id,
+                        observation.observation_date,
+                        observation.realtime_start,
+                        observation.realtime_end,
+                    )
+                    existing = observations_by_identity.get(identity)
+                    if existing is not None:
+                        if not _observations_match(existing, observation):
+                            raise FredMacroDataError(
+                                "FRED observations response contained conflicting duplicate "
+                                "observations."
+                            )
+                        continue
+                    observations_by_identity[identity] = observation
+
+                raw_count = payload.get("count")
+                if isinstance(raw_count, int) and not isinstance(raw_count, bool):
+                    total_count = raw_count
+
+                returned = len(raw_observations)
+                offset += normalized_limit
+                if returned < normalized_limit:
+                    break
+                if total_count is not None and offset >= total_count:
+                    break
+            else:
+                raise FredMacroDataError(
+                    "FRED observations pagination exceeded the maximum page count."
+                )
+        finally:
+            if owns_client:
+                http_client.close()
+
+        return sorted(
+            observations_by_identity.values(),
+            key=lambda o: (o.observation_date, o.realtime_start, o.realtime_end),
+        )
 
     def check_connection(
         self, series_id: str = "FEDFUNDS", *, client: httpx.Client | None = None

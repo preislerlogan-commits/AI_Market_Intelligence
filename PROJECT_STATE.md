@@ -51,8 +51,14 @@ validated historical dataset. A local DuckDB storage foundation exists; the
 real local database was backed up and then upgraded to schema version
 `0005` (5 migrations applied) via that authorized run, and a subsequent
 read-only health check reported it healthy (see Status below). **One stored
-news ingestion also still exists** (10 SPY articles, see below). No AI
-analysis or agent orchestration exists yet.
+news ingestion also still exists** (10 SPY articles, see below). A
+FRED historical-observations connector method, macro-observations schema
+(migration `0006`), and repository now also exist as infrastructure for a
+future Macro Analyst agent — in repository code and tests only. Migration
+`0006` has not been applied to the real database (which remains at `0005`,
+healthy for what has been applied), and no FRED observation has been
+fetched from the live API or stored (see Status below). No AI analysis or
+agent orchestration exists yet.
 
 ## Status
 
@@ -332,6 +338,20 @@ analysis or agent orchestration exists yet.
   `is_current=True` (database at latest migration), `healthy=True`. **The
   real database is now at migration `0005` and reports healthy.** See
   [docs/STORAGE_ARCHITECTURE.md](docs/STORAGE_ARCHITECTURE.md).
+
+  **Migration `0006` added to repository code only (2026-08-21, not
+  applied):** after migration `0006` (`macro_observations`, see the
+  "Historical FRED observations" bullet below) was added to this
+  repository's migration code, a read-only health check against the
+  still-`0005` real database reports `schema_version=0005,
+  applied_migration_count=5, healthy=False` (`False` only because the
+  database is now behind the latest available migration — every other
+  health check, including migration-history validity and checksums, still
+  passes, and every previously stored row — 248 SPY bars, 10 SPY news
+  articles — remains intact and untouched). This diagnostic record is
+  preserved and not retracted, mirroring how the analogous `0004`-behind-
+  `0005` entry was handled above. Migration `0006` has **not** been applied
+  to the real database as part of this change.
 - A first persistent news-storage table, `news_articles`, has been added
   via migration `0004`
   (`market_intelligence/storage/migrations/0004_create_news_articles.sql`),
@@ -367,8 +387,52 @@ analysis or agent orchestration exists yet.
   required-fields status.
 - The `market_bars` table exists (migration `0005`, applied to the real
   database — see above) and now holds one authorized ingestion's worth of
-  SPY bars (see above); no macro-observation table exists yet — that
-  requires its own separate, reviewed data contract.
+  SPY bars (see above). A macro-observation table, connector method, and
+  repository now also exist in repository code and tests only (migration
+  `0006`, `market_intelligence/storage/migrations/0006_create_macro_observations.sql`,
+  `MacroObservationRepository`, `scripts/ingest_fred_observations.py`) — see
+  the "Historical FRED observations" bullet below. Migration `0006` has
+  **not** been applied to the real local database, which remains at schema
+  version `0005`; no FRED observation has been fetched or stored live, and
+  no complete or validated macro dataset exists.
+- **Historical FRED observations (2026-08-21, code/tests only — not run
+  live).** `FredMacroDataClient` (unchanged single-latest-observation
+  connectivity check preserved) now also exposes `get_observations()`: a
+  strictly validated, bounded, paginated fetch of historical observations
+  for one series over an explicit `observation_start`/`observation_end`
+  calendar-date range. `series_id`, `observation_start`, and
+  `observation_end` are validated before any request is built (calendar-date
+  shape, real calendar date, `observation_start <= observation_end`); the
+  per-page limit and page count are both strictly bounded (no caller can
+  raise the fixed ceiling), sorted ascending, and the client detects a
+  provider that ignores pagination and repeats the same offset. FRED's `"."`
+  missing-observation marker is preserved as `value=None, is_missing=True`;
+  every other value is parsed as a finite `Decimal` from FRED's own string
+  representation (non-finite/malformed values are rejected). Any malformed
+  observation in a non-empty response fails the whole fetch rather than
+  returning a misleading partial series; exact duplicate observations
+  (matched on series_id, observation_date, and the full realtime_start/
+  realtime_end vintage) are deduplicated, conflicting duplicates fail the
+  fetch, and results are returned in deterministic chronological order.
+  Errors and statuses never include the API key, request URL/query
+  parameters, raw responses, or observation values. A macro-observations
+  schema (migration `0006`, `macro_observations` table), a hardened,
+  transactional `MacroObservationRepository` (mirroring `BarRepository`'s
+  validate-before-write, single-transaction, conflict-rollback pattern, with
+  an identity of `(provider, series_id, observation_date, realtime_start,
+  realtime_end)` so FRED revisions/vintages are preserved rather than
+  collapsed), and a one-shot manual ingestion script
+  (`scripts/ingest_fred_observations.py`) now all exist, covered by tests
+  using temporary DuckDB files and mocked HTTP transports only. **None of
+  this has been run live**: migration `0006` has not been applied to the
+  real database (which remains at `0005`, healthy for everything already
+  applied, but no longer at the latest available migration — see below), no
+  FRED observation has been fetched from the live API using this new
+  method, and no observation has been stored. FRED connectivity itself was
+  previously verified via the pre-existing single-latest-observation check
+  (2026-08-20, see below); that remains the only live-verified FRED
+  interaction. Historical-observation fetching and macro storage are
+  code/test-verified only.
 - No trading execution connected. No brokerage integration exists or is
   planned; Robinhood is used manually, outside this system.
 - No validated predictive model. No forecasting, scoring, or evaluation
@@ -442,11 +506,18 @@ analysis or agent orchestration exists yet.
    dataset. Remaining future work: a validated, cataloged historical bars
    dataset per `DATA_CATALOG.md`'s Required Fields (broader coverage,
    direct inspection of stored data, gap/quality analysis).
-8. Reviewed data contracts for actual provider data — a versioned
-   migration and storage/repository now exist for market bars (see above);
-   a macro-observation table (and the ingestion code that writes to
-   `ingestion_runs` for it) remains future, reviewed work before any FRED
-   provider data is stored.
+8. Reviewed data contracts for actual provider data — versioned migrations
+   and storage/repositories now exist for both market bars (see above) and
+   macro observations (migration `0006`, `MacroObservationRepository`, see
+   the "Historical FRED observations" bullet above) in repository code and
+   tests. Applying migration `0006` to the real database and running a
+   first authorized live FRED observations ingestion both remain future,
+   separately authorized work.
+9. Macro-analyst agent groundwork — the FRED historical-observations
+   connector and storage pipeline (see above) exist as infrastructure only.
+   No AI agent, prediction, sentiment analysis, options logic, or trading
+   execution has been built on top of it, and none is planned as part of
+   this infrastructure change.
 
 ## Notes
 

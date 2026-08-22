@@ -7,7 +7,9 @@ for what data has (and has not) actually been ingested.
 
 ## Scope
 
-This foundation defines and applies five tables:
+This foundation defines six tables (five currently applied to the real
+database; the sixth exists in repository code and tests only -- see
+below):
 
 - **`schema_migrations`** — tracks which versioned migrations have been
   applied, with a checksum of each migration file's content.
@@ -32,10 +34,16 @@ This foundation defines and applies five tables:
   bars entry in `DATA_CATALOG.md`. This confirms one controlled ingestion
   run and transactional storage; it is not a complete, gap-free, or
   research-validated bars dataset.
+- **`macro_observations`** (added in migration `0006`) — stores normalized
+  historical FRED macroeconomic observations with provenance and
+  idempotency. See "Macro-observation storage" below. **Migration `0006`
+  exists in repository code and tests only** -- it has not been applied to
+  the real local database, which remains at schema version `0005`. No FRED
+  observation has been fetched from the live API or stored.
 
-No macroeconomic-observation, forecast, or trade tables exist yet. Those
-each require a separate, reviewed data contract before they are added as
-their own versioned migration.
+No forecast or trade tables exist yet. Those each require a separate,
+reviewed data contract before they are added as their own versioned
+migration.
 
 ## News article storage
 
@@ -193,6 +201,90 @@ transactional storage; it is not a complete, gap-free, or
 research-validated bars dataset — see "Status" in `PROJECT_STATE.md` and
 the bars entry in `DATA_CATALOG.md`.
 
+## Macro-observation storage
+
+`macro_observations`
+(`market_intelligence/storage/migrations/0006_create_macro_observations.sql`)
+stores only FRED's own reviewed observation fields plus this project's own
+provenance/ingestion bookkeeping -- never prediction, direction, sentiment,
+impact, recommendation, option-contract, order, execution, credentials,
+request headers, or raw API responses. **This table, its repository, and
+its ingestion script exist in repository code and tests only** -- migration
+`0006` has not been applied to the real local database (see "Scope" above).
+
+Columns: `provider` (fixed `"fred"`), `series_id`, `observation_date`
+(`DATE`, the calendar date FRED's observation itself describes),
+`realtime_start`/`realtime_end` (`DATE`, FRED's own reported revision/
+vintage window for this specific observation value), `value`
+(`DECIMAL(20,6)`, nullable), `is_missing` (`BOOLEAN`), `retrieved_at` (when
+the connector fetched the specific API response that produced the
+currently-stored values), `first_ingested_at` (set once, on first insert,
+never changed afterward), `last_seen_at` (refreshed every time the
+observation is re-ingested), and `ingestion_run_id` (the
+`ingestion_runs.run_id` of the run that most recently wrote this row --
+recorded, not enforced as a DuckDB foreign key, for the same reason as
+`news_articles.ingestion_run_id` and `market_bars.ingestion_run_id`). The
+primary key is `(provider, series_id, observation_date, realtime_start,
+realtime_end)` -- unlike a naive `(series_id, observation_date)` key, this
+deliberately includes FRED's revision/vintage window as part of the
+identity, so a later revision of an already-stored observation (FRED
+routinely revises published values, e.g. GDP) is preserved as its own row
+rather than silently overwriting an earlier vintage's value. A `CHECK`
+constraint enforces that a missing observation always has `value IS NULL`
+and `is_missing = TRUE`, and a present observation always has `value IS NOT
+NULL` and `is_missing = FALSE`.
+
+`market_intelligence/storage/macro_observation_repository.py`
+(`MacroObservationRepository`) is the only code that writes to this table.
+It accepts already-normalized `FredObservation` objects (from
+`market_intelligence/data_connectors/fred_macro_data.py`'s
+`get_observations()`) -- it makes no network requests itself and does not
+apply migrations; the database must already be initialized to at least
+migration `0006`. Every call to `store_observations()` first strictly
+validates every item before any database write, rejecting: non-
+`FredObservation` elements; a `provider` other than the requested provider;
+an unnormalized `series_id`/`observation_date`/`realtime_start`/
+`realtime_end`; a `value`/`is_missing` pairing that is inconsistent (a
+missing observation with a non-`None` value, or a present observation with
+a `None`, non-`Decimal`, or non-finite value); a `value` exceeding
+`DECIMAL(20,6)`'s precision or range; and a naive, timezone-free, or
+otherwise malformed `retrieved_at` -- with a sanitized
+`MacroObservationStorageValidationError` and no `ingestion_runs` row
+created for this failure mode. An empty batch is also rejected this way
+(existing repository conventions do not clearly establish empty-batch
+support, so the stricter default applies here). It then records a
+`running` `ingestion_runs` row, and writes the entire batch *plus* the
+final `succeeded` `ingestion_runs` status update inside one DuckDB
+transaction: an unseen observation identity is inserted; an already-known
+observation identity whose `value`/`is_missing` still match has its
+retrieval/last-seen/run provenance refreshed, never its value; an
+already-known observation identity whose values *conflict* with the
+incoming value, or a failure while recording the final `succeeded` status
+itself, aborts the entire batch -- nothing in that batch persists, and no
+observation changes are left associated with a `running` or `failed` run --
+and the `ingestion_runs` row is separately recorded as `failed` with a
+sanitized `error_category` (`content_conflict` or `storage_error`), never a
+raw exception message or observation content. If recording that `failed`
+status itself also fails, a sanitized `MacroObservationStorageError` is
+raised instead of returning a result. The returned
+`MacroObservationStorageResult` reports only sanitized counts (`received`,
+`inserted`, `existing_or_updated`, `failed`) and the ingestion-run
+id/status -- never observation values, dates, database internals, or
+credentials.
+
+`scripts/ingest_fred_observations.py` is the one manual ingestion entry
+point: it makes at most one bounded, explicit, read-only
+`FredMacroDataClient.get_observations()` request for a single,
+strictly-validated command-line series/date-range, then stores the results
+through `MacroObservationRepository`. Invalid `--series-id`/`--start`/
+`--end`/`--limit`/`--max-pages` values are rejected before any network
+request is constructed or any database write occurs. An empty (but
+successful) provider result is reported as a successful, no-op outcome
+rather than an error, and the repository is never called with an empty
+batch. **This script has not been run live** -- live ingestion requires
+separate, explicit authorization, and migration `0006` must first be
+applied to the real database.
+
 ## Components
 
 - `market_intelligence/storage/database.py` — `DuckDBManager`, the
@@ -203,12 +295,18 @@ the bars entry in `DATA_CATALOG.md`.
   the news-article storage service (see "News article storage" above).
 - `market_intelligence/storage/bar_repository.py` — `BarRepository`, the
   market-bar storage service (see "Market-bar storage" above).
+- `market_intelligence/storage/macro_observation_repository.py` —
+  `MacroObservationRepository`, the macro-observation storage service (see
+  "Macro-observation storage" above). Code/tests only -- migration `0006`
+  has not been applied to the real database.
 - `scripts/initialize_database.py` — applies pending migrations to the
   configured local database; prints only the database path, schema
   version, and applied migration count.
 - `scripts/check_database.py` — read-only health check; verifies the
   database file exists and the required tables are present without
   writing anything.
+- `scripts/ingest_fred_observations.py` — one-shot manual macro-observation
+  ingestion (see "Macro-observation storage" above); not run live.
 - `scripts/ingest_alpaca_news.py` — one-shot manual news ingestion (see
   "News article storage" above); not run live as part of this change.
 - `scripts/ingest_alpaca_bars.py` — one-shot manual bars ingestion (see

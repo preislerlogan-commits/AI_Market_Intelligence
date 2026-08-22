@@ -73,7 +73,15 @@ The following tickers are the known initial universe of interest:
   schema, or bulk/historical series data has been captured, stored, or
   inspected, so no dataset entry with verified Schema/Coverage/Known
   limitations exists yet. This is a connectivity check only and must not be
-  described as a validated data pipeline.
+  described as a validated data pipeline. `get_observations()`
+  (2026-08-21, code/tests only): the same client now also exposes a
+  strictly validated, bounded, paginated historical-observations fetch for
+  one series over an explicit calendar-date range, returning normalized
+  `FredObservation` records (provider, series_id, observation_date, value,
+  is_missing, realtime_start/realtime_end, retrieved_at). This method has
+  not been exercised against the live API -- see "Local Storage" below for
+  the corresponding macro-observations storage capability, which is also
+  code/test-only.
 - **Alpaca News** — news provider. A read-only connector,
   `AlpacaNewsClient` in `market_intelligence/data_connectors/alpaca_news.py`,
   exists and talks only to Alpaca's read-only data host
@@ -312,9 +320,48 @@ Fields" section below still requires broader coverage and direct
 gap/quality inspection of the stored data, which has not been done as
 part of this entry.
 
-No macro-observation, forecast, or trade table has been created — each
-requires its own reviewed data contract and a corresponding versioned
-migration before it is added.
+**Macro observations: repository code and tests only, not yet ingested
+(2026-08-21).** A reviewed data contract and versioned migration now exist
+for macro observations: migration `0006`
+(`market_intelligence/storage/migrations/0006_create_macro_observations.sql`)
+defines a `macro_observations` table, and
+`market_intelligence/storage/macro_observation_repository.py`
+(`MacroObservationRepository`) accepts already-normalized `FredObservation`
+objects from `FredMacroDataClient.get_observations()` and writes them
+transactionally, mirroring `BarRepository`'s pattern; a manual ingestion
+script, `scripts/ingest_fred_observations.py`, also now exists. The table
+stores only FRED's own reviewed observation fields plus provenance
+(`provider` fixed `"fred"`, `series_id`, `observation_date`,
+`realtime_start`, `realtime_end`, `value` as `DECIMAL(20,6)` (nullable),
+`is_missing`, `retrieved_at`, `first_ingested_at`, `last_seen_at`,
+`ingestion_run_id`) — no prediction, direction, sentiment, impact,
+recommendation, option-contract, order, or execution field exists.
+Idempotency is enforced via a `(provider, series_id, observation_date,
+realtime_start, realtime_end)` primary key, deliberately including FRED's
+own revision/vintage window rather than collapsing on `(series_id,
+observation_date)` alone, so a later revision of an already-stored
+observation is preserved as its own row rather than silently overwriting
+an earlier vintage. An already-known observation identity whose
+value/is_missing still matches has only its retrieval/last-seen/run
+provenance refreshed, while a conflicting value aborts the entire batch
+(nothing partially persists) and the corresponding `ingestion_runs` row is
+recorded `failed` with a sanitized error category. **This entire capability
+exists in repository code and tests only** (temporary DuckDB files, mocked
+HTTP transports — no live requests, no real-database writes). Migration
+`0006` has **not** been applied to the real local database, which remains
+at schema version `0005` and continues to hold the previously stored 248
+SPY bars and 10 SPY news articles, unchanged. No FRED observation has been
+fetched from the live API or stored, so no macro-observations dataset
+entry with verified Schema/Coverage/Known limitations exists yet in this
+catalog. FRED connectivity itself was previously verified via the
+pre-existing single-latest-observation check (2026-08-20, see "Planned
+Data Providers" above); that connectivity check remains the only
+live-verified FRED interaction — the new historical-observations fetch
+path and macro storage remain unverified against the live API.
+
+No forecast or trade table has been created — each requires its own
+reviewed data contract and a corresponding versioned migration before it
+is added.
 
 ## Required Fields for Every Future Dataset
 

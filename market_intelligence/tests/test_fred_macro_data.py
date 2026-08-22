@@ -6,6 +6,7 @@ built from monkeypatched environment variables pointed at a nonexistent
 .env file, mirroring market_intelligence/tests/test_alpaca_market_data.py.
 """
 
+from decimal import Decimal
 from pathlib import Path
 
 import httpx
@@ -14,11 +15,15 @@ import pytest
 from market_intelligence.config.settings import Settings
 from market_intelligence.data_connectors.fred_macro_data import (
     FRED_BASE_URL,
+    MAX_OBSERVATION_PAGES,
     OBSERVATIONS_PATH,
     FredCredentialsMissingError,
+    FredInvalidObservationRequestError,
     FredInvalidSeriesIdError,
     FredMacroDataClient,
     FredMacroDataError,
+    FredObservation,
+    normalize_observation_date,
     normalize_series_id,
 )
 
@@ -532,3 +537,552 @@ def test_api_key_sent_as_query_param_not_header(monkeypatch, isolated_env_file):
     client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
     with mock_client(handler) as http_client:
         client.get_latest_observation("FEDFUNDS", client=http_client)
+
+
+# =====================================================================
+# get_observations() -- historical observations
+# =====================================================================
+
+
+def observation_json(
+    date_: str,
+    value: str = "5.33",
+    realtime_start: str = "2026-08-20",
+    realtime_end: str = "2026-08-20",
+) -> dict:
+    return {
+        "realtime_start": realtime_start,
+        "realtime_end": realtime_end,
+        "date": date_,
+        "value": value,
+    }
+
+
+def observations_page_payload(
+    observations: list, *, count: int | None = None, offset: int = 0, limit: int = 1000
+) -> dict:
+    return {
+        "realtime_start": "2026-08-20",
+        "realtime_end": "2026-08-20",
+        "observation_start": "1600-01-01",
+        "observation_end": "9999-12-31",
+        "units": "lin",
+        "output_type": 1,
+        "file_type": "json",
+        "order_by": "observation_date",
+        "sort_order": "asc",
+        "count": count if count is not None else len(observations),
+        "offset": offset,
+        "limit": limit,
+        "observations": observations,
+    }
+
+
+# --- normalize_observation_date ---------------------------------------------
+
+VALID_OBSERVATION_DATES = ["2026-08-01", "2026-01-01", "2026-12-31", "2024-02-29"]
+
+INVALID_OBSERVATION_DATES = [
+    "",
+    "   ",
+    "2026-8-1",
+    "2026/08/01",
+    "08-01-2026",
+    "2026-08-01T00:00:00Z",
+    "2026-08-01T00:00:00",
+    "2026-13-01",
+    "2026-00-01",
+    "2026-08-32",
+    "2026-08-00",
+    "2026-02-30",
+    "2023-02-29",
+    "not-a-date",
+    True,
+    False,
+    12345,
+    None,
+]
+
+
+@pytest.mark.parametrize("raw", VALID_OBSERVATION_DATES)
+def test_normalize_observation_date_accepts_valid_input(raw):
+    assert normalize_observation_date(raw, field_name="observation_start") == raw
+
+
+@pytest.mark.parametrize("raw", INVALID_OBSERVATION_DATES)
+def test_normalize_observation_date_rejects_invalid_input(raw):
+    with pytest.raises(FredInvalidObservationRequestError) as exc_info:
+        normalize_observation_date(raw, field_name="observation_start")
+    if isinstance(raw, str) and raw.strip():
+        assert raw not in str(exc_info.value)
+
+
+# --- get_observations: success -----------------------------------------------
+
+
+def test_get_observations_returns_normalized_observations(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["series_id"] == "FEDFUNDS"
+        assert request.url.params["observation_start"] == "2026-08-01"
+        assert request.url.params["observation_end"] == "2026-08-02"
+        assert request.url.params["sort_order"] == "asc"
+        payload = observations_page_payload(
+            [observation_json("2026-08-01", "5.33"), observation_json("2026-08-02", "5.34")]
+        )
+        return httpx.Response(200, json=payload)
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        observations = client.get_observations(
+            "FEDFUNDS", "2026-08-01", "2026-08-02", client=http_client
+        )
+
+    assert len(observations) == 2
+    assert isinstance(observations[0], FredObservation)
+    assert observations[0].provider == "fred"
+    assert observations[0].series_id == "FEDFUNDS"
+    assert observations[0].observation_date == "2026-08-01"
+    assert observations[0].value == Decimal("5.33")
+    assert observations[0].is_missing is False
+    assert observations[0].realtime_start == "2026-08-20"
+    assert observations[0].realtime_end == "2026-08-20"
+    assert observations[0].retrieved_at.endswith("Z")
+
+
+def test_get_observations_empty_result_is_valid(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=observations_page_payload([]))
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        observations = client.get_observations(
+            "FEDFUNDS", "2026-08-01", "2026-08-02", client=http_client
+        )
+
+    assert observations == []
+
+
+def test_get_observations_missing_dot_value_marks_is_missing(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = observations_page_payload([observation_json("2026-08-01", ".")])
+        return httpx.Response(200, json=payload)
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        observations = client.get_observations(
+            "FEDFUNDS", "2026-08-01", "2026-08-01", client=http_client
+        )
+
+    assert len(observations) == 1
+    assert observations[0].value is None
+    assert observations[0].is_missing is True
+
+
+def test_get_observations_start_equal_end_is_allowed(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json=observations_page_payload([observation_json("2026-08-01")])
+        )
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        observations = client.get_observations(
+            "FEDFUNDS", "2026-08-01", "2026-08-01", client=http_client
+        )
+
+    assert len(observations) == 1
+
+
+def test_get_observations_preserves_realtime_vintage(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = observations_page_payload(
+            [
+                observation_json(
+                    "2026-08-01",
+                    "5.30",
+                    realtime_start="2026-08-05",
+                    realtime_end="2026-08-05",
+                )
+            ]
+        )
+        return httpx.Response(200, json=payload)
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        observations = client.get_observations(
+            "FEDFUNDS", "2026-08-01", "2026-08-01", client=http_client
+        )
+
+    assert observations[0].realtime_start == "2026-08-05"
+    assert observations[0].realtime_end == "2026-08-05"
+    assert observations[0].value == Decimal("5.30")
+
+
+def test_get_observations_deterministic_chronological_order(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = observations_page_payload(
+            [
+                observation_json("2026-08-03"),
+                observation_json("2026-08-01"),
+                observation_json("2026-08-02"),
+            ]
+        )
+        return httpx.Response(200, json=payload)
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        observations = client.get_observations(
+            "FEDFUNDS", "2026-08-01", "2026-08-03", client=http_client
+        )
+
+    assert [o.observation_date for o in observations] == [
+        "2026-08-01",
+        "2026-08-02",
+        "2026-08-03",
+    ]
+
+
+# --- get_observations: deduplication and conflicts ----------------------------
+
+
+def test_get_observations_exact_duplicate_deduplicated(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = observations_page_payload(
+            [observation_json("2026-08-01", "5.33"), observation_json("2026-08-01", "5.33")]
+        )
+        return httpx.Response(200, json=payload)
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        observations = client.get_observations(
+            "FEDFUNDS", "2026-08-01", "2026-08-01", client=http_client
+        )
+
+    assert len(observations) == 1
+
+
+def test_get_observations_conflicting_duplicate_raises(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = observations_page_payload(
+            [observation_json("2026-08-01", "5.33"), observation_json("2026-08-01", "9.99")]
+        )
+        return httpx.Response(200, json=payload)
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredMacroDataError) as exc_info:
+        client.get_observations("FEDFUNDS", "2026-08-01", "2026-08-01", client=http_client)
+
+    assert "conflicting" in str(exc_info.value).lower()
+
+
+# --- get_observations: malformed response handling -----------------------------
+
+
+def test_get_observations_malformed_observation_fails_whole_fetch(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = observations_page_payload(
+            [observation_json("2026-08-01"), {"date": "not-a-date", "value": "5.33"}]
+        )
+        return httpx.Response(200, json=payload)
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredMacroDataError):
+        client.get_observations("FEDFUNDS", "2026-08-01", "2026-08-02", client=http_client)
+
+
+def test_get_observations_malformed_value_fails_whole_fetch(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = observations_page_payload(
+            [observation_json("2026-08-01", "not-a-number")]
+        )
+        return httpx.Response(200, json=payload)
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredMacroDataError):
+        client.get_observations("FEDFUNDS", "2026-08-01", "2026-08-01", client=http_client)
+
+
+@pytest.mark.parametrize("bad_value", ["NaN", "Infinity", "-Infinity"])
+def test_get_observations_non_finite_value_rejected(monkeypatch, isolated_env_file, bad_value):
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = observations_page_payload([observation_json("2026-08-01", bad_value)])
+        return httpx.Response(200, json=payload)
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredMacroDataError):
+        client.get_observations("FEDFUNDS", "2026-08-01", "2026-08-01", client=http_client)
+
+
+def test_get_observations_non_object_observation_entry_fails(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = observations_page_payload(["not-a-dict"])
+        return httpx.Response(200, json=payload)
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredMacroDataError):
+        client.get_observations("FEDFUNDS", "2026-08-01", "2026-08-01", client=http_client)
+
+
+def test_get_observations_missing_observations_list_fails(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = observations_page_payload([])
+        del payload["observations"]
+        return httpx.Response(200, json=payload)
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredMacroDataError):
+        client.get_observations("FEDFUNDS", "2026-08-01", "2026-08-01", client=http_client)
+
+
+def test_get_observations_non_object_json_fails(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=["FEDFUNDS"])
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredMacroDataError):
+        client.get_observations("FEDFUNDS", "2026-08-01", "2026-08-01", client=http_client)
+
+
+def test_get_observations_fred_error_payload_fails(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={
+                "error_code": 400,
+                "error_message": f"Bad Request. api_key {FAKE_FRED_KEY} is not a valid API key.",
+            },
+        )
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredMacroDataError) as exc_info:
+        client.get_observations("FEDFUNDS", "2026-08-01", "2026-08-01", client=http_client)
+
+    assert FAKE_FRED_KEY not in str(exc_info.value)
+
+
+def test_get_observations_http_status_error_sanitized(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"message": "internal error"})
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredMacroDataError) as exc_info:
+        client.get_observations("FEDFUNDS", "2026-08-01", "2026-08-01", client=http_client)
+
+    assert "500" in str(exc_info.value)
+    assert FAKE_FRED_KEY not in str(exc_info.value)
+
+
+def test_get_observations_network_error_sanitized(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection failed", request=request)
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredMacroDataError) as exc_info:
+        client.get_observations("FEDFUNDS", "2026-08-01", "2026-08-01", client=http_client)
+
+    assert FAKE_FRED_KEY not in str(exc_info.value)
+
+
+# --- get_observations: pagination ---------------------------------------------
+
+
+def test_get_observations_follows_multiple_pages(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        offset = int(request.url.params["offset"])
+        limit = int(request.url.params["limit"])
+        assert limit == 2
+        if offset == 0:
+            payload = observations_page_payload(
+                [observation_json("2026-08-01"), observation_json("2026-08-02")],
+                count=3,
+                offset=0,
+                limit=2,
+            )
+        elif offset == 2:
+            payload = observations_page_payload(
+                [observation_json("2026-08-03")], count=3, offset=2, limit=2
+            )
+        else:
+            raise AssertionError(f"unexpected offset {offset}")
+        return httpx.Response(200, json=payload)
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        observations = client.get_observations(
+            "FEDFUNDS", "2026-08-01", "2026-08-03", limit=2, client=http_client
+        )
+
+    assert [o.observation_date for o in observations] == [
+        "2026-08-01",
+        "2026-08-02",
+        "2026-08-03",
+    ]
+
+
+def test_get_observations_pagination_exceeds_max_pages_raises(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        offset = int(request.url.params["offset"])
+        # Always returns a full page and a huge count, so the client keeps
+        # paginating until the max_pages bound is hit.
+        payload = observations_page_payload(
+            [observation_json("2026-08-01")], count=10_000, offset=offset, limit=1
+        )
+        return httpx.Response(200, json=payload)
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredMacroDataError) as exc_info:
+        client.get_observations(
+            "FEDFUNDS", "2026-08-01", "2026-08-01", limit=1, max_pages=3, client=http_client
+        )
+
+    assert "maximum page count" in str(exc_info.value).lower()
+
+
+def test_get_observations_repeated_offset_detected(monkeypatch, isolated_env_file):
+    """A misbehaving provider that ignores the offset and repeats a page must be caught."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # Always echoes offset 0 and a full page, regardless of what was
+        # requested -- simulates a provider that never actually advances.
+        payload = observations_page_payload(
+            [observation_json("2026-08-01")], count=10_000, offset=0, limit=1
+        )
+        return httpx.Response(200, json=payload)
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredMacroDataError) as exc_info:
+        client.get_observations(
+            "FEDFUNDS", "2026-08-01", "2026-08-01", limit=1, max_pages=5, client=http_client
+        )
+
+    assert "repeated" in str(exc_info.value).lower()
+
+
+# --- get_observations: input validation makes zero requests ---------------------
+
+
+def test_get_observations_raises_without_credentials(isolated_env_file):
+    client = FredMacroDataClient(settings=unconfigured_settings(isolated_env_file))
+    with pytest.raises(FredCredentialsMissingError):
+        client.get_observations("FEDFUNDS", "2026-08-01", "2026-08-02")
+
+
+@pytest.mark.parametrize("raw", INVALID_SERIES_IDS)
+def test_get_observations_invalid_series_id_makes_zero_requests(
+    monkeypatch, isolated_env_file, raw
+):
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json=observations_page_payload([]))
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredInvalidSeriesIdError):
+        client.get_observations(raw, "2026-08-01", "2026-08-02", client=http_client)
+
+    assert calls == []
+
+
+@pytest.mark.parametrize("raw", INVALID_OBSERVATION_DATES)
+def test_get_observations_invalid_start_makes_zero_requests(monkeypatch, isolated_env_file, raw):
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json=observations_page_payload([]))
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredInvalidObservationRequestError):
+        client.get_observations("FEDFUNDS", raw, "2026-08-02", client=http_client)
+
+    assert calls == []
+
+
+@pytest.mark.parametrize("raw", INVALID_OBSERVATION_DATES)
+def test_get_observations_invalid_end_makes_zero_requests(monkeypatch, isolated_env_file, raw):
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json=observations_page_payload([]))
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredInvalidObservationRequestError):
+        client.get_observations("FEDFUNDS", "2026-08-01", raw, client=http_client)
+
+    assert calls == []
+
+
+def test_get_observations_start_after_end_makes_zero_requests(monkeypatch, isolated_env_file):
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json=observations_page_payload([]))
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredInvalidObservationRequestError):
+        client.get_observations("FEDFUNDS", "2026-08-02", "2026-08-01", client=http_client)
+
+    assert calls == []
+
+
+@pytest.mark.parametrize("bad_limit", [0, -1, True, False, "10", 1.5, None, 100_000])
+def test_get_observations_invalid_limit_makes_zero_requests(
+    monkeypatch, isolated_env_file, bad_limit
+):
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json=observations_page_payload([]))
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredInvalidObservationRequestError):
+        client.get_observations(
+            "FEDFUNDS", "2026-08-01", "2026-08-02", limit=bad_limit, client=http_client
+        )
+
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "bad_max_pages", [0, -1, True, False, "3", 1.5, None, MAX_OBSERVATION_PAGES + 1]
+)
+def test_get_observations_invalid_max_pages_makes_zero_requests(
+    monkeypatch, isolated_env_file, bad_max_pages
+):
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json=observations_page_payload([]))
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredInvalidObservationRequestError):
+        client.get_observations(
+            "FEDFUNDS", "2026-08-01", "2026-08-02", max_pages=bad_max_pages, client=http_client
+        )
+
+    assert calls == []
+
+
+# --- get_observations: secret leak prevention ------------------------------------
+
+
+def test_get_observations_api_key_sent_as_query_param_not_header(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert FAKE_FRED_KEY not in dict(request.headers).values()
+        assert request.url.params["api_key"] == FAKE_FRED_KEY
+        return httpx.Response(200, json=observations_page_payload([observation_json("2026-08-01")]))
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        client.get_observations("FEDFUNDS", "2026-08-01", "2026-08-01", client=http_client)
+
+
+def test_get_observations_module_has_no_storage_dependency():
+    import market_intelligence.data_connectors.fred_macro_data as module
+
+    assert not hasattr(module, "duckdb")
