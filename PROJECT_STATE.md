@@ -36,8 +36,9 @@ since also been hardened to explicitly send fixed `adjustment=raw` and
 `currency=USD` provenance (alongside the existing `feed=iex`), but no new
 live check has been run against that additional hardening as part of this
 entry. Connectivity/one successful ingestion run is not the same as a
-validated, cataloged data pipeline: no historical or bulk live dataset has
-been stored, cataloged, or validated yet. A market-bar storage schema and
+validated, cataloged data pipeline: no complete, gap-free, bulk,
+catalog-validated, or research-validated provider dataset exists yet. A
+market-bar storage schema and
 repository (`market_bars`, migration `0005`, `BarRepository`) now also
 exist as schema/storage-capability infrastructure, originally covered by
 tests using temporary databases only. **A separately authorized real-database
@@ -210,8 +211,9 @@ analysis or agent orchestration exists yet.
   bars dataset: no bars from this check were written to DuckDB (this
   connector still does not store bars — bars storage is future, separately
   reviewed work), and no coverage, gap, or quality analysis has been
-  performed. No historical bars dataset has been retrieved, stored, or
-  validated.
+  performed. As of this 2026-08-20 check, no historical bars dataset had
+  been retrieved, stored, or validated (see the first authorized live bars
+  ingestion below, 2026-08-21, for the first stored batch).
 
   **Adjustment/currency provenance hardening (2026-08-20):** alongside
   `feed=iex`, every request — including every paginated page and
@@ -224,9 +226,13 @@ analysis or agent orchestration exists yet.
   `Bar` and `BarsConnectionStatus`, including failed/unconfigured/
   invalid-input statuses. **The explicit-IEX bars connector remains live
   connectivity-verified** as described in the two authorized checks above;
-  no new live check has been run against this additional adjustment/
-  currency hardening as part of this entry, so it is verified by unit tests
-  (mocked HTTP transport) only, not by a live request.
+  no new live check was run against this additional adjustment/currency
+  hardening as part of this 2026-08-20 entry, so as of that entry it was
+  verified only by unit tests (mocked HTTP transport). This hardening has
+  since been exercised live by the first authorized bars ingestion
+  (2026-08-21, see below), which used `feed=iex`, `adjustment=raw`, and
+  `currency=USD` throughout — one controlled ingestion run, not complete
+  dataset validation.
 - A market-bar storage schema and repository exist. Migration `0005`
   (`market_intelligence/storage/migrations/0005_create_market_bars.sql`)
   defines a `market_bars` table, and
