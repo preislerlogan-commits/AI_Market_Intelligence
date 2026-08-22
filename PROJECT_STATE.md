@@ -33,9 +33,11 @@ on the IEX feed only; it does not confirm SIP connectivity, and IEX's
 narrower single-exchange coverage still applies. **The explicit-IEX bars
 connector remains live connectivity-verified as described above** — it has
 since also been hardened to explicitly send fixed `adjustment=raw` and
-`currency=USD` provenance (alongside the existing `feed=iex`), but no new
-live check has been run against that additional hardening as part of this
-entry. Connectivity/one successful ingestion run is not the same as a
+`currency=USD` provenance (alongside the existing `feed=iex`). The earlier
+five-bar connectivity check predated this additional hardening, but the
+subsequent authorized 2026-08-21 ingestion (see Status below) exercised the
+hardened `feed=iex`, `adjustment=raw`, `currency=USD` request combination
+live. Connectivity/one successful ingestion run is not the same as a
 validated, cataloged data pipeline: no complete, gap-free, bulk,
 catalog-validated, or research-validated provider dataset exists yet. A
 market-bar storage schema and
@@ -399,8 +401,11 @@ analysis or agent orchestration exists yet.
    Alpaca historical bars was checked twice with separate authorization:
    the first implicit-SIP check failed with a sanitized 4xx, and the second
    explicit-IEX check succeeded with a sanitized 2xx. Connectivity and
-   response normalization are verified on IEX only. No bars were stored or
-   validated as a dataset.
+   response normalization are verified on IEX only. No bars from either of
+   those two connectivity checks were stored. A separate, later authorized
+   2026-08-21 ingestion (see item 7 below) subsequently stored 248 bars;
+   that is one controlled ingestion run, not a complete or validated bars
+   dataset.
 4. Database initialization — done (see above): the local DuckDB storage
    foundation is initialized under `data/`, now at schema version `0005`
    (`market_bars` applied) after the authorized real-database migration
