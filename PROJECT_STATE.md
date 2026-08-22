@@ -53,12 +53,20 @@ real local database was backed up and then upgraded to schema version
 read-only health check reported it healthy (see Status below). **One stored
 news ingestion also still exists** (10 SPY articles, see below). A
 FRED historical-observations connector method, macro-observations schema
-(migration `0006`), and repository now also exist as infrastructure for a
-future Macro Analyst agent — in repository code and tests only. Migration
-`0006` has not been applied to the real database (which remains at `0005`,
-healthy for what has been applied), and no FRED observation has been
-fetched from the live API or stored (see Status below). No AI analysis or
-agent orchestration exists yet.
+(migration `0006`), and repository were added as infrastructure for a
+future Macro Analyst agent, initially in repository code and tests only;
+a read-only health check against the still-`0005` real database at that
+time reported `healthy=False` (behind the latest available migration —
+see Status below, preserved as an honest diagnostic record and not
+retracted). **On 2026-08-21, a separately authorized run backed up the
+real database and applied migration `0006`**, after which a health check
+reported the database healthy at schema version `0006` (see Status
+below). **A separately authorized first live FRED historical-observations
+ingestion (FEDFUNDS, 2025-08-01 through 2026-07-31) then also succeeded**
+(see Status below) — this confirms one bounded historical fetch, response
+normalization, transactional storage, and local retrieval; it is not a
+complete, gap-free, broadly cataloged, or research-validated macro
+dataset. No AI analysis or agent orchestration exists yet.
 
 ## Status
 
@@ -114,8 +122,11 @@ agent orchestration exists yet.
   2026-08-20 one live, read-only FEDFUNDS latest-observation connection
   check was run using local `.env` credentials and succeeded (2xx,
   observation date returned). This confirms connectivity only; it is not
-  the same as a validated data pipeline. No FRED observations have been
-  stored or validated as a dataset yet — see `DATA_CATALOG.md`.
+  the same as a validated data pipeline. A separate, later authorized
+  historical-observations ingestion (2026-08-21, see the "Historical FRED
+  observations" bullet below) has since stored 12 FEDFUNDS observations;
+  that is one bounded ingestion run, not a validated dataset — see
+  `DATA_CATALOG.md`.
 - A read-only Alpaca news connector
   (`market_intelligence/data_connectors/alpaca_news.py`,
   `AlpacaNewsClient`) has been added, covering only Alpaca's read-only
@@ -350,8 +361,21 @@ agent orchestration exists yet.
   passes, and every previously stored row — 248 SPY bars, 10 SPY news
   articles — remains intact and untouched). This diagnostic record is
   preserved and not retracted, mirroring how the analogous `0004`-behind-
-  `0005` entry was handled above. Migration `0006` has **not** been applied
-  to the real database as part of this change.
+  `0005` entry was handled above.
+
+  **Migration `0006` applied to the real database (2026-08-21):** as part
+  of the first authorized FRED historical-observations ingestion described
+  below, `data/market_intelligence.duckdb` was backed up, then
+  `scripts/initialize_database.py` was run and applied migration `0006`
+  to the real local database. A subsequent read-only health check
+  reported: `schema_version=0006`, `applied_migration_count=6`,
+  `required_tables_present=True`, `required_columns_present=True`,
+  `migration_history_valid=True`, `checksums_valid=True`,
+  `is_current=True` (database at latest migration), `healthy=True`. **The
+  real database is now at migration `0006` and reports healthy.** The
+  previously stored 248 SPY bars and 10 SPY news articles remain intact
+  and untouched. See
+  [docs/STORAGE_ARCHITECTURE.md](docs/STORAGE_ARCHITECTURE.md).
 - A first persistent news-storage table, `news_articles`, has been added
   via migration `0004`
   (`market_intelligence/storage/migrations/0004_create_news_articles.sql`),
@@ -388,15 +412,16 @@ agent orchestration exists yet.
 - The `market_bars` table exists (migration `0005`, applied to the real
   database — see above) and now holds one authorized ingestion's worth of
   SPY bars (see above). A macro-observation table, connector method, and
-  repository now also exist in repository code and tests only (migration
-  `0006`, `market_intelligence/storage/migrations/0006_create_macro_observations.sql`,
+  repository also exist (migration `0006`,
+  `market_intelligence/storage/migrations/0006_create_macro_observations.sql`,
   `MacroObservationRepository`, `scripts/ingest_fred_observations.py`) — see
-  the "Historical FRED observations" bullet below. Migration `0006` has
-  **not** been applied to the real local database, which remains at schema
-  version `0005`; no FRED observation has been fetched or stored live, and
-  no complete or validated macro dataset exists.
-- **Historical FRED observations (2026-08-21, code/tests only — not run
-  live).** `FredMacroDataClient` (unchanged single-latest-observation
+  the "Historical FRED observations" bullet below. **Migration `0006` has
+  since been applied to the real local database (2026-08-21, see above),
+  and a first authorized live FRED observations ingestion has succeeded**
+  (see below). This is one bounded ingestion run, not a complete or
+  research-validated macro dataset.
+- **Historical FRED observations (2026-08-21, added in code/tests, then
+  exercised live — see below).** `FredMacroDataClient` (unchanged single-latest-observation
   connectivity check preserved) now also exposes `get_observations()`: a
   strictly validated, bounded, paginated fetch of historical observations
   for one series over an explicit `observation_start`/`observation_end`
@@ -444,16 +469,45 @@ agent orchestration exists yet.
   `DEFAULT_PROVIDER` constant): any alternate, blank, malformed, or
   non-string `provider` argument is rejected before any connection is
   opened, any `ingestion_runs` row is written, or any observation is
-  written, and the rejected value is never echoed. **None of
-  this has been run live**: migration `0006` has not been applied to the
-  real database (which remains at `0005`, healthy for everything already
-  applied, but no longer at the latest available migration — see below), no
-  FRED observation has been fetched from the live API using this new
-  method, and no observation has been stored. FRED connectivity itself was
-  previously verified via the pre-existing single-latest-observation check
-  (2026-08-20, see below); that remains the only live-verified FRED
-  interaction. Historical-observation fetching and macro storage are
-  code/test-verified only.
+  written, and the rejected value is never echoed. As of 2026-08-21 (prior
+  to the live run below), none of this had been run live: migration `0006`
+  had not been applied to the real database (which remained at `0005`,
+  healthy for everything already applied, but no longer at the latest
+  available migration — see above), no FRED observation had been fetched
+  from the live API using this new method, and no observation had been
+  stored. FRED connectivity itself was previously verified only via the
+  pre-existing single-latest-observation check (2026-08-20, see below).
+
+  **First authorized live FRED historical-observations ingestion
+  (2026-08-21):** `data/market_intelligence.duckdb` was backed up, migration
+  `0006` was applied (see above), and `scripts/ingest_fred_observations.py`
+  was then run once, live, against the real database with an explicit,
+  bounded request: series `FEDFUNDS`, requested observation range
+  2025-08-01 through 2026-07-31, fixed request provenance
+  (`realtime_start=1776-07-04`, `realtime_end=9999-12-31`, `output_type=1`,
+  `units=lin`), `limit=1000`, `max_pages=1`. The run received 12
+  observations, inserted 12, had 0 existing/updated and 0 failed, and the
+  corresponding `ingestion_runs` row was recorded `succeeded`; the latest
+  `ingestion_runs` record for this dataset is `('fred', 'macro_observations',
+  'succeeded', 12, None)`. A subsequent read-only query of
+  `macro_observations` verified 12 stored rows for this series, covering
+  2025-08-01 through 2026-07-01, with 0 missing observations. **This
+  confirms one bounded historical fetch, response normalization,
+  transactional storage, and local retrieval.** It does not establish a
+  complete, gap-free, broadly cataloged, or research-validated macro
+  dataset. Requesting the complete real-time period
+  (`realtime_start=1776-07-04`, `realtime_end=9999-12-31`) means this run's
+  vintage window is FRED's actual revision window, not merely today's
+  retrieval date — it does not mean all of FEDFUNDS's revision history has
+  been retrieved for every observation date outside the requested range.
+  `DECIMAL(20,6)` remains a deliberately bounded supported range for this
+  project's currently-ingested series, not a claim of universal support
+  for every FRED series. Only sanitized counts, status, and the verified
+  row count/coverage window are recorded here — no observation values are
+  reproduced in this document. The previously stored 248 SPY bars and 10
+  SPY news articles remain intact and untouched. See
+  [docs/STORAGE_ARCHITECTURE.md](docs/STORAGE_ARCHITECTURE.md) and
+  `DATA_CATALOG.md`.
 - No trading execution connected. No brokerage integration exists or is
   planned; Robinhood is used manually, outside this system.
 - No validated predictive model. No forecasting, scoring, or evaluation
@@ -462,9 +516,10 @@ agent orchestration exists yet.
   otherwise access the separate ORB_Project. Read-only Alpaca provider
   connectivity has been verified; one authorized ingestion run stored 10
   normalized SPY news articles, and a separate authorized ingestion run
-  stored 248 normalized SPY bars (IEX, `5Min`, see above). No FRED
-  observations have been stored, and no complete, gap-free, or validated
-  provider dataset has been cataloged yet. The settings layer's only
+  stored 248 normalized SPY bars (IEX, `5Min`, see above). A third
+  authorized ingestion run stored 12 normalized FEDFUNDS macro observations
+  (see above). No complete, gap-free, or validated provider dataset has
+  been cataloged yet. The settings layer's only
   data-path configuration is `project_data_path`, which defaults to this
   repository's own `data/` directory. No code in this repository may
   access files outside the repository unless the user explicitly
@@ -528,17 +583,20 @@ agent orchestration exists yet.
    dataset per `DATA_CATALOG.md`'s Required Fields (broader coverage,
    direct inspection of stored data, gap/quality analysis).
 8. Reviewed data contracts for actual provider data — versioned migrations
-   and storage/repositories now exist for both market bars (see above) and
+   and storage/repositories exist for both market bars (see above) and
    macro observations (migration `0006`, `MacroObservationRepository`, see
-   the "Historical FRED observations" bullet above) in repository code and
-   tests. Applying migration `0006` to the real database and running a
-   first authorized live FRED observations ingestion both remain future,
-   separately authorized work.
+   the "Historical FRED observations" bullet above). Migration `0006` has
+   been applied to the real database and a first authorized live FRED
+   observations ingestion has succeeded (12 FEDFUNDS observations, see
+   above). Remaining future work: a validated, cataloged macro-observations
+   dataset per `DATA_CATALOG.md`'s Required Fields (broader series/date
+   coverage, direct inspection of stored data, gap/quality analysis).
 9. Macro-analyst agent groundwork — the FRED historical-observations
-   connector and storage pipeline (see above) exist as infrastructure only.
-   No AI agent, prediction, sentiment analysis, options logic, or trading
-   execution has been built on top of it, and none is planned as part of
-   this infrastructure change.
+   connector and storage pipeline (see above) now include one authorized
+   live ingestion run, in addition to existing infrastructure. No AI agent,
+   prediction, sentiment analysis, options logic, or trading execution has
+   been built on top of it, and none is planned as part of this
+   infrastructure change.
 
 ## Notes
 

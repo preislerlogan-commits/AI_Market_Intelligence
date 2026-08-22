@@ -11,13 +11,13 @@ details, and any unverified claims below should be corrected or removed.
 This is an independent project. It does not depend on or access the
 separate ORB_Project, or any other data outside this repository.
 Read-only Alpaca provider connectivity has been verified. One authorized
-ingestion run stored 10 normalized SPY news articles, and a separate
+ingestion run stored 10 normalized SPY news articles, a separate
 authorized ingestion run stored 248 normalized SPY historical bars (IEX,
-`5Min`, `raw`, `USD` — see "Local Storage" below). Each collection
-verifies one ingestion run; neither is a complete, gap-free, or validated
-dataset. FRED observations have not been stored, and no complete provider
-dataset has been cataloged or validated yet — connectivity, or a single
-ingestion run, is not the same as a validated data pipeline. No code in
+`5Min`, `raw`, `USD`), and a third authorized ingestion run stored 12
+normalized FEDFUNDS macro observations (see "Local Storage" below). Each
+collection verifies one ingestion run; none is a complete, gap-free, or
+validated dataset — connectivity, or a single ingestion run, is not the
+same as a validated data pipeline. No code in
 this repository may access files outside the repository unless the user
 explicitly authorizes a specific source. Future data will come through
 this project's own reviewed connectors under
@@ -88,9 +88,12 @@ The following tickers are the known initial universe of interest:
   actual revision/vintage window and keeps the storage identity (see
   "Local Storage" below) stable and meaningful across repeated ingestion
   runs on different retrieval days, rather than merely reflecting the
-  retrieval date. This method has not been exercised against the live
-  API -- see "Local Storage" below for the corresponding macro-observations
-  storage capability, which is also code/test-only.
+  retrieval date. **This method has since been exercised against the live
+  API by a first authorized historical-observations ingestion (2026-08-21,
+  FEDFUNDS, 12 observations received/stored) — see "Local Storage" below
+  for the corresponding macro-observations storage capability and that
+  run's sanitized counts/coverage.** This is one bounded ingestion run for
+  one series/date-range, not a validated or cataloged dataset.
 - **Alpaca News** — news provider. A read-only connector,
   `AlpacaNewsClient` in `market_intelligence/data_connectors/alpaca_news.py`,
   exists and talks only to Alpaca's read-only data host
@@ -329,8 +332,8 @@ Fields" section below still requires broader coverage and direct
 gap/quality inspection of the stored data, which has not been done as
 part of this entry.
 
-**Macro observations: repository code and tests only, not yet ingested
-(2026-08-21).** A reviewed data contract and versioned migration now exist
+**Macro observations: first authorized live ingestion succeeded
+(2026-08-21).** A reviewed data contract and versioned migration exist
 for macro observations: migration `0006`
 (`market_intelligence/storage/migrations/0006_create_macro_observations.sql`)
 defines a `macro_observations` table, and
@@ -354,19 +357,51 @@ an earlier vintage. An already-known observation identity whose
 value/is_missing still matches has only its retrieval/last-seen/run
 provenance refreshed, while a conflicting value aborts the entire batch
 (nothing partially persists) and the corresponding `ingestion_runs` row is
-recorded `failed` with a sanitized error category. **This entire capability
-exists in repository code and tests only** (temporary DuckDB files, mocked
-HTTP transports — no live requests, no real-database writes). Migration
-`0006` has **not** been applied to the real local database, which remains
-at schema version `0005` and continues to hold the previously stored 248
-SPY bars and 10 SPY news articles, unchanged. No FRED observation has been
-fetched from the live API or stored, so no macro-observations dataset
-entry with verified Schema/Coverage/Known limitations exists yet in this
-catalog. FRED connectivity itself was previously verified via the
-pre-existing single-latest-observation check (2026-08-20, see "Planned
-Data Providers" above); that connectivity check remains the only
-live-verified FRED interaction — the new historical-observations fetch
-path and macro storage remain unverified against the live API.
+recorded `failed` with a sanitized error category. **This capability was
+originally built and tested against temporary databases only** (temporary
+DuckDB files, mocked HTTP transports — no live requests, no real-database
+writes).
+
+**Migration `0006` applied and first authorized live FEDFUNDS ingestion
+(2026-08-21):** `data/market_intelligence.duckdb` was backed up, and a
+separately authorized initialization run then applied migration `0006` to
+the real local database (schema version `0006`, 6 migrations applied,
+health check reported `healthy=True` — see
+[docs/STORAGE_ARCHITECTURE.md](docs/STORAGE_ARCHITECTURE.md)).
+`scripts/ingest_fred_observations.py` was then run once, live, against the
+real database with an explicit, bounded request: series `FEDFUNDS`,
+requested observation range 2025-08-01 through 2026-07-31, fixed request
+provenance (`realtime_start=1776-07-04`, `realtime_end=9999-12-31`,
+`output_type=1`, `units=lin`), `limit=1000`, `max_pages=1`. The run
+received 12 observations, inserted 12, had 0 existing/updated and 0
+failed, and the corresponding `ingestion_runs` row was recorded
+`succeeded`; the latest `ingestion_runs` record for this dataset is
+`('fred', 'macro_observations', 'succeeded', 12, None)`. A subsequent
+read-only query of `macro_observations` verified 12 stored rows for this
+series, covering 2025-08-01 through 2026-07-01, with 0 missing
+observations.
+
+**This confirms one bounded historical fetch, response normalization,
+transactional storage, and local retrieval.** It does not establish a
+complete, gap-free, broadly cataloged, or research-validated macro
+dataset: requesting the complete real-time period
+(`realtime_start=1776-07-04`, `realtime_end=9999-12-31`) makes this run's
+vintage window describe FRED's actual revision window for the requested
+observations; it is not a claim that all of FEDFUNDS's revision history
+has been retrieved, nor that any other series or date range has been
+covered. `DECIMAL(20,6)` remains a deliberately bounded supported range
+for this project's currently-ingested series, not a claim of universal
+support for every FRED series. Only sanitized counts, status, and the
+verified row count/coverage window are recorded here — no observation
+values are reproduced in this catalog. The previously stored 248 SPY bars
+and 10 SPY news articles remain intact and unchanged. FRED connectivity
+was also previously, separately verified via the pre-existing
+single-latest-observation check (2026-08-20, see "Planned Data Providers"
+above). A full dataset record (Source, Status, Provenance, Schema,
+Coverage, Known limitations) per the "Required Fields" section below
+still requires broader series/date coverage and direct gap/quality
+inspection of the stored data, which has not been done as part of this
+entry.
 
 No forecast or trade table has been created — each requires its own
 reviewed data contract and a corresponding versioned migration before it

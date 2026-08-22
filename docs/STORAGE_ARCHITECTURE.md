@@ -7,9 +7,8 @@ for what data has (and has not) actually been ingested.
 
 ## Scope
 
-This foundation defines six tables (five currently applied to the real
-database; the sixth exists in repository code and tests only -- see
-below):
+This foundation defines six tables, all now applied to the real database
+(see below):
 
 - **`schema_migrations`** — tracks which versioned migrations have been
   applied, with a checksum of each migration file's content.
@@ -36,10 +35,13 @@ below):
   research-validated bars dataset.
 - **`macro_observations`** (added in migration `0006`) — stores normalized
   historical FRED macroeconomic observations with provenance and
-  idempotency. See "Macro-observation storage" below. **Migration `0006`
-  exists in repository code and tests only** -- it has not been applied to
-  the real local database, which remains at schema version `0005`. No FRED
-  observation has been fetched from the live API or stored.
+  idempotency. See "Macro-observation storage" below. Migration `0006` has
+  been applied to the real local database (backed up beforehand), and one
+  explicitly authorized live ingestion has succeeded and stored 12
+  FEDFUNDS observations through it — see "Status" in `PROJECT_STATE.md`
+  and the macro-observations entry in `DATA_CATALOG.md`. This confirms one
+  controlled ingestion run and transactional storage; it is not a
+  complete, gap-free, or research-validated macro dataset.
 
 No forecast or trade tables exist yet. Those each require a separate,
 reviewed data contract before they are added as their own versioned
@@ -209,8 +211,10 @@ stores only FRED's own reviewed observation fields plus this project's own
 provenance/ingestion bookkeeping -- never prediction, direction, sentiment,
 impact, recommendation, option-contract, order, execution, credentials,
 request headers, or raw API responses. **This table, its repository, and
-its ingestion script exist in repository code and tests only** -- migration
-`0006` has not been applied to the real local database (see "Scope" above).
+its ingestion script were originally built and tested against temporary
+databases only. Migration `0006` has since been applied to the real local
+database, and one explicitly authorized live ingestion has succeeded**
+(see "Scope" above and the "First authorized live run" note below).
 
 Columns: `provider` (fixed `"fred"`), `series_id`, `observation_date`
 (`DATE`, the calendar date FRED's observation itself describes),
@@ -298,9 +302,23 @@ through `MacroObservationRepository`. Invalid `--series-id`/`--start`/
 request is constructed or any database write occurs. An empty (but
 successful) provider result is reported as a successful, no-op outcome
 rather than an error, and the repository is never called with an empty
-batch. **This script has not been run live** -- live ingestion requires
-separate, explicit authorization, and migration `0006` must first be
-applied to the real database.
+batch.
+
+**First authorized live run (2026-08-21):** `data/market_intelligence.duckdb`
+was backed up, migration `0006` was applied to the real database (see
+"Scope" above), and this script was then run once, live, against the real
+database: series `FEDFUNDS`, requested observation range 2025-08-01
+through 2026-07-31, fixed request provenance
+(`realtime_start=1776-07-04`, `realtime_end=9999-12-31`, `output_type=1`,
+`units=lin`), `limit=1000`, `max_pages=1`. 12 observations were received,
+12 inserted, 0 existing/updated, 0 failed, and the corresponding
+`ingestion_runs` row was recorded `succeeded`; the latest `ingestion_runs`
+record for this dataset is `('fred', 'macro_observations', 'succeeded',
+12, None)`. A subsequent read-only query verified 12 stored rows covering
+2025-08-01 through 2026-07-01, with 0 missing observations. This confirms
+one controlled ingestion run and transactional storage; it is not a
+complete, gap-free, or research-validated macro dataset -- see "Status" in
+`PROJECT_STATE.md` and the macro-observations entry in `DATA_CATALOG.md`.
 
 ## Components
 
@@ -314,8 +332,9 @@ applied to the real database.
   market-bar storage service (see "Market-bar storage" above).
 - `market_intelligence/storage/macro_observation_repository.py` —
   `MacroObservationRepository`, the macro-observation storage service (see
-  "Macro-observation storage" above). Code/tests only -- migration `0006`
-  has not been applied to the real database.
+  "Macro-observation storage" above). Migration `0006` has been applied to
+  the real database, and one authorized live ingestion has succeeded (see
+  above).
 - `scripts/initialize_database.py` — applies pending migrations to the
   configured local database; prints only the database path, schema
   version, and applied migration count.
@@ -323,7 +342,8 @@ applied to the real database.
   database file exists and the required tables are present without
   writing anything.
 - `scripts/ingest_fred_observations.py` — one-shot manual macro-observation
-  ingestion (see "Macro-observation storage" above); not run live.
+  ingestion (see "Macro-observation storage" above); first authorized live
+  run succeeded 2026-08-21 (see above).
 - `scripts/ingest_alpaca_news.py` — one-shot manual news ingestion (see
   "News article storage" above); not run live as part of this change.
 - `scripts/ingest_alpaca_bars.py` — one-shot manual bars ingestion (see
