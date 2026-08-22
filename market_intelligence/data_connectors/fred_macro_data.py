@@ -525,16 +525,23 @@ class FredMacroDataClient:
         nonnegative integer exactly equal to the offset that was requested
         (never inferred or silently substituted); the response's ``count``
         must be a plain nonnegative integer and must be identical on every
-        page of the same request; and a page that returns fewer observations
-        than the requested ``limit`` is only accepted as the final page if
-        ``offset + returned observations`` has actually reached ``count`` --
-        an empty or short page returned while ``count`` indicates more
-        records remain is treated as a failure, never as a successful
-        (silently incomplete) result. Any of these inconsistencies raises a
-        sanitized ``FredMacroDataError`` immediately, before any of that
-        page's observations are merged into the result. If the hard
-        ``max_pages`` bound is reached without ``count`` being satisfied,
-        the request fails safely rather than returning a partial series.
+        page of the same request; the number of observations returned on a
+        page must never exceed the requested ``limit``; ``offset + returned
+        observations`` must never exceed ``count`` (so, in particular, a
+        ``count`` of 0 rejects any returned observation, and a page whose
+        declared ``count`` is smaller than ``offset + returned`` always
+        fails); and a page that returns fewer observations than the
+        requested ``limit`` is only accepted as the final page if ``offset +
+        returned observations`` has reached ``count`` *exactly* -- an empty
+        or short page returned while ``count`` indicates more records remain
+        is treated as a failure, never as a successful (silently incomplete)
+        result. Any of these inconsistencies raises a sanitized
+        ``FredMacroDataError`` immediately, before any of that page's
+        observations are normalized or merged into the result, so no
+        observation from a metadata-inconsistent page is ever returned. If
+        the hard ``max_pages`` bound is reached without ``count`` being
+        satisfied, the request fails safely rather than returning a partial
+        series.
         """
         normalized_series_id = normalize_series_id(series_id)
         normalized_start = normalize_observation_date(
@@ -638,6 +645,27 @@ class FredMacroDataClient:
                         "list."
                     )
 
+                # A page's returned-count/count metadata is fully validated
+                # against normalized_limit/total_count before any of its
+                # observations are normalized or merged into the result, so a
+                # metadata-inconsistent page can never contribute
+                # observations to what is returned -- even indirectly via a
+                # partial merge followed by a raised error.
+                returned = len(raw_observations)
+                if returned > normalized_limit:
+                    raise FredMacroDataError(
+                        "FRED observations response returned more observations than the "
+                        "requested page limit."
+                    )
+
+                completed_through = offset + returned
+                if completed_through > total_count:
+                    raise FredMacroDataError(
+                        "FRED observations response reported a result count inconsistent "
+                        "with the page offset and returned observations."
+                    )
+
+                page_observations: list[FredObservation] = []
                 for raw_observation in raw_observations:
                     try:
                         observation = _normalize_observation(
@@ -649,7 +677,22 @@ class FredMacroDataClient:
                         raise FredMacroDataError(
                             "FRED observations response contained a malformed observation."
                         ) from None
+                    page_observations.append(observation)
 
+                if returned < normalized_limit:
+                    # A short (possibly empty) page is only a legitimate
+                    # final page if count confirms nothing is outstanding;
+                    # otherwise this is a silently incomplete result and
+                    # must fail rather than be returned as if successful.
+                    # (The symmetric overshoot case -- completed_through
+                    # exceeding total_count -- is already rejected above.)
+                    if completed_through < total_count:
+                        raise FredMacroDataError(
+                            "FRED observations pagination returned a short page while "
+                            "records remained outstanding."
+                        )
+
+                for observation in page_observations:
                     identity = (
                         observation.series_id,
                         observation.observation_date,
@@ -666,23 +709,11 @@ class FredMacroDataClient:
                         continue
                     observations_by_identity[identity] = observation
 
-                returned = len(raw_observations)
-                completed_through = offset + returned
-
                 if returned < normalized_limit:
-                    # A short (possibly empty) page is only a legitimate
-                    # final page if count confirms nothing is outstanding;
-                    # otherwise this is a silently incomplete result and
-                    # must fail rather than be returned as if successful.
-                    if completed_through < total_count:
-                        raise FredMacroDataError(
-                            "FRED observations pagination returned a short page while "
-                            "records remained outstanding."
-                        )
                     break
 
                 offset = completed_through
-                if offset >= total_count:
+                if offset == total_count:
                     break
             else:
                 raise FredMacroDataError(

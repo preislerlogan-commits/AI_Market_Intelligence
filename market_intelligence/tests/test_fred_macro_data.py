@@ -1271,6 +1271,151 @@ def test_get_observations_metadata_failure_returns_no_partial_observations(
         )
 
 
+def test_get_observations_count_zero_with_observations_fails(monkeypatch, isolated_env_file):
+    """count=0 must never coexist with a non-empty observations list."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = observations_page_payload(
+            [observation_json("2026-08-01")], count=0, offset=0, limit=2
+        )
+        return httpx.Response(200, json=payload)
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredMacroDataError) as exc_info:
+        client.get_observations(
+            "FEDFUNDS", "2026-08-01", "2026-08-01", limit=2, client=http_client
+        )
+
+    message = str(exc_info.value)
+    assert FAKE_FRED_KEY not in message
+    assert "2026-08-01" not in message
+    assert FRED_BASE_URL not in message
+
+
+def test_get_observations_page_exceeds_requested_limit_fails(monkeypatch, isolated_env_file):
+    """A page returning more observations than the requested limit must fail."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = observations_page_payload(
+            [observation_json("2026-08-01"), observation_json("2026-08-02")],
+            count=2,
+            offset=0,
+            limit=1,
+        )
+        return httpx.Response(200, json=payload)
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredMacroDataError) as exc_info:
+        client.get_observations(
+            "FEDFUNDS", "2026-08-01", "2026-08-02", limit=1, client=http_client
+        )
+
+    message = str(exc_info.value)
+    assert FAKE_FRED_KEY not in message
+    assert "2026-08-01" not in message
+    assert FRED_BASE_URL not in message
+
+
+def test_get_observations_first_page_exceeds_count_fails(monkeypatch, isolated_env_file):
+    """The first page reporting more returned records than its own declared count must fail."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = observations_page_payload(
+            [observation_json("2026-08-01"), observation_json("2026-08-02")],
+            count=1,
+            offset=0,
+            limit=5,
+        )
+        return httpx.Response(200, json=payload)
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredMacroDataError) as exc_info:
+        client.get_observations(
+            "FEDFUNDS", "2026-08-01", "2026-08-02", limit=5, client=http_client
+        )
+
+    message = str(exc_info.value)
+    assert FAKE_FRED_KEY not in message
+    assert "2026-08-01" not in message
+    assert FRED_BASE_URL not in message
+
+
+def test_get_observations_later_page_overshoots_count_fails(monkeypatch, isolated_env_file):
+    """A later page whose offset + returned exceeds the previously-reported count must fail,
+    and must not merge that page's observations into the result."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        offset = int(request.url.params["offset"])
+        if offset == 0:
+            payload = observations_page_payload(
+                [observation_json("2026-08-01"), observation_json("2026-08-02")],
+                count=3,
+                offset=0,
+                limit=2,
+            )
+        else:
+            # offset(2) + returned(2) = 4, exceeding the previously-reported count of 3.
+            payload = observations_page_payload(
+                [observation_json("2026-08-03"), observation_json("2026-08-04")],
+                count=3,
+                offset=2,
+                limit=2,
+            )
+        return httpx.Response(200, json=payload)
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredMacroDataError) as exc_info:
+        client.get_observations(
+            "FEDFUNDS", "2026-08-01", "2026-08-04", limit=2, client=http_client
+        )
+
+    message = str(exc_info.value)
+    assert FAKE_FRED_KEY not in message
+    assert "2026-08" not in message
+    assert FRED_BASE_URL not in message
+
+
+def test_get_observations_valid_empty_count_zero_response_succeeds(
+    monkeypatch, isolated_env_file
+):
+    """count=0 with an empty observations list is a valid, successful empty result."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = observations_page_payload([], count=0, offset=0, limit=2)
+        return httpx.Response(200, json=payload)
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        observations = client.get_observations(
+            "FEDFUNDS", "2026-08-01", "2026-08-01", limit=2, client=http_client
+        )
+
+    assert observations == []
+
+
+def test_get_observations_single_page_exact_completion_succeeds(
+    monkeypatch, isolated_env_file
+):
+    """offset + returned == count on a single short page is a valid, complete result."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = observations_page_payload(
+            [observation_json("2026-08-01"), observation_json("2026-08-02")],
+            count=2,
+            offset=0,
+            limit=5,
+        )
+        return httpx.Response(200, json=payload)
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        observations = client.get_observations(
+            "FEDFUNDS", "2026-08-01", "2026-08-02", limit=5, client=http_client
+        )
+
+    assert len(observations) == 2
+
+
 # --- get_observations: input validation makes zero requests ---------------------
 
 
