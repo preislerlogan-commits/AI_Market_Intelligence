@@ -19,6 +19,27 @@ historical observations for one series. It returns normalized
 realtime_start/realtime_end, retrieved_at) — no prediction, sentiment, or
 derived analysis. This module does not write to DuckDB; storage is handled
 separately by ``market_intelligence/storage/macro_observation_repository.py``.
+
+**Real-time period and units are explicit, fixed request parameters for
+``get_observations`` only.** FRED's documented default behavior, when a
+request omits ``realtime_start``/``realtime_end``, is to report each
+observation under *today's* date as its revision/vintage window — not the
+observation's actual reported revision window. Because
+``MacroObservationRepository``'s identity is
+``(provider, series_id, observation_date, realtime_start, realtime_end)``,
+relying on that default would make the identity drift on every retrieval
+day even for a value FRED has not actually revised, which would falsely
+describe distinct retrieval dates as distinct revisions and could silently
+duplicate rows on re-ingestion. ``get_observations`` therefore always
+requests the complete real-time period explicitly
+(``realtime_start=1776-07-04``, ``realtime_end=9999-12-31``), so FRED
+reports each observation's actual real-time/revision period instead, making
+the stored identity stable and meaningful across repeated runs. It also
+always requests ``units=lin`` explicitly, so stored values are unambiguously
+untransformed levels, never a percent-change/index/other FRED-side
+transformation. All four (``realtime_start``, ``realtime_end``,
+``output_type``, ``units``) are fixed project constants, sent on every page
+of every ``get_observations`` request, and are never caller-overridable.
 """
 
 from __future__ import annotations
@@ -60,6 +81,21 @@ DEFAULT_OBSERVATIONS_LIMIT = 1000
 # so a malformed or endless provider pagination sequence cannot loop
 # indefinitely. No caller may raise this ceiling.
 MAX_OBSERVATION_PAGES = 50
+
+# Fixed request provenance for get_observations() only -- never sent by
+# get_latest_observation()/check_connection(), and never caller-overridable.
+# See the module docstring: omitting realtime_start/realtime_end makes FRED
+# default both to today, which would make the
+# (series_id, observation_date, realtime_start, realtime_end) storage
+# identity drift across retrieval days for values FRED has not actually
+# revised. Requesting the complete real-time period explicitly makes FRED
+# report each observation's actual real-time/revision period instead, so the
+# identity is stable and meaningful. units=lin is requested explicitly so
+# stored values are unambiguously untransformed levels.
+OBSERVATIONS_REALTIME_START = "1776-07-04"
+OBSERVATIONS_REALTIME_END = "9999-12-31"
+OBSERVATIONS_OUTPUT_TYPE = 1
+OBSERVATIONS_UNITS = "lin"
 
 
 class FredCredentialsMissingError(RuntimeError):
@@ -239,9 +275,14 @@ class FredObservation:
     and ``realtime_end`` are FRED's reported revision/vintage window for this
     observation, preserved as normalized calendar dates rather than
     discarded, so a later revision of the same ``series_id``/
-    ``observation_date`` is never silently conflated with this one.
-    ``retrieved_at`` is this connector's own UTC retrieval timestamp, kept
-    distinct from every FRED-reported date.
+    ``observation_date`` is never silently conflated with this one. This is
+    only a stable, meaningful identity because ``get_observations`` always
+    requests the complete real-time period explicitly (see the module
+    docstring and ``OBSERVATIONS_REALTIME_START``/``OBSERVATIONS_REALTIME_END``)
+    -- a request that omitted those parameters would have FRED default both
+    to today's date, making these fields describe the *retrieval* day rather
+    than an actual revision. ``retrieved_at`` is this connector's own UTC
+    retrieval timestamp, kept distinct from every FRED-reported date.
     """
 
     provider: str
@@ -298,6 +339,10 @@ def _build_observations_params(
         "observation_end": observation_end,
         "limit": limit,
         "offset": offset,
+        "realtime_start": OBSERVATIONS_REALTIME_START,
+        "realtime_end": OBSERVATIONS_REALTIME_END,
+        "output_type": OBSERVATIONS_OUTPUT_TYPE,
+        "units": OBSERVATIONS_UNITS,
     }
 
 
@@ -445,6 +490,16 @@ class FredMacroDataClient:
     ) -> list[FredObservation]:
         """Fetch historical observations for a single FRED series. Read-only.
 
+        Every page of this request always explicitly sends
+        ``realtime_start=1776-07-04``, ``realtime_end=9999-12-31``,
+        ``output_type=1``, and ``units=lin`` (``OBSERVATIONS_REALTIME_START``/
+        ``OBSERVATIONS_REALTIME_END``/``OBSERVATIONS_OUTPUT_TYPE``/
+        ``OBSERVATIONS_UNITS`` -- fixed project constants, never
+        caller-overridable). This makes FRED report each observation's
+        actual real-time/revision period rather than defaulting it to
+        today's date, and makes stored values unambiguous untransformed
+        levels -- see the module docstring.
+
         All inputs are strictly validated and normalized before any HTTP
         request is constructed, so malformed or malicious input never
         reaches the network. Raises ``FredInvalidSeriesIdError`` for an
@@ -455,14 +510,31 @@ class FredMacroDataClient:
         configured; or ``FredMacroDataError`` (sanitized) on request/network
         failure, malformed JSON, a FRED-reported error payload, an unusable
         response shape, a non-empty observations list containing any
-        malformed observation, conflicting duplicate observations, a
-        repeated pagination offset, or pagination exceeding ``max_pages``. An
-        empty observations list is a valid, successful result. On any
-        failure -- including a later-page failure -- no partial result is
-        returned; exact duplicate observations (matched on series_id,
-        observation_date, realtime_start, realtime_end) are deduplicated,
-        and results are returned in chronological, deterministic order
-        (observation_date, then realtime_start, then realtime_end).
+        malformed observation, conflicting duplicate observations, invalid or
+        mismatched pagination offset/count metadata (see below), or
+        pagination exceeding ``max_pages``. An empty observations list is a
+        valid, successful result. On any failure -- including a later-page
+        failure -- no partial result is ever returned; exact duplicate
+        observations (matched on series_id, observation_date,
+        realtime_start, realtime_end) are deduplicated, and results are
+        returned in chronological, deterministic order (observation_date,
+        then realtime_start, then realtime_end).
+
+        Every page's pagination metadata is strictly validated before its
+        observations are trusted: the response's ``offset`` must be a plain
+        nonnegative integer exactly equal to the offset that was requested
+        (never inferred or silently substituted); the response's ``count``
+        must be a plain nonnegative integer and must be identical on every
+        page of the same request; and a page that returns fewer observations
+        than the requested ``limit`` is only accepted as the final page if
+        ``offset + returned observations`` has actually reached ``count`` --
+        an empty or short page returned while ``count`` indicates more
+        records remain is treated as a failure, never as a successful
+        (silently incomplete) result. Any of these inconsistencies raises a
+        sanitized ``FredMacroDataError`` immediately, before any of that
+        page's observations are merged into the result. If the hard
+        ``max_pages`` bound is reached without ``count`` being satisfied,
+        the request fails safely rather than returning a partial series.
         """
         normalized_series_id = normalize_series_id(series_id)
         normalized_start = normalize_observation_date(
@@ -483,7 +555,6 @@ class FredMacroDataClient:
 
         retrieved_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         observations_by_identity: dict[tuple[str, str, str, str], FredObservation] = {}
-        seen_offsets: set[int] = set()
         offset = 0
         total_count: int | None = None
 
@@ -522,23 +593,43 @@ class FredMacroDataClient:
                         "FRED observations response payload was not a JSON object."
                     )
 
-                # Defends against a misbehaving/non-compliant response that
-                # ignores the requested offset and returns the same page
-                # repeatedly (which would otherwise loop until max_pages is
-                # exhausted): the offset FRED echoes back in the payload is
-                # trusted over our own request bookkeeping. A response that
-                # omits it falls back to the offset we requested.
+                # Hardened pagination-metadata validation: a misbehaving or
+                # non-compliant response (e.g. one that ignores the
+                # requested offset, or that reports an inconsistent count)
+                # must fail the whole request rather than silently returning
+                # an incomplete series. Nothing from this page is trusted or
+                # merged into the result until its metadata passes.
                 raw_offset = payload.get("offset")
-                response_offset = (
-                    raw_offset
-                    if isinstance(raw_offset, int) and not isinstance(raw_offset, bool)
-                    else offset
-                )
-                if response_offset in seen_offsets:
+                if (
+                    isinstance(raw_offset, bool)
+                    or not isinstance(raw_offset, int)
+                    or raw_offset < 0
+                ):
                     raise FredMacroDataError(
-                        "FRED observations pagination repeated an offset."
+                        "FRED observations response included an invalid page offset."
                     )
-                seen_offsets.add(response_offset)
+                if raw_offset != offset:
+                    raise FredMacroDataError(
+                        "FRED observations response offset did not match the requested "
+                        "page offset."
+                    )
+
+                raw_count = payload.get("count")
+                if (
+                    isinstance(raw_count, bool)
+                    or not isinstance(raw_count, int)
+                    or raw_count < 0
+                ):
+                    raise FredMacroDataError(
+                        "FRED observations response included an invalid result count."
+                    )
+                if total_count is None:
+                    total_count = raw_count
+                elif raw_count != total_count:
+                    raise FredMacroDataError(
+                        "FRED observations response reported an inconsistent result count "
+                        "across pages."
+                    )
 
                 raw_observations = payload.get("observations")
                 if not isinstance(raw_observations, list):
@@ -575,15 +666,23 @@ class FredMacroDataClient:
                         continue
                     observations_by_identity[identity] = observation
 
-                raw_count = payload.get("count")
-                if isinstance(raw_count, int) and not isinstance(raw_count, bool):
-                    total_count = raw_count
-
                 returned = len(raw_observations)
-                offset += normalized_limit
+                completed_through = offset + returned
+
                 if returned < normalized_limit:
+                    # A short (possibly empty) page is only a legitimate
+                    # final page if count confirms nothing is outstanding;
+                    # otherwise this is a silently incomplete result and
+                    # must fail rather than be returned as if successful.
+                    if completed_through < total_count:
+                        raise FredMacroDataError(
+                            "FRED observations pagination returned a short page while "
+                            "records remained outstanding."
+                        )
                     break
-                if total_count is not None and offset >= total_count:
+
+                offset = completed_through
+                if offset >= total_count:
                     break
             else:
                 raise FredMacroDataError(

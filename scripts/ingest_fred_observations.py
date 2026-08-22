@@ -18,7 +18,10 @@ zero database writes made in any invalid-input case. The normalized
 ``start``/``end`` are also compared here (rejecting ``start > end``) before
 ``Settings``, the FRED client, any network request, or any database
 construction happens -- not left to be discovered later inside the
-connector or the repository.
+connector or the repository. Any invalid-input case prints only a fixed
+sanitized error category (``error category: invalid_input``) -- never the
+raw exception message or type, and never the raw, unvalidated
+series/date/limit input that triggered it.
 
 Database initialization and repository storage are also wrapped: a DuckDB
 initialization failure or a ``MacroObservationStorageError`` from storage is
@@ -120,11 +123,11 @@ def main(argv: list[str] | None = None, *, settings: Settings | None = None) -> 
             )
         limit = normalize_observations_limit(args.limit)
         max_pages = normalize_observation_max_pages(args.max_pages)
-    except (FredInvalidSeriesIdError, FredInvalidObservationRequestError) as exc:
+    except (FredInvalidSeriesIdError, FredInvalidObservationRequestError):
         print("configured: unknown")
         print("fetch outcome: invalid_input")
         print("series id: (invalid)")
-        print(f"error: {exc}")
+        print("error category: invalid_input")
         return 2
 
     settings = settings or Settings()

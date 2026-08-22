@@ -404,8 +404,24 @@ agent orchestration exists yet.
   `observation_end` are validated before any request is built (calendar-date
   shape, real calendar date, `observation_start <= observation_end`); the
   per-page limit and page count are both strictly bounded (no caller can
-  raise the fixed ceiling), sorted ascending, and the client detects a
-  provider that ignores pagination and repeats the same offset. FRED's `"."`
+  raise the fixed ceiling), sorted ascending. Every page also explicitly
+  sends fixed, non-overridable `realtime_start=1776-07-04`,
+  `realtime_end=9999-12-31`, `output_type=1`, and `units=lin`: FRED
+  documents that an omitted realtime_start/realtime_end defaults both to
+  *today's date* rather than the observation's actual reported revision
+  window, so requesting the complete real-time period explicitly is what
+  makes `realtime_start`/`realtime_end` describe FRED's real
+  revision/vintage window and keeps the storage identity (below) stable and
+  meaningful across ingestion runs on different retrieval days, rather than
+  merely reflecting the retrieval date. Pagination metadata is hardened:
+  every page's `offset` must be a plain nonnegative integer exactly equal
+  to the offset requested, every page's `count` must be a plain nonnegative
+  integer identical across all pages, and a short/empty page is only
+  accepted as complete once `offset + returned` has actually reached
+  `count` — any offset/count inconsistency or mismatch, or a short/empty
+  page while records remain outstanding, fails the whole request with a
+  sanitized error instead of silently returning an incomplete series, and
+  exceeding the hard page-count ceiling likewise fails safely. FRED's `"."`
   missing-observation marker is preserved as `value=None, is_missing=True`;
   every other value is parsed as a finite `Decimal` from FRED's own string
   representation (non-finite/malformed values are rejected). Any malformed
@@ -423,7 +439,12 @@ agent orchestration exists yet.
   realtime_end)` so FRED revisions/vintages are preserved rather than
   collapsed), and a one-shot manual ingestion script
   (`scripts/ingest_fred_observations.py`) now all exist, covered by tests
-  using temporary DuckDB files and mocked HTTP transports only. **None of
+  using temporary DuckDB files and mocked HTTP transports only. The
+  repository also now strictly enforces `provider == "fred"` (the fixed
+  `DEFAULT_PROVIDER` constant): any alternate, blank, malformed, or
+  non-string `provider` argument is rejected before any connection is
+  opened, any `ingestion_runs` row is written, or any observation is
+  written, and the rejected value is never echoed. **None of
   this has been run live**: migration `0006` has not been applied to the
   real database (which remains at `0005`, healthy for everything already
   applied, but no longer at the latest available migration — see below), no

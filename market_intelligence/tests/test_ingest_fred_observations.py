@@ -211,6 +211,65 @@ def test_invalid_input_error_never_echoes_raw_series_id(monkeypatch, capsys):
     assert secret_marker not in captured.out
 
 
+def test_invalid_input_prints_only_sanitized_error_category(monkeypatch, capsys):
+    """The invalid-input contract allows only a fixed 'error category: invalid_input'
+    line -- never a raw exception message or type."""
+    blocked_http_send(monkeypatch)
+    module = load_script_module()
+
+    exit_code = module.main(["--series-id", "not a valid series!!"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "error category: invalid_input" in captured.out
+    assert "error:" not in captured.out
+    assert "FredInvalidSeriesIdError" not in captured.out
+    assert "Traceback" not in captured.out
+
+
+@pytest.mark.parametrize(
+    "malicious_series_id",
+    [
+        "'; DROP TABLE macro_observations;--",
+        "../../etc/passwd",
+        "<script>alert(1)</script>",
+        "FEDFUNDS\nFEDFUNDS2",
+        "FEDFUNDS\x00FEDFUNDS2",
+    ],
+)
+def test_malicious_series_id_never_echoed_in_output(monkeypatch, capsys, malicious_series_id):
+    blocked_http_send(monkeypatch)
+    module = load_script_module()
+
+    exit_code = module.main(["--series-id", malicious_series_id])
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert malicious_series_id not in captured.out
+    assert "error category: invalid_input" in captured.out
+
+
+@pytest.mark.parametrize(
+    "malicious_date",
+    [
+        "'; DROP TABLE macro_observations;--",
+        "../../etc/passwd",
+        "<script>alert(1)</script>",
+        "2026-08-01\nrm -rf /",
+    ],
+)
+def test_malicious_start_date_never_echoed_in_output(monkeypatch, capsys, malicious_date):
+    blocked_http_send(monkeypatch)
+    module = load_script_module()
+
+    exit_code = module.main(["--start", malicious_date])
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert malicious_date not in captured.out
+    assert "error category: invalid_input" in captured.out
+
+
 def test_start_after_end_makes_zero_requests_and_writes(monkeypatch, tmp_path, isolated_env_file):
     calls = blocked_http_send(monkeypatch)
     module = load_script_module()

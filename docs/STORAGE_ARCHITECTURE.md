@@ -216,7 +216,10 @@ Columns: `provider` (fixed `"fred"`), `series_id`, `observation_date`
 (`DATE`, the calendar date FRED's observation itself describes),
 `realtime_start`/`realtime_end` (`DATE`, FRED's own reported revision/
 vintage window for this specific observation value), `value`
-(`DECIMAL(20,6)`, nullable), `is_missing` (`BOOLEAN`), `retrieved_at` (when
+(`DECIMAL(20,6)`, nullable -- a deliberately chosen, bounded supported
+range for this project's currently-ingested series, not a claim of
+universal coverage of every value any FRED series could ever report),
+`is_missing` (`BOOLEAN`), `retrieved_at` (when
 the connector fetched the specific API response that produced the
 currently-stored values), `first_ingested_at` (set once, on first insert,
 never changed afterward), `last_seen_at` (refreshed every time the
@@ -229,7 +232,17 @@ realtime_end)` -- unlike a naive `(series_id, observation_date)` key, this
 deliberately includes FRED's revision/vintage window as part of the
 identity, so a later revision of an already-stored observation (FRED
 routinely revises published values, e.g. GDP) is preserved as its own row
-rather than silently overwriting an earlier vintage's value. A `CHECK`
+rather than silently overwriting an earlier vintage's value. **This
+identity is only stable and meaningful because `FredMacroDataClient.
+get_observations()` always explicitly requests FRED's complete real-time
+period (`realtime_start=1776-07-04`, `realtime_end=9999-12-31`,
+`output_type=1`) and `units=lin` on every page, as fixed, non-overridable
+request parameters.** FRED documents that an omitted realtime_start/
+realtime_end defaults both to *today's date*, not to the observation's
+actual reported revision window; without the explicit request, repeating
+the same ingestion on a different day could create new rows for values
+FRED has not actually revised, falsely describing distinct retrieval dates
+as distinct revisions. A `CHECK`
 constraint enforces that a missing observation always has `value IS NULL`
 and `is_missing = TRUE`, and a present observation always has `value IS NOT
 NULL` and `is_missing = FALSE`.
@@ -241,9 +254,13 @@ It accepts already-normalized `FredObservation` objects (from
 `get_observations()`) -- it makes no network requests itself and does not
 apply migrations; the database must already be initialized to at least
 migration `0006`. Every call to `store_observations()` first strictly
-validates every item before any database write, rejecting: non-
-`FredObservation` elements; a `provider` other than the requested provider;
-an unnormalized `series_id`/`observation_date`/`realtime_start`/
+validates every item before any database write, rejecting: a `provider`
+argument that is not exactly the fixed value `"fred"` (any alternate,
+blank, malformed, or non-string value is rejected before any connection is
+opened, any `ingestion_runs` row is written, or any observation is
+written, and the rejected value is never echoed); non-
+`FredObservation` elements; an item `provider` other than the requested
+provider; an unnormalized `series_id`/`observation_date`/`realtime_start`/
 `realtime_end`; a `value`/`is_missing` pairing that is inconsistent (a
 missing observation with a non-`None` value, or a present observation with
 a `None`, non-`Decimal`, or non-finite value); a `value` exceeding

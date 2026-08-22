@@ -19,6 +19,17 @@
 -- observation never creates a duplicate row, while a genuinely later
 -- revision is stored as its own row.
 --
+-- This identity is only stable across repeated ingestion runs because the
+-- connector (FredMacroDataClient.get_observations(), see
+-- market_intelligence/data_connectors/fred_macro_data.py) always requests
+-- FRED's complete real-time period explicitly
+-- (realtime_start=1776-07-04, realtime_end=9999-12-31, output_type=1). FRED
+-- documents that an omitted realtime_start/realtime_end defaults to
+-- *today's date*, not to the observation's actual reported revision
+-- window; storing rows keyed on that default would falsely describe
+-- distinct retrieval dates as distinct revisions and would not, by itself,
+-- identify a real revision.
+--
 -- Observation time is kept strictly separate from retrieval and ingestion
 -- bookkeeping time, mirroring news_articles (migration 0004) and
 -- market_bars (migration 0005):
@@ -40,13 +51,16 @@
 -- stored exactly as decimal quantities (matching the connector's use of
 -- Python Decimal, built directly from FRED's string representation to
 -- avoid baking in IEEE-754 binary-float rounding artifacts -- see
--- fred_macro_data.py). 6 fractional digits comfortably covers FRED's
--- typically-reported precision; 14 integer digits leaves ample headroom
--- for any plausible macro series magnitude (e.g. nominal GDP in dollars).
--- Precision/scale are additionally validated on the repository side before
--- any write, so an out-of-range or over-precise value is rejected before
--- it ever reaches this column, rather than being silently rounded or
--- overflowed by DuckDB.
+-- fred_macro_data.py). 6 fractional digits and 14 integer digits are a
+-- deliberately chosen, bounded supported range for this project's
+-- currently-ingested series -- not a claim of universal coverage of every
+-- value any FRED series could ever report. A series whose value needs more
+-- than 6 fractional digits or exceeds this magnitude is out of scope for
+-- this column as currently defined and must be rejected, not silently
+-- rounded or truncated. Precision/scale are additionally validated on the
+-- repository side before any write, so an out-of-range or over-precise
+-- value is rejected before it ever reaches this column, rather than being
+-- silently rounded or overflowed by DuckDB.
 --
 -- Missing/value consistency: FRED represents a missing observation with
 -- the literal string "." rather than omitting the field. This table

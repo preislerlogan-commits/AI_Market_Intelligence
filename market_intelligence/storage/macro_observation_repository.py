@@ -69,10 +69,13 @@ DEFAULT_DATASET_NAME = "macro_observations"
 DEFAULT_PROVIDER = "fred"
 
 # Matches the macro_observations schema's value column (migration 0006:
-# DECIMAL(20,6) -- 14 integer digits, 6 fractional digits). A value with
-# more than 6 fractional digits would be silently rounded by DuckDB, and a
-# value outside this magnitude would silently overflow; both are rejected
-# here before any write rather than allowed to happen inside DuckDB.
+# DECIMAL(20,6) -- 14 integer digits, 6 fractional digits). This is a
+# deliberately chosen, bounded supported range for this project's
+# currently-ingested series -- not a claim of universal coverage of every
+# value any FRED series could ever report. A value with more than 6
+# fractional digits would be silently rounded by DuckDB, and a value outside
+# this magnitude would silently overflow; both are rejected here before any
+# write rather than allowed to happen inside DuckDB.
 _DECIMAL_SCALE = 6
 _DECIMAL_MAX_ABS = Decimal("99999999999999.999999")
 
@@ -130,6 +133,21 @@ def _require_non_blank_str(value: object, *, field_name: str) -> None:
         raise MacroObservationStorageValidationError(
             f"Invalid items: {field_name} must be a non-blank string."
         )
+
+
+def _require_provider_is_fred(value: object) -> str:
+    """Require ``value`` to be exactly ``DEFAULT_PROVIDER`` ("fred").
+
+    Rejects any alternate, blank, malformed, or non-string provider value
+    before any connection is opened, any ``ingestion_runs`` row is written,
+    or any observation is written. The rejected value is never echoed in
+    the error message.
+    """
+    if not isinstance(value, str) or value != DEFAULT_PROVIDER:
+        raise MacroObservationStorageValidationError(
+            f'Invalid items: provider must be exactly "{DEFAULT_PROVIDER}".'
+        )
+    return value
 
 
 def _require_normalized_series_id(value: object) -> str:
@@ -287,6 +305,14 @@ class MacroObservationRepository:
     ) -> MacroObservationStorageResult:
         """Store a batch of already-normalized ``FredObservation`` objects.
 
+        ``provider`` must be exactly ``DEFAULT_PROVIDER`` ("fred") -- any
+        alternate, blank, malformed, or non-string value is rejected with a
+        sanitized ``MacroObservationStorageValidationError`` before any
+        connection is opened, any ``ingestion_runs`` row is written, or any
+        observation is written, and the rejected value is never echoed. This
+        is a fixed constant, not caller-configurable data: every stored
+        observation is likewise required to have ``provider == "fred"``.
+
         Validates every item before any database write (raising
         ``MacroObservationStorageValidationError`` and writing nothing if
         validation fails); an empty batch is rejected the same way, since
@@ -325,9 +351,9 @@ class MacroObservationRepository:
         if len(items) == 0:
             raise MacroObservationStorageValidationError("Invalid items: batch must not be empty.")
 
+        _require_provider_is_fred(provider)
         _validate_items(items, provider=provider)
         received = len(items)
-        _require_non_blank_str(provider, field_name="provider")
         _require_non_blank_str(dataset_name, field_name="dataset_name")
 
         run_id = str(uuid.uuid4())

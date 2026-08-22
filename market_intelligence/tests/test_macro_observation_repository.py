@@ -535,6 +535,52 @@ def test_provider_mismatch_against_requested_provider_rejected(tmp_path, isolate
         repository.store_observations([make_observation(provider="fred")], provider="other")
 
 
+# --- provider argument must be exactly "fred" (zero writes for any deviation) ------
+
+
+@pytest.mark.parametrize(
+    "bad_provider",
+    [
+        pytest.param("alpaca", id="alternate"),
+        pytest.param("FRED", id="wrong-case"),
+        pytest.param(" fred", id="leading-space"),
+        pytest.param("fred ", id="trailing-space"),
+        pytest.param("", id="blank"),
+        pytest.param("   ", id="blank-whitespace"),
+        pytest.param("fred; DROP TABLE macro_observations;--", id="malformed-sql-like"),
+        pytest.param("../../etc/passwd", id="malformed-path-like"),
+        pytest.param(123, id="non-string-int"),
+        pytest.param(None, id="non-string-none"),
+        pytest.param(True, id="non-string-bool"),
+        pytest.param(["fred"], id="non-string-list"),
+    ],
+)
+def test_provider_argument_must_be_exactly_fred_zero_writes(
+    tmp_path, isolated_env_file, bad_provider
+):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+
+    with pytest.raises(MacroObservationStorageValidationError):
+        repository.store_observations([make_observation()], provider=bad_provider)
+
+    connection = read_only_connection(repository)
+    try:
+        assert count_observations(connection) == 0
+        assert connection.execute("SELECT count(*) FROM ingestion_runs").fetchone()[0] == 0
+    finally:
+        connection.close()
+
+
+def test_provider_argument_error_never_echoes_untrusted_value(tmp_path, isolated_env_file):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    secret_marker = "SECRET-PROVIDER-MARKER"
+
+    with pytest.raises(MacroObservationStorageValidationError) as exc_info:
+        repository.store_observations([make_observation()], provider=f"not-fred-{secret_marker}")
+
+    assert secret_marker not in str(exc_info.value)
+
+
 def test_non_observation_element_rejected(tmp_path, isolated_env_file):
     repository = initialized_repository(tmp_path, isolated_env_file)
     with pytest.raises(MacroObservationStorageValidationError):

@@ -78,10 +78,19 @@ The following tickers are the known initial universe of interest:
   strictly validated, bounded, paginated historical-observations fetch for
   one series over an explicit calendar-date range, returning normalized
   `FredObservation` records (provider, series_id, observation_date, value,
-  is_missing, realtime_start/realtime_end, retrieved_at). This method has
-  not been exercised against the live API -- see "Local Storage" below for
-  the corresponding macro-observations storage capability, which is also
-  code/test-only.
+  is_missing, realtime_start/realtime_end, retrieved_at). Every page of
+  this request explicitly sends fixed, non-overridable
+  `realtime_start=1776-07-04`, `realtime_end=9999-12-31`, `output_type=1`,
+  and `units=lin`. FRED documents that an omitted realtime_start/
+  realtime_end defaults to *today's date*, not to an observation's actual
+  reported revision window; requesting the complete real-time period
+  explicitly is what makes `realtime_start`/`realtime_end` describe FRED's
+  actual revision/vintage window and keeps the storage identity (see
+  "Local Storage" below) stable and meaningful across repeated ingestion
+  runs on different retrieval days, rather than merely reflecting the
+  retrieval date. This method has not been exercised against the live
+  API -- see "Local Storage" below for the corresponding macro-observations
+  storage capability, which is also code/test-only.
 - **Alpaca News** — news provider. A read-only connector,
   `AlpacaNewsClient` in `market_intelligence/data_connectors/alpaca_news.py`,
   exists and talks only to Alpaca's read-only data host
