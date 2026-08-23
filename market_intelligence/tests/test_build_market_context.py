@@ -105,3 +105,66 @@ def test_main_default_macro_series_used_when_omitted(tmp_path, isolated_env_file
     assert exit_code == 0
     output = json.loads(capsys.readouterr().out)
     assert output["request"]["macro_series_ids"] == ["FEDFUNDS"]
+
+
+# --- Defensive final except: never leak a raw exception ------------------------
+
+_UNEXPECTED_FAILURE_MARKER = (
+    "simulated unexpected failure C:\\secret\\path SELECT * FROM market_bars"
+)
+
+
+def test_main_builder_construction_failure_prints_only_unexpected_error(
+    tmp_path, isolated_env_file, capsys, monkeypatch
+):
+    module = load_script_module()
+
+    def _raising_builder(*args, **kwargs):
+        raise RuntimeError(_UNEXPECTED_FAILURE_MARKER)
+
+    monkeypatch.setattr(module, "MarketContextBuilder", _raising_builder)
+
+    exit_code = module.main(["--symbol", "SPY"])
+
+    assert exit_code != 0
+    raw_output = capsys.readouterr().out
+    output = json.loads(raw_output)
+    assert output == {"error": "unexpected_error"}
+    assert _UNEXPECTED_FAILURE_MARKER not in raw_output
+    assert "RuntimeError" not in raw_output
+
+
+def test_main_unexpected_build_failure_prints_only_unexpected_error(capsys):
+    module = load_script_module()
+
+    class _UnexpectedFailureBuilder:
+        def build_snapshot(self, *args, **kwargs):
+            raise ValueError(_UNEXPECTED_FAILURE_MARKER)
+
+    exit_code = module.main(["--symbol", "SPY"], builder=_UnexpectedFailureBuilder())
+
+    assert exit_code != 0
+    raw_output = capsys.readouterr().out
+    output = json.loads(raw_output)
+    assert output == {"error": "unexpected_error"}
+    assert _UNEXPECTED_FAILURE_MARKER not in raw_output
+    assert "ValueError" not in raw_output
+
+
+def test_main_unexpected_failure_output_has_no_traceback_or_raw_marker_text(capsys):
+    module = load_script_module()
+
+    class _UnexpectedFailureBuilder:
+        def build_snapshot(self, *args, **kwargs):
+            raise ValueError(_UNEXPECTED_FAILURE_MARKER)
+
+    exit_code = module.main(["--symbol", "SPY"], builder=_UnexpectedFailureBuilder())
+
+    assert exit_code != 0
+    raw_output = capsys.readouterr().out
+    assert "Traceback" not in raw_output
+    assert "market_context.py" not in raw_output
+    assert "line " not in raw_output
+    assert "secret" not in raw_output
+    assert "SELECT" not in raw_output
+    assert raw_output.strip() == json.dumps({"error": "unexpected_error"})

@@ -55,8 +55,8 @@ def main(argv: list[str] | None = None, *, builder: MarketContextBuilder | None 
     args = _parse_args(argv)
     macro_series_ids = tuple(args.macro_series) if args.macro_series else DEFAULT_MACRO_SERIES_IDS
 
-    context_builder = builder or MarketContextBuilder()
     try:
+        context_builder = builder or MarketContextBuilder()
         snapshot = context_builder.build_snapshot(
             args.symbol,
             recent_bars_limit=args.recent_bars_limit,
@@ -68,6 +68,11 @@ def main(argv: list[str] | None = None, *, builder: MarketContextBuilder | None 
         return 2
     except MarketContextError as exc:
         print(json.dumps({"error": "storage_error", "detail": str(exc)}))
+        return 1
+    except Exception:
+        # Never print the exception type, message, path, SQL, traceback, or any
+        # other untrusted/unsanitized detail here -- only this fixed marker.
+        print(json.dumps({"error": "unexpected_error"}))
         return 1
 
     print(json.dumps(snapshot, indent=2))

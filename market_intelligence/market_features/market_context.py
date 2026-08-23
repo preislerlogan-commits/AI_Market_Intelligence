@@ -330,8 +330,25 @@ class MarketContextBuilder:
                     raise MarketContextError(
                         "Failed to read market context data from local storage."
                     ) from None
-            finally:
-                connection.close()
+            except Exception:
+                # A read already failed (sanitized or not). A close() failure here
+                # must never replace that exception, so it is swallowed rather than
+                # propagated -- the original failure is what the caller sees.
+                try:
+                    connection.close()
+                except Exception:
+                    pass
+                raise
+            else:
+                # The read otherwise succeeded. A close() failure here is the only
+                # error the caller should see, and it must be sanitized like every
+                # other storage failure -- never the raw underlying exception.
+                try:
+                    connection.close()
+                except Exception:
+                    raise MarketContextError(
+                        "Failed to close local storage connection."
+                    ) from None
 
         macro_missing_series = [
             entry["series_id"]

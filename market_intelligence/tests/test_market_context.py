@@ -16,12 +16,14 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
+import duckdb
 import pytest
 
 from market_intelligence.config.settings import Settings
 from market_intelligence.data_connectors.alpaca_bars import Bar
 from market_intelligence.data_connectors.alpaca_news import NewsItem
 from market_intelligence.data_connectors.fred_macro_data import FredObservation
+from market_intelligence.market_features import market_context
 from market_intelligence.market_features.market_context import (
     BARS_SESSION_SCOPE,
     BARS_STALE_AFTER,
@@ -31,6 +33,7 @@ from market_intelligence.market_features.market_context import (
     NEWS_STALE_AFTER,
     RETURN_PERIOD_BARS,
     MarketContextBuilder,
+    MarketContextError,
     MarketContextValidationError,
     normalize_bounded_limit,
     normalize_macro_series_ids,
@@ -624,3 +627,90 @@ def test_build_snapshot_deterministic_with_fixed_clock(tmp_path, isolated_env_fi
     second = json.dumps(builder.build_snapshot("SPY"))
 
     assert first == second
+
+
+# --- Connection-close error handling -------------------------------------------
+
+_CLOSE_FAILURE_MARKER = "simulated close failure C:\\secret\\path SELECT * FROM market_bars"
+_READ_FAILURE_MARKER = "simulated read failure C:\\secret\\path SELECT * FROM market_bars"
+
+
+class _CloseFailingConnection:
+    """Wraps a real DuckDB connection but always fails on close()."""
+
+    def __init__(self, real_connection):
+        self._real_connection = real_connection
+
+    def __getattr__(self, name):
+        return getattr(self._real_connection, name)
+
+    def close(self):
+        raise RuntimeError(_CLOSE_FAILURE_MARKER)
+
+
+class _ReadThenCloseFailingConnection:
+    """Wraps a real DuckDB connection: the first execute() (table listing)
+    succeeds, every subsequent execute() raises duckdb.Error, and close()
+    also always fails -- used to prove a close() failure never masks an
+    already-sanitized read error."""
+
+    def __init__(self, real_connection):
+        self._real_connection = real_connection
+        self._execute_count = 0
+
+    def __getattr__(self, name):
+        return getattr(self._real_connection, name)
+
+    def execute(self, *args, **kwargs):
+        self._execute_count += 1
+        if self._execute_count == 1:
+            return self._real_connection.execute(*args, **kwargs)
+        raise duckdb.Error(_READ_FAILURE_MARKER)
+
+    def close(self):
+        raise RuntimeError(_CLOSE_FAILURE_MARKER)
+
+
+def test_build_snapshot_close_failure_after_successful_read_raises_sanitized_error(
+    tmp_path, isolated_env_file, monkeypatch
+):
+    settings, builder = initialized_builder(tmp_path, isolated_env_file)
+    repo = BarRepository(settings=settings)
+    repo.store_bars([make_bar()], provider="alpaca")
+
+    real_connect = market_context.duckdb.connect
+
+    def fake_connect(*args, **kwargs):
+        return _CloseFailingConnection(real_connect(*args, **kwargs))
+
+    monkeypatch.setattr(market_context.duckdb, "connect", fake_connect)
+
+    with pytest.raises(MarketContextError) as exc_info:
+        builder.build_snapshot("SPY")
+
+    message = str(exc_info.value)
+    assert _CLOSE_FAILURE_MARKER not in message
+    assert "RuntimeError" not in message
+    assert "secret" not in message
+
+
+def test_build_snapshot_close_failure_does_not_mask_sanitized_read_error(
+    tmp_path, isolated_env_file, monkeypatch
+):
+    settings, builder = initialized_builder(tmp_path, isolated_env_file)
+    real_connect = market_context.duckdb.connect
+
+    def fake_connect(*args, **kwargs):
+        return _ReadThenCloseFailingConnection(real_connect(*args, **kwargs))
+
+    monkeypatch.setattr(market_context.duckdb, "connect", fake_connect)
+
+    with pytest.raises(MarketContextError) as exc_info:
+        builder.build_snapshot("SPY")
+
+    message = str(exc_info.value)
+    assert message == "Failed to read market context data from local storage."
+    assert _READ_FAILURE_MARKER not in message
+    assert _CLOSE_FAILURE_MARKER not in message
+    assert "RuntimeError" not in message
+    assert "secret" not in message
