@@ -7,10 +7,8 @@ for what data has (and has not) actually been ingested.
 
 ## Scope
 
-This foundation defines seven tables in code; **six are applied to the
-real database** (see below) — the seventh, `orchestration_runs`/
-`orchestration_job_runs` (migration `0007`), exists in code/tests only and
-has not been applied to the real database:
+This foundation defines seven tables in code, and **all seven are now
+applied to the real database** (see below):
 
 - **`schema_migrations`** — tracks which versioned migrations have been
   applied, with a checksum of each migration file's content.
@@ -46,8 +44,15 @@ has not been applied to the real database:
   complete, gap-free, or research-validated macro dataset.
 
 - **`orchestration_runs` / `orchestration_job_runs`** (added in migration
-  `0007`, code/tests only, not applied to the real database) — the
-  persistent ingestion-orchestration audit trail. See
+  `0007`) — the persistent ingestion-orchestration audit trail. Originally
+  built and tested against temporary databases only; migration `0007` has
+  since been applied to the real local database (2026-08-23, backed up
+  beforehand), and one authorized live orchestration run has been recorded
+  through it (`orchestration_run_id=
+  e63d931e-8957-4357-93ee-ba7076b079d8`, overall status `succeeded`,
+  all three `orchestration_job_runs` rows `succeeded`). This confirms one
+  controlled orchestration run and its persistent audit record; it is not
+  scheduling or continuous/unattended operation. See
   [docs/INGESTION_ORCHESTRATION.md](INGESTION_ORCHESTRATION.md) for full
   detail.
 
@@ -211,6 +216,16 @@ transactional storage; it is not a complete, gap-free, or
 research-validated bars dataset — see "Status" in `PROJECT_STATE.md` and
 the bars entry in `DATA_CATALOG.md`.
 
+**First authorized live orchestration run (2026-08-23):** the
+`alpaca_bars_spy_5min` orchestration job (see
+[docs/INGESTION_ORCHESTRATION.md](INGESTION_ORCHESTRATION.md)) ran this
+same `feed=iex`/`adjustment=raw`/`currency=USD` request pattern through
+`BarRepository` as part of a broader, explicitly authorized orchestrated
+run: 334 bars received, 169 inserted, 165 existing/updated, 0 failed. The
+165 existing/updated rows reflect idempotent overlap with the 248 bars
+already stored above, within this job's own bounded request window — not
+new distinct dataset coverage.
+
 ## Macro-observation storage
 
 `macro_observations`
@@ -328,6 +343,16 @@ one controlled ingestion run and transactional storage; it is not a
 complete, gap-free, or research-validated macro dataset -- see "Status" in
 `PROJECT_STATE.md` and the macro-observations entry in `DATA_CATALOG.md`.
 
+**First authorized live orchestration run (2026-08-23):** the
+`fred_fedfunds_observations` orchestration job (see
+[docs/INGESTION_ORCHESTRATION.md](INGESTION_ORCHESTRATION.md)) ran this
+same FEDFUNDS request pattern through `MacroObservationRepository` as
+part of a broader, explicitly authorized orchestrated run: 3 observations
+received, 0 inserted, 3 existing/updated, 0 failed. The 3 existing/updated
+rows reflect idempotent overlap with the 12 observations already stored
+above, within this job's own bounded request window -- not new distinct
+dataset coverage.
+
 ## Components
 
 - `market_intelligence/storage/database.py` — `DuckDBManager`, the
@@ -345,9 +370,9 @@ complete, gap-free, or research-validated macro dataset -- see "Status" in
   above).
 - `market_intelligence/storage/orchestration_audit_repository.py` —
   `OrchestrationAuditRepository`, the ingestion-orchestration audit-trail
-  storage service (migration `0007`, code/tests only, not applied to the
-  real database). See
-  [docs/INGESTION_ORCHESTRATION.md](INGESTION_ORCHESTRATION.md).
+  storage service (migration `0007`, now applied to the real database,
+  with one authorized live orchestration run recorded through it — see
+  above). See [docs/INGESTION_ORCHESTRATION.md](INGESTION_ORCHESTRATION.md).
 - `scripts/initialize_database.py` — applies pending migrations to the
   configured local database; prints only the database path, schema
   version, and applied migration count.

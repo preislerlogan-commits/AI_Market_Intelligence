@@ -14,7 +14,11 @@ Read-only Alpaca provider connectivity has been verified. One authorized
 ingestion run stored 10 normalized SPY news articles, a separate
 authorized ingestion run stored 248 normalized SPY historical bars (IEX,
 `5Min`, `raw`, `USD`), and a third authorized ingestion run stored 12
-normalized FEDFUNDS macro observations (see "Local Storage" below). Each
+normalized FEDFUNDS macro observations (see "Local Storage" below). A
+first authorized live ingestion-orchestration run (2026-08-23) has since
+run all three of these pipelines together through explicit job contracts
+(see "Local Storage" below); this confirms one controlled orchestrated
+run, not scheduling, continuous operation, or dataset completeness. Each
 collection verifies one ingestion run; none is a complete, gap-free, or
 validated dataset — connectivity, or a single ingestion run, is not the
 same as a validated data pipeline. No code in
@@ -402,6 +406,47 @@ Coverage, Known limitations) per the "Required Fields" section below
 still requires broader series/date coverage and direct gap/quality
 inspection of the stored data, which has not been done as part of this
 entry.
+
+**Ingestion orchestration: first authorized live run (2026-08-23).** A
+committed job-configuration file (`market_intelligence/orchestration/jobs.json`)
+defines three initial reviewed orchestration jobs — `alpaca_news_spy`,
+`alpaca_bars_spy_5min`, `fred_fedfunds_observations` — each wrapping one of
+the connector/repository pipelines documented above. Migration `0007`
+(`orchestration_runs`/`orchestration_job_runs`, a persistent audit trail
+independent of the existing `ingestion_runs` table) was applied to the
+real local database (backed up beforehand), and
+`scripts/run_ingestion_pipeline.py` was then run once, live, with
+`--all --execute`, selecting all three jobs in one orchestrated run
+(`orchestration_run_id=e63d931e-8957-4357-93ee-ba7076b079d8`). A
+subsequent read-only health check reported `schema_version=0007`,
+`applied_migration_count=7`, `healthy=True`.
+
+The run completed with overall status `succeeded`; a read-only query
+confirmed `orchestration_runs` contains exactly 1 run and all three
+`orchestration_job_runs` rows for it are recorded `succeeded`. Per-job
+sanitized counts:
+
+- `alpaca_news_spy`: 10 received, 10 inserted, 0 existing/updated, 0
+  failed.
+- `alpaca_bars_spy_5min` (`feed=iex`, `adjustment=raw`, `currency=USD`):
+  334 received, 169 inserted, 165 existing/updated, 0 failed.
+- `fred_fedfunds_observations`: 3 received, 0 inserted, 3
+  existing/updated, 0 failed.
+
+**This confirms one controlled, explicitly authorized orchestration run
+across all three existing reviewed jobs, transactional per-job storage
+(reusing the same repositories described above), and a persistent
+orchestration audit trail.** The 165 existing/updated bars and the 3
+existing/updated FRED observations reflect idempotent overlap with
+previously stored rows within each job's own bounded request window, not
+new distinct dataset coverage. This run does not establish scheduling,
+continuous or unattended operation, or dataset completeness/gap-freedom
+for any of the three underlying datasets — none of that is claimed by
+this entry. Only sanitized counts, status, and identifiers are recorded
+here — no headline, URL, summary, OHLCV, or observation value from this
+run is reproduced in this catalog. See
+[docs/INGESTION_ORCHESTRATION.md](docs/INGESTION_ORCHESTRATION.md) for
+full detail.
 
 No forecast or trade table has been created — each requires its own
 reviewed data contract and a corresponding versioned migration before it
