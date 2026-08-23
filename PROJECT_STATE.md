@@ -4,7 +4,7 @@ This document is the **authoritative source of truth** for the current status
 of AI Market Intelligence. It must be read before beginning any work in this
 repository, and updated whenever the project's status materially changes.
 
-Last updated: 2026-08-21
+Last updated: 2026-08-23
 
 ## Current Phase
 
@@ -524,6 +524,37 @@ dataset. No AI analysis or agent orchestration exists yet.
   repository's own `data/` directory. No code in this repository may
   access files outside the repository unless the user explicitly
   authorizes a specific source.
+- **Ingestion-orchestration layer added (2026-08-23, code/tests only, not
+  run live).** A new package, `market_intelligence/orchestration/`, adds
+  immutable, strictly validated job contracts for exactly the three
+  existing reviewed job types (`alpaca_news`, `alpaca_bars`,
+  `fred_observations`), a small committed JSON configuration file
+  (`market_intelligence/orchestration/jobs.json`) defining the three
+  initial reviewed jobs (SPY news, SPY 5-minute IEX/raw/USD bars, FEDFUNDS
+  observations), a dry-run-first CLI entry point
+  (`scripts/run_ingestion_pipeline.py`), narrow job adapters that call the
+  existing reviewed connectors/repositories directly (never a shell
+  command, subprocess, or the manual `scripts/ingest_*.py` scripts), a
+  conservative fail-closed local run lock, and a persistent orchestration
+  audit trail (migration `0007`, `orchestration_runs`/
+  `orchestration_job_runs`). See
+  [docs/INGESTION_ORCHESTRATION.md](docs/INGESTION_ORCHESTRATION.md) for
+  full detail. **This orchestration layer, including migration `0007`,
+  exists in code and tests only — it has not been run with `--execute`
+  against the real database, and migration `0007` has not been applied to
+  the real database**, which remains at migration `0006`. A read-only
+  health check now reports the real database `schema_version=0006,
+  applied_migration_count=6, healthy=False` (`False` only because the
+  database is behind the latest available migration in the repository's
+  code — every other health check, including migration-history validity
+  and checksums, still passes), mirroring the same honest-diagnostic
+  pattern already used for the `0004`→`0005` and `0005`→`0006`
+  transitions above; this is preserved as a diagnostic record, not
+  retracted. The previously stored 10 SPY news articles, 248 SPY bars, and
+  12 FEDFUNDS observations remain intact and unchanged — verified via
+  read-only queries as part of this change. No AI agent, analysis,
+  prediction, recommendation, scheduling, or brokerage/Robinhood
+  integration was built as part of this change.
 
 ## Next Planned Work
 
@@ -597,6 +628,17 @@ dataset. No AI analysis or agent orchestration exists yet.
    prediction, sentiment analysis, options logic, or trading execution has
    been built on top of it, and none is planned as part of this
    infrastructure change.
+10. Ingestion-orchestration layer — done in code/tests only (see above):
+    job contracts, committed configuration, a dry-run-first CLI
+    (`scripts/run_ingestion_pipeline.py`), job adapters, a fail-closed run
+    lock, and a persistent audit trail (migration `0007`) all exist and are
+    tested against temporary databases and mocked HTTP transports only. No
+    `--execute` run has been performed against the real database, and
+    migration `0007` has not been applied to it. Remaining future work: a
+    separately authorized decision on whether/when to apply migration
+    `0007` to the real database and perform a first authorized `--execute`
+    run; this orchestration layer is groundwork for future specialized
+    agents, not an agent itself.
 
 ## Notes
 
