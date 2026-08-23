@@ -26,7 +26,11 @@ from market_intelligence.orchestration.results import (
     JOB_STATUS_SKIPPED,
     JOB_STATUS_SUCCEEDED,
 )
-from market_intelligence.orchestration.runner import build_plan, execute_run
+from market_intelligence.orchestration.runner import (
+    OrchestrationRunnerError,
+    build_plan,
+    execute_run,
+)
 from market_intelligence.storage.database import default_database_path
 
 CREDENTIAL_ENV_VARS = [
@@ -186,6 +190,18 @@ def test_build_plan_is_deterministic_for_same_clock():
     assert build_plan(contracts, clock=fixed_clock) == build_plan(contracts, clock=fixed_clock)
 
 
+def test_build_plan_calls_clock_exactly_once_for_multiple_contracts():
+    calls = []
+
+    def counting_clock():
+        calls.append(1)
+        return datetime(2026, 8, 23, 12, 0, 0, tzinfo=UTC)
+
+    build_plan((news_contract(), bars_contract(), fred_contract()), clock=counting_clock)
+
+    assert len(calls) == 1
+
+
 # --- execute_run: success path -------------------------------------------------------
 
 
@@ -306,6 +322,76 @@ def test_all_skipped_jobs_yield_overall_succeeded(monkeypatch, tmp_path, isolate
 
     assert result.job_results[0].status == JOB_STATUS_SKIPPED
     assert result.status == JOB_STATUS_SUCCEEDED
+
+
+# --- shared clock ---------------------------------------------------------------------
+
+
+def test_execute_run_calls_clock_exactly_once_across_multiple_jobs(
+    monkeypatch, tmp_path, isolated_env_file
+):
+    monkeypatch.setenv("FRED_API_KEY", "unit-test-fred-key")
+    settings = alpaca_configured_settings(monkeypatch, tmp_path, isolated_env_file)
+
+    def fake_send(self, request: httpx.Request, **kwargs) -> httpx.Response:
+        if "/v2/stocks" in str(request.url):
+            return httpx.Response(200, json={"bars": [], "next_page_token": None}, request=request)
+        return httpx.Response(
+            200,
+            json={
+                "realtime_start": "1776-07-04",
+                "realtime_end": "9999-12-31",
+                "observation_start": "1600-01-01",
+                "observation_end": "9999-12-31",
+                "units": "lin",
+                "output_type": 1,
+                "file_type": "json",
+                "order_by": "observation_date",
+                "sort_order": "asc",
+                "count": 0,
+                "offset": 0,
+                "limit": 1000,
+                "observations": [],
+            },
+            request=request,
+        )
+
+    monkeypatch.setattr(httpx.Client, "send", fake_send)
+
+    calls = []
+
+    def counting_clock():
+        calls.append(1)
+        return datetime(2026, 8, 23, 12, 0, 0, tzinfo=UTC)
+
+    result = execute_run(
+        (bars_contract(), fred_contract()), settings=settings, clock=counting_clock
+    )
+
+    assert len(calls) == 1
+    assert result.status == JOB_STATUS_SUCCEEDED
+
+
+# --- empty contract selection -----------------------------------------------------------
+
+
+def test_execute_run_rejects_empty_contracts_tuple(tmp_path, isolated_env_file):
+    settings = unconfigured_settings(tmp_path, isolated_env_file)
+
+    with pytest.raises(OrchestrationRunnerError):
+        execute_run((), settings=settings, clock=fixed_clock)
+
+
+def test_execute_run_empty_contracts_never_touches_lock_or_database(
+    tmp_path, isolated_env_file
+):
+    settings = unconfigured_settings(tmp_path, isolated_env_file)
+
+    with pytest.raises(OrchestrationRunnerError):
+        execute_run((), settings=settings, clock=fixed_clock)
+
+    assert not default_lock_path(settings).exists()
+    assert not default_database_path(settings).exists()
 
 
 # --- lock contention -----------------------------------------------------------------

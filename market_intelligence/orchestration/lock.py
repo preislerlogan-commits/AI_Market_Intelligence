@@ -104,13 +104,25 @@ class RunLock:
             ) from None
 
         try:
-            os.write(fd, content.encode("utf-8"))
+            try:
+                os.write(fd, content.encode("utf-8"))
+            finally:
+                os.close(fd)
         except OSError as exc:
+            # We created this lock file in this same call, so best-effort
+            # remove it before failing -- otherwise a write/close failure
+            # would leave a lock file behind that no process actually
+            # holds, permanently blocking every future acquisition until an
+            # operator manually intervenes. This does not change stale-lock
+            # recovery for a lock left behind by a *different*, already-
+            # completed acquisition -- that remains fail-closed/manual-only.
+            try:
+                self._lock_path.unlink(missing_ok=True)
+            except OSError:
+                pass
             raise OrchestrationLockError(
-                f"Failed to write the run lock: {type(exc).__name__}."
+                f"Failed to write or close the run lock: {type(exc).__name__}."
             ) from None
-        finally:
-            os.close(fd)
 
         self._acquired = True
 

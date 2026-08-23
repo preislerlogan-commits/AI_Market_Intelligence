@@ -180,3 +180,38 @@ def test_invalid_contract_field_is_rejected(tmp_path):
 def test_empty_jobs_list_is_accepted(tmp_path):
     path = write_config(tmp_path, [])
     assert load_job_contracts(path) == ()
+
+
+# --- exact fields: unknown root/job/param fields are rejected --------------------
+
+
+def test_unknown_root_field_is_rejected(tmp_path):
+    path = tmp_path / "jobs.json"
+    path.write_text(json.dumps({"jobs": [], "url": "https://evil.example.com"}), encoding="utf-8")
+    with pytest.raises(JobConfigError, match="unknown root field"):
+        load_job_contracts(path)
+
+
+def test_unknown_job_entry_field_is_rejected(tmp_path):
+    broken = dict(VALID_NEWS_JOB)
+    broken["command"] = "rm -rf /"
+    path = write_config(tmp_path, [broken])
+    with pytest.raises(JobConfigError, match="unknown field"):
+        load_job_contracts(path)
+
+
+@pytest.mark.parametrize(
+    "base_job,forbidden_field,forbidden_value",
+    [
+        (VALID_NEWS_JOB, "url", "https://evil.example.com"),
+        (VALID_NEWS_JOB, "order_endpoint", "/v2/orders"),
+        (VALID_BARS_JOB, "command", "rm -rf /"),
+        (VALID_FRED_JOB, "sql", "DROP TABLE macro_observations"),
+    ],
+)
+def test_unknown_param_field_is_rejected(tmp_path, base_job, forbidden_field, forbidden_value):
+    broken = json.loads(json.dumps(base_job))
+    broken["params"][forbidden_field] = forbidden_value
+    path = write_config(tmp_path, [broken])
+    with pytest.raises(JobConfigError, match="Unknown param field"):
+        load_job_contracts(path)

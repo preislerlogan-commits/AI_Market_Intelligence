@@ -78,9 +78,16 @@ def _select_contracts(
     """Return the selected contracts, or a fixed sanitized error category string.
 
     Never echoes the raw ``job_id`` value back -- only a fixed category.
+    ``--all`` with zero enabled jobs is rejected here, before ``Settings``,
+    the lock, the database, migrations, credentials, or the network are
+    ever touched -- this check happens purely against the already-loaded,
+    committed job configuration.
     """
     if select_all:
-        return tuple(contract for contract in contracts if contract.enabled)
+        enabled = tuple(contract for contract in contracts if contract.enabled)
+        if not enabled:
+            return "no_enabled_jobs"
+        return enabled
 
     if not isinstance(job_id, str) or not job_id.strip():
         return "invalid_job_id"

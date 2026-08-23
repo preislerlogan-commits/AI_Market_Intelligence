@@ -271,6 +271,105 @@ def test_multiple_jobs_in_one_run_are_independently_tracked(tmp_path, isolated_e
 # --- sanitization ------------------------------------------------------------------
 
 
+# --- truthful completion: only a matching running row may transition -------------------
+
+
+def test_complete_run_raises_when_run_already_terminal(tmp_path, isolated_env_file):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    repository.start_run(orchestration_run_id="run-1", started_at=datetime.now(UTC))
+    repository.complete_run(
+        orchestration_run_id="run-1", status="succeeded", completed_at=datetime.now(UTC)
+    )
+
+    with pytest.raises(OrchestrationAuditError):
+        repository.complete_run(
+            orchestration_run_id="run-1", status="failed", completed_at=datetime.now(UTC)
+        )
+
+
+def test_complete_run_raises_when_run_missing(tmp_path, isolated_env_file):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+
+    with pytest.raises(OrchestrationAuditError):
+        repository.complete_run(
+            orchestration_run_id="does-not-exist",
+            status="succeeded",
+            completed_at=datetime.now(UTC),
+        )
+
+
+def test_complete_run_failed_transition_does_not_change_stored_status(
+    tmp_path, isolated_env_file
+):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    repository.start_run(orchestration_run_id="run-1", started_at=datetime.now(UTC))
+    repository.complete_run(
+        orchestration_run_id="run-1", status="succeeded", completed_at=datetime.now(UTC)
+    )
+
+    with pytest.raises(OrchestrationAuditError):
+        repository.complete_run(
+            orchestration_run_id="run-1", status="failed", completed_at=datetime.now(UTC)
+        )
+
+    row = fetch_run_row(repository.database_path, "run-1")
+    assert row[0] == "succeeded"  # unchanged by the rejected transition
+
+
+def test_complete_job_raises_when_job_already_terminal(tmp_path, isolated_env_file):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    repository.start_run(orchestration_run_id="run-1", started_at=datetime.now(UTC))
+    repository.start_job(
+        orchestration_run_id="run-1", contract=contract(), started_at=datetime.now(UTC)
+    )
+    repository.complete_job(orchestration_run_id="run-1", result=make_result())
+
+    with pytest.raises(OrchestrationAuditError):
+        repository.complete_job(orchestration_run_id="run-1", result=make_result())
+
+
+def test_complete_job_raises_when_job_missing(tmp_path, isolated_env_file):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    repository.start_run(orchestration_run_id="run-1", started_at=datetime.now(UTC))
+
+    with pytest.raises(OrchestrationAuditError):
+        repository.complete_job(orchestration_run_id="run-1", result=make_result())
+
+
+def test_close_failure_does_not_mask_sanitized_completion_error(
+    tmp_path, isolated_env_file, monkeypatch
+):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    repository.start_run(orchestration_run_id="run-1", started_at=datetime.now(UTC))
+    repository.complete_run(
+        orchestration_run_id="run-1", status="succeeded", completed_at=datetime.now(UTC)
+    )
+
+    original_connect = duckdb.connect
+
+    class _FailingCloseConnection:
+        def __init__(self, real):
+            self._real = real
+
+        def execute(self, *args, **kwargs):
+            return self._real.execute(*args, **kwargs)
+
+        def close(self):
+            raise RuntimeError("boom SECRET-CLOSE-DETAIL")
+
+    def fake_connect(*args, **kwargs):
+        return _FailingCloseConnection(original_connect(*args, **kwargs))
+
+    monkeypatch.setattr(duckdb, "connect", fake_connect)
+
+    # The run is already terminal, so this must raise the sanitized
+    # "no matching running run" error -- not a raw close() failure.
+    with pytest.raises(OrchestrationAuditError, match="no matching"):
+        repository.complete_run(
+            orchestration_run_id="run-1", status="failed", completed_at=datetime.now(UTC)
+        )
+
+
 def test_connection_failure_raises_sanitized_error(tmp_path, isolated_env_file, monkeypatch):
     repository = initialized_repository(tmp_path, isolated_env_file)
     secret_marker = "SECRET-CONNECT-DETAIL"

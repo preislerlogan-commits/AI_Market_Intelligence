@@ -24,7 +24,7 @@ from datetime import UTC, datetime
 
 from market_intelligence.config.settings import Settings
 from market_intelligence.orchestration.adapters import run_job
-from market_intelligence.orchestration.clock import Clock, system_clock
+from market_intelligence.orchestration.clock import Clock, resolve_as_of, system_clock
 from market_intelligence.orchestration.contracts import (
     AlpacaBarsJobParams,
     FredObservationsJobParams,
@@ -66,9 +66,11 @@ def build_plan(
 
     Never constructs ``Settings``, a client, a database connection, or a
     lock -- safe to call with zero network/database/credential activity of
-    any kind.
+    any kind. Calls ``clock`` exactly once (see
+    ``market_intelligence.orchestration.clock.resolve_as_of``) and reuses
+    that one resolved, UTC-normalized instant for every contract's window.
     """
-    as_of = clock()
+    as_of = resolve_as_of(clock)
     entries = []
     for contract in contracts:
         window_start: str | None = None
@@ -112,7 +114,22 @@ def execute_run(
     ``market_intelligence.storage.orchestration_audit_repository.OrchestrationAuditError``
     if the audit trail itself cannot be durably written. The run lock is
     always released before returning or raising, regardless of outcome.
+
+    Rejects an empty ``contracts`` tuple and calls ``clock`` exactly once
+    (see ``market_intelligence.orchestration.clock.resolve_as_of``) before
+    the lock is even acquired; the one resolved, UTC-normalized instant is
+    then reused for every selected job's window in this run, so a run
+    combining e.g. a bars job and a FRED job cannot resolve two different
+    "as-of" instants for the same run.
     """
+    if not contracts:
+        raise OrchestrationRunnerError("No jobs were selected to execute.")
+
+    as_of = resolve_as_of(clock)
+
+    def _shared_clock() -> datetime:
+        return as_of
+
     lock = RunLock(default_lock_path(settings))
     lock.acquire()
     try:
@@ -137,7 +154,7 @@ def execute_run(
                 started_at=datetime.now(UTC),
             )
             try:
-                job_result = run_job(contract, settings=settings, clock=clock)
+                job_result = run_job(contract, settings=settings, clock=_shared_clock)
             except Exception:
                 # Defense in depth: run_job/its adapters are documented to
                 # already catch everything and never raise.

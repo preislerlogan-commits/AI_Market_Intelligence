@@ -204,6 +204,73 @@ def test_disabled_job_rejected_using_temporary_config(monkeypatch, tmp_path, iso
     assert calls == []
 
 
+def _write_all_disabled_config(tmp_path: Path) -> Path:
+    config_path = tmp_path / "jobs.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "jobs": [
+                    {
+                        "job_id": "alpaca_news_spy",
+                        "job_type": "alpaca_news",
+                        "enabled": False,
+                        "provider": "alpaca",
+                        "dataset_name": "news",
+                        "params": {"symbol": "SPY", "limit": 10},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    return config_path
+
+
+def _patch_config_path(monkeypatch, module: ModuleType, config_path: Path) -> None:
+    monkeypatch.setattr(
+        module,
+        "load_job_contracts",
+        lambda: __import__(
+            "market_intelligence.orchestration.config", fromlist=["load_job_contracts"]
+        ).load_job_contracts(config_path),
+    )
+
+
+def test_all_with_zero_enabled_jobs_rejected_before_any_activity(
+    monkeypatch, tmp_path, isolated_env_file, capsys
+):
+    calls = blocked_http_send(monkeypatch)
+    module = load_script_module()
+    settings = unconfigured_settings(tmp_path, isolated_env_file)
+    _patch_config_path(monkeypatch, module, _write_all_disabled_config(tmp_path))
+
+    exit_code = module.main(["--all"], settings=settings, clock=fixed_clock)
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "selection outcome: no_enabled_jobs" in captured.out
+    assert calls == []
+    assert database_file_exists(settings) is False
+
+
+def test_execute_all_with_zero_enabled_jobs_never_touches_lock_or_database(
+    monkeypatch, tmp_path, isolated_env_file
+):
+    calls = blocked_http_send(monkeypatch)
+    module = load_script_module()
+    settings = unconfigured_settings(tmp_path, isolated_env_file)
+    _patch_config_path(monkeypatch, module, _write_all_disabled_config(tmp_path))
+
+    from market_intelligence.orchestration.lock import default_lock_path
+
+    exit_code = module.main(["--all", "--execute"], settings=settings, clock=fixed_clock)
+
+    assert exit_code == 2
+    assert calls == []
+    assert database_file_exists(settings) is False
+    assert not default_lock_path(settings).exists()
+
+
 # --- dry run is the default and is safe -----------------------------------------------
 
 

@@ -7,6 +7,7 @@ in the same test process, never real concurrent processes.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -146,6 +147,68 @@ def test_directory_creation_failure_raises_sanitized_error(tmp_path, monkeypatch
     with pytest.raises(OrchestrationLockError) as exc_info:
         lock.acquire()
     assert secret_marker not in str(exc_info.value)
+
+
+def test_write_failure_cleans_up_newly_created_lock_and_raises_sanitized_error(
+    tmp_path, monkeypatch
+):
+    lock_path = tmp_path / "cache" / "orchestration.lock"
+    secret_marker = "SECRET-WRITE-DETAIL"
+
+    def fake_write(fd, data):
+        raise OSError(f"boom {secret_marker}")
+
+    monkeypatch.setattr(os, "write", fake_write)
+
+    lock = RunLock(lock_path)
+    with pytest.raises(OrchestrationLockError) as exc_info:
+        lock.acquire()
+
+    assert secret_marker not in str(exc_info.value)
+    assert not lock_path.exists()  # best-effort cleanup of the just-created lock
+    assert not lock._acquired
+
+
+def test_close_failure_after_successful_write_cleans_up_and_raises_sanitized_error(
+    tmp_path, monkeypatch
+):
+    lock_path = tmp_path / "cache" / "orchestration.lock"
+    secret_marker = "SECRET-CLOSE-DETAIL"
+    real_close = os.close
+
+    def fake_close(fd):
+        # Actually release the descriptor (as most real close() failures --
+        # e.g. a reported flush error -- still do) so cleanup can remove the
+        # file; only the raised error is simulated.
+        real_close(fd)
+        raise OSError(f"boom {secret_marker}")
+
+    monkeypatch.setattr(os, "close", fake_close)
+
+    lock = RunLock(lock_path)
+    with pytest.raises(OrchestrationLockError) as exc_info:
+        lock.acquire()
+
+    assert secret_marker not in str(exc_info.value)
+    assert not lock_path.exists()
+    assert not lock._acquired
+
+
+def test_write_failure_does_not_block_a_subsequent_acquisition(tmp_path, monkeypatch):
+    lock_path = tmp_path / "cache" / "orchestration.lock"
+
+    def fake_write(fd, data):
+        raise OSError("simulated write failure")
+
+    monkeypatch.setattr(os, "write", fake_write)
+    lock = RunLock(lock_path)
+    with pytest.raises(OrchestrationLockError):
+        lock.acquire()
+    monkeypatch.undo()
+
+    second = RunLock(lock_path)
+    second.acquire()  # must not raise contention -- the failed lock was cleaned up
+    second.release()
 
 
 def test_default_lock_path_is_derived_only_from_settings_project_data_path(tmp_path):

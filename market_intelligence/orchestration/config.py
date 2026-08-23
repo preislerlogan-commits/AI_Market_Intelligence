@@ -29,9 +29,33 @@ from market_intelligence.orchestration.contracts import (
 
 DEFAULT_JOBS_CONFIG_PATH = Path(__file__).resolve().parent / "jobs.json"
 
+_ALLOWED_ROOT_FIELDS = frozenset({"jobs"})
+
 _REQUIRED_JOB_FIELDS = frozenset(
     {"job_id", "job_type", "enabled", "provider", "dataset_name", "params"}
 )
+# Job entries have no optional fields, so the required set is also the
+# complete allowed set -- any other key (e.g. a shell command, a URL, a SQL
+# fragment) is rejected outright, matching ``_ALLOWED_PARAM_FIELDS_BY_JOB_TYPE``
+# below.
+_ALLOWED_JOB_FIELDS = _REQUIRED_JOB_FIELDS
+
+_ALLOWED_PARAM_FIELDS_BY_JOB_TYPE: dict[str, frozenset[str]] = {
+    JOB_TYPE_ALPACA_NEWS: frozenset({"symbol", "limit"}),
+    JOB_TYPE_ALPACA_BARS: frozenset(
+        {
+            "symbol",
+            "timeframe",
+            "lookback_days",
+            "limit",
+            "max_pages",
+            "feed",
+            "adjustment",
+            "currency",
+        }
+    ),
+    JOB_TYPE_FRED_OBSERVATIONS: frozenset({"series_id", "lookback_days", "limit", "max_pages"}),
+}
 
 
 class JobConfigError(ValueError):
@@ -46,6 +70,16 @@ class JobConfigError(ValueError):
 def _build_params(job_type: str, raw_params: Any) -> JobParams:
     if not isinstance(raw_params, dict):
         raise JobConfigError(f"Invalid params for job type '{job_type}': expected an object.")
+
+    allowed_param_fields = _ALLOWED_PARAM_FIELDS_BY_JOB_TYPE.get(job_type)
+    if allowed_param_fields is not None:
+        unknown_param_fields = raw_params.keys() - allowed_param_fields
+        if unknown_param_fields:
+            raise JobConfigError(
+                f"Unknown param field(s) for job type '{job_type}': "
+                f"{sorted(unknown_param_fields)}"
+            )
+
     try:
         if job_type == JOB_TYPE_ALPACA_NEWS:
             return AlpacaNewsJobParams(symbol=raw_params["symbol"], limit=raw_params["limit"])
@@ -78,6 +112,9 @@ def _build_contract(raw: Any) -> JobContract:
     missing = _REQUIRED_JOB_FIELDS - raw.keys()
     if missing:
         raise JobConfigError(f"Job entry missing required field(s): {sorted(missing)}")
+    unknown = raw.keys() - _ALLOWED_JOB_FIELDS
+    if unknown:
+        raise JobConfigError(f"Job entry has unknown field(s): {sorted(unknown)}")
 
     params = _build_params(raw["job_type"], raw["params"])
     try:
@@ -115,6 +152,11 @@ def load_job_contracts(path: Path | None = None) -> tuple[JobContract, ...]:
 
     if not isinstance(payload, dict) or not isinstance(payload.get("jobs"), list):
         raise JobConfigError("Job configuration file must be an object with a 'jobs' list.")
+    unknown_root_fields = payload.keys() - _ALLOWED_ROOT_FIELDS
+    if unknown_root_fields:
+        raise JobConfigError(
+            f"Job configuration file has unknown root field(s): {sorted(unknown_root_fields)}"
+        )
 
     contracts = [_build_contract(raw) for raw in payload["jobs"]]
 

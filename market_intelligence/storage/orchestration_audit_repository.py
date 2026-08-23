@@ -27,6 +27,18 @@ orchestration run (see ``market_intelligence/orchestration/runner.py``): it
 indicates an infrastructure problem with the audit trail itself, not a
 single job's provider/storage failure, so it is not subject to the
 per-job failure-isolation guarantee that governs job adapters.
+
+``complete_run``/``complete_job`` only ever transition a row that is still
+``running`` (an atomic conditional ``UPDATE ... WHERE status = 'running'
+... RETURNING``), and both verify that a row was actually returned before
+reporting success -- a missing or already-terminal row raises a sanitized
+``OrchestrationAuditError`` instead of silently reporting a false
+completion. Consequently, if this process crashes or is fatally
+interrupted between starting a run/job and completing it, that row is left
+durably ``running`` forever: this is a deliberate, truthful signal that the
+run/job was interrupted and its outcome is unknown, not a claim that it
+succeeded or failed -- an operator must review it manually. No automatic
+recovery/reconciliation of such a row is implemented here.
 """
 
 from __future__ import annotations
@@ -108,7 +120,12 @@ class OrchestrationAuditRepository:
     def complete_run(
         self, *, orchestration_run_id: str, status: str, completed_at: datetime
     ) -> None:
-        """Record an orchestration run's final, truthfully-derived overall status."""
+        """Record an orchestration run's final, truthfully-derived overall status.
+
+        Only transitions the row if it is still ``running``; raises
+        ``OrchestrationAuditError`` if no such running row exists (already
+        terminal, or missing) rather than silently reporting success.
+        """
         try:
             connection = duckdb.connect(str(self._manager.database_path))
         except Exception:
@@ -116,17 +133,27 @@ class OrchestrationAuditRepository:
                 "Failed to open the local database connection to complete the orchestration run."
             ) from None
         try:
-            connection.execute(
+            rows = connection.execute(
                 "UPDATE orchestration_runs SET status = ?, completed_at_utc = ? "
-                "WHERE orchestration_run_id = ?",
+                "WHERE orchestration_run_id = ? AND status = 'running' "
+                "RETURNING orchestration_run_id",
                 [status, _to_naive_utc(completed_at), orchestration_run_id],
-            )
+            ).fetchall()
         except Exception:
             raise OrchestrationAuditError(
                 "Failed to record the orchestration run's final status."
             ) from None
         finally:
-            connection.close()
+            try:
+                connection.close()
+            except Exception:
+                pass
+
+        if not rows:
+            raise OrchestrationAuditError(
+                "Failed to record the orchestration run's final status: no matching "
+                "running run was found (already terminal or missing)."
+            )
 
     def start_job(
         self, *, orchestration_run_id: str, contract: JobContract, started_at: datetime
@@ -163,7 +190,12 @@ class OrchestrationAuditRepository:
             connection.close()
 
     def complete_job(self, *, orchestration_run_id: str, result: JobResult) -> None:
-        """Record one job's final, truthful status/counts."""
+        """Record one job's final, truthful status/counts.
+
+        Only transitions the row if it is still ``running``; raises
+        ``OrchestrationAuditError`` if no such running row exists (already
+        terminal, or missing) rather than silently reporting success.
+        """
         try:
             connection = duckdb.connect(str(self._manager.database_path))
         except Exception:
@@ -171,11 +203,12 @@ class OrchestrationAuditRepository:
                 "Failed to open the local database connection to complete a job run."
             ) from None
         try:
-            connection.execute(
+            rows = connection.execute(
                 "UPDATE orchestration_job_runs SET status = ?, completed_at_utc = ?, "
                 "error_category = ?, records_received = ?, records_inserted = ?, "
                 "records_existing = ?, records_failed = ?, ingestion_run_id = ? "
-                "WHERE orchestration_job_run_id = ?",
+                "WHERE orchestration_job_run_id = ? AND status = 'running' "
+                "RETURNING orchestration_job_run_id",
                 [
                     result.status,
                     _to_naive_utc(result.completed_at),
@@ -187,8 +220,17 @@ class OrchestrationAuditRepository:
                     result.ingestion_run_id,
                     job_run_id(orchestration_run_id=orchestration_run_id, job_id=result.job_id),
                 ],
-            )
+            ).fetchall()
         except Exception:
             raise OrchestrationAuditError("Failed to record a job run's final status.") from None
         finally:
-            connection.close()
+            try:
+                connection.close()
+            except Exception:
+                pass
+
+        if not rows:
+            raise OrchestrationAuditError(
+                "Failed to record a job run's final status: no matching running job run "
+                "was found (already terminal or missing)."
+            )
