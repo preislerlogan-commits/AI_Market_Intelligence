@@ -5,18 +5,24 @@ This document describes the ingestion-orchestration layer added under
 [PROJECT_STATE.md](../PROJECT_STATE.md) and [DATA_CATALOG.md](../DATA_CATALOG.md)
 for what data has (and has not) actually been ingested.
 
-**Status: this orchestration layer exists in code and tests only. No
-scheduled or live orchestration run has occurred.** It has not been run
-with `--execute` against the real database. The individual prior live
-ingestions performed through the pre-existing manual scripts remain
-exactly as recorded in `PROJECT_STATE.md`/`DATA_CATALOG.md`: 10 SPY news
-articles, 248 SPY IEX/raw/USD 5-minute bars, and 12 FEDFUNDS observations.
-No complete or validated provider dataset exists as a result of this
-change. No AI agents or model APIs are operational here, and Robinhood
-remains manual and unconnected — this layer builds no AI agent, analysis,
-prediction, recommendation, scheduling, or brokerage/Robinhood integration
-of any kind; it only runs the same already-reviewed Alpaca news, Alpaca
-bars, and FRED observation pipelines through explicit job contracts.
+**Status: a first authorized live orchestration run has succeeded
+(2026-08-23). This remains a single controlled run, not scheduled or
+continuous/unattended operation.** As originally added, this layer
+existed in code and tests only and had not been run with `--execute`
+against the real database. On 2026-08-23, migration `0007` was applied to
+the real database (backed up beforehand) and
+`scripts/run_ingestion_pipeline.py` was run once, live, with
+`--all --execute`, selecting all three existing reviewed jobs
+(`alpaca_news_spy`, `alpaca_bars_spy_5min`, `fred_fedfunds_observations`)
+in one run (`orchestration_run_id=e63d931e-8957-4357-93ee-ba7076b079d8`,
+overall status `succeeded`). See "First authorized live orchestration
+run" below for full sanitized results. No complete or validated provider
+dataset exists as a result of this run. No AI agents or model APIs are
+operational here, and Robinhood remains manual and unconnected — this
+layer builds no AI agent, analysis, prediction, recommendation,
+scheduling, or brokerage/Robinhood integration of any kind; it only runs
+the same already-reviewed Alpaca news, Alpaca bars, and FRED observation
+pipelines through explicit job contracts.
 
 ## Purpose
 
@@ -216,10 +222,11 @@ orchestration run — it indicates an infrastructure problem with the audit
 trail, not a single job's failure, so it is not subject to the per-job
 failure-isolation guarantee.
 
-**This audit infrastructure exists in code and tests only.** Migration
-`0007` has not been applied to the real database, which remains at
-migration `0006` and healthy for everything already applied — see
-`PROJECT_STATE.md` for the current real-database status.
+**This audit infrastructure was originally built and tested against
+temporary databases only.** Migration `0007` has since been applied to
+the real database (2026-08-23) and one authorized live orchestration run
+has been recorded through it — see "First authorized live orchestration
+run" below and `PROJECT_STATE.md` for the current real-database status.
 
 ## F. Job adapters
 
@@ -236,20 +243,65 @@ repository, and the clock are all constructor/call-time dependencies, so
 every adapter is independently, fully testable with mocked HTTP transports
 and temporary databases.
 
+## G. First authorized live orchestration run (2026-08-23)
+
+`data/market_intelligence.duckdb` was backed up, migration `0007` was
+applied to the real local database, and `scripts/run_ingestion_pipeline.py`
+was then run once, live, with `--all --execute`, selecting all three
+existing reviewed jobs in one orchestrated run.
+
+A subsequent read-only health check reported: `schema_version=0007`,
+`applied_migration_count=7`, `required_tables_present=True`,
+`required_columns_present=True`, `migration_history_valid=True`,
+`checksums_valid=True`, `is_current=True`, `healthy=True`.
+
+The orchestration run
+(`orchestration_run_id=e63d931e-8957-4357-93ee-ba7076b079d8`) completed
+with overall status `succeeded`. Per-job sanitized results, each recorded
+`succeeded` in `orchestration_job_runs`:
+
+| job_id | received | inserted | existing/updated | failed | status |
+| --- | --- | --- | --- | --- | --- |
+| `alpaca_news_spy` | 10 | 10 | 0 | 0 | succeeded |
+| `alpaca_bars_spy_5min` | 334 | 169 | 165 | 0 | succeeded |
+| `fred_fedfunds_observations` | 3 | 0 | 3 | 0 | succeeded |
+
+A subsequent read-only query confirmed `orchestration_runs` contains
+exactly 1 run and all three `orchestration_job_runs` rows for it are
+recorded `succeeded`. Only sanitized counts and status are recorded here
+— no headline, URL, summary, OHLCV, or observation value from this run
+is reproduced in this document.
+
+**This confirms one controlled, explicitly authorized orchestration run
+across all three existing reviewed jobs, transactional per-job storage
+(via the existing repositories, unmodified), and a persistent
+orchestration audit trail written through `OrchestrationAuditRepository`.**
+The `alpaca_bars_spy_5min` job's 165 existing/updated bars and the
+`fred_fedfunds_observations` job's 3 existing/updated, 0 inserted result
+reflect idempotent overlap with previously stored rows within each job's
+own bounded request window (see `PROJECT_STATE.md`/`DATA_CATALOG.md` for
+the prior standalone ingestion runs each job overlaps with) — not new
+distinct dataset coverage. **This run does not establish scheduling,
+continuous or unattended operation, dataset completeness or gap-freedom
+for any of the three underlying datasets, prediction, agent intelligence,
+options analysis, or trading execution** — none of that exists or was
+exercised by this run. The run lock (section D) was acquired for the
+duration of the run and released afterward; no concurrent `--execute` run
+was attempted.
+
 ## Verification performed for this change
 
 - Full `pytest` suite passes (existing tests plus new orchestration
   tests), using only temporary databases and mocked HTTP transports — zero
   live HTTP requests.
 - `ruff check .` passes with no findings.
-- The real local database's file size and modification time are unchanged
-  by this work; migrations `0001`–`0006` are byte-identical; the real
-  database remains healthy at schema version `0006` (a read-only health
-  check now reports `healthy=False` only because migration `0007` exists
-  in code but has not been applied — the same honest-diagnostic pattern
-  already used for the `0004`→`0005` and `0005`→`0006` transitions; see
-  `PROJECT_STATE.md`). Previously stored row counts (10 news articles, 248
-  bars, 12 macro observations) are unchanged, verified via read-only
-  count queries.
-- Nothing was committed, pushed, scheduled, migrated live, or requested
-  from any provider as part of this change.
+- Migrations `0001`–`0006` remain byte-identical; migration `0007` has
+  since been applied to the real database as part of the first authorized
+  live orchestration run described in section G above, which also
+  verified the real database healthy at schema version `0007`. Previously
+  stored row counts from the standalone ingestion runs (10 news articles,
+  248 bars, 12 macro observations) were confirmed unchanged prior to the
+  orchestrated run, via read-only count queries.
+- Nothing was committed, pushed, or scheduled as part of adding this
+  layer's code; the migration application and `--execute` run described
+  in section G were separately, explicitly authorized live actions.

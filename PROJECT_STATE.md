@@ -66,7 +66,15 @@ ingestion (FEDFUNDS, 2025-08-01 through 2026-07-31) then also succeeded**
 (see Status below) — this confirms one bounded historical fetch, response
 normalization, transactional storage, and local retrieval; it is not a
 complete, gap-free, broadly cataloged, or research-validated macro
-dataset. No AI analysis or agent orchestration exists yet.
+dataset. **A conservative ingestion-orchestration layer was then added
+(2026-08-23) covering exactly the three existing reviewed jobs (Alpaca
+news, Alpaca bars, FRED observations), and a first authorized live
+orchestration run then succeeded the same day** (see Status below) —
+this confirms one controlled, explicitly authorized orchestrated
+ingestion run; it does not confirm scheduling, continuous or unattended
+operation, dataset completeness, prediction, agent intelligence, options
+analysis, or trading execution. No AI analysis or agent orchestration
+(in the AI-agent sense) exists yet.
 
 ## Status
 
@@ -525,7 +533,7 @@ dataset. No AI analysis or agent orchestration exists yet.
   access files outside the repository unless the user explicitly
   authorizes a specific source.
 - **Ingestion-orchestration layer added (2026-08-23, code/tests only, not
-  run live).** A new package, `market_intelligence/orchestration/`, adds
+  run live at the time it was added).** A new package, `market_intelligence/orchestration/`, adds
   immutable, strictly validated job contracts for exactly the three
   existing reviewed job types (`alpaca_news`, `alpaca_bars`,
   `fred_observations`), a small committed JSON configuration file
@@ -539,22 +547,74 @@ dataset. No AI analysis or agent orchestration exists yet.
   audit trail (migration `0007`, `orchestration_runs`/
   `orchestration_job_runs`). See
   [docs/INGESTION_ORCHESTRATION.md](docs/INGESTION_ORCHESTRATION.md) for
-  full detail. **This orchestration layer, including migration `0007`,
-  exists in code and tests only — it has not been run with `--execute`
-  against the real database, and migration `0007` has not been applied to
-  the real database**, which remains at migration `0006`. A read-only
-  health check now reports the real database `schema_version=0006,
-  applied_migration_count=6, healthy=False` (`False` only because the
-  database is behind the latest available migration in the repository's
-  code — every other health check, including migration-history validity
-  and checksums, still passes), mirroring the same honest-diagnostic
-  pattern already used for the `0004`→`0005` and `0005`→`0006`
-  transitions above; this is preserved as a diagnostic record, not
-  retracted. The previously stored 10 SPY news articles, 248 SPY bars, and
-  12 FEDFUNDS observations remain intact and unchanged — verified via
-  read-only queries as part of this change. No AI agent, analysis,
-  prediction, recommendation, scheduling, or brokerage/Robinhood
-  integration was built as part of this change.
+  full detail. As initially added, this orchestration layer, including
+  migration `0007`, existed in code and tests only — it had not been run
+  with `--execute` against the real database, and migration `0007` had not
+  been applied to the real database, which remained at migration `0006`. A
+  read-only health check at that time reported the real database
+  `schema_version=0006, applied_migration_count=6, healthy=False`
+  (`False` only because the database was behind the latest available
+  migration in the repository's code — every other health check,
+  including migration-history validity and checksums, still passed),
+  mirroring the same honest-diagnostic pattern already used for the
+  `0004`→`0005` and `0005`→`0006` transitions above; this diagnostic
+  record is preserved and not retracted. The previously stored 10 SPY
+  news articles, 248 SPY bars, and 12 FEDFUNDS observations remained
+  intact and unchanged — verified via read-only queries as part of that
+  change. No AI agent, analysis, prediction, recommendation, scheduling,
+  or brokerage/Robinhood integration was built as part of that change.
+  **This code/tests-only state has since been superseded by a first
+  authorized live orchestration run — see the entry immediately below.**
+
+- **First authorized live orchestration run (2026-08-23).**
+  `data/market_intelligence.duckdb` was backed up, migration `0007`
+  (`orchestration_runs`/`orchestration_job_runs`) was applied to the real
+  local database, and `scripts/run_ingestion_pipeline.py` was then run
+  once, live, with `--all --execute` against the real database, selecting
+  all three existing reviewed jobs (`alpaca_news_spy`,
+  `alpaca_bars_spy_5min`, `fred_fedfunds_observations`) in one
+  orchestrated run.
+
+  A subsequent read-only health check reported: `schema_version=0007`,
+  `applied_migration_count=7`, `required_tables_present=True`,
+  `required_columns_present=True`, `migration_history_valid=True`,
+  `checksums_valid=True`, `is_current=True`, `healthy=True`. **The real
+  database is now at migration `0007` and reports healthy.**
+
+  The orchestration run
+  (`orchestration_run_id=e63d931e-8957-4357-93ee-ba7076b079d8`) completed
+  with overall status `succeeded`. Per-job sanitized results, each
+  recorded `succeeded` in `orchestration_job_runs`:
+
+  - `alpaca_news_spy` (Alpaca news, SPY): 10 received, 10 inserted, 0
+    existing/updated, 0 failed.
+  - `alpaca_bars_spy_5min` (Alpaca bars, SPY, `5Min`, `feed=iex`,
+    `adjustment=raw`, `currency=USD`): 334 received, 169 inserted, 165
+    existing/updated, 0 failed.
+  - `fred_fedfunds_observations` (FRED, FEDFUNDS): 3 received, 0
+    inserted, 3 existing/updated, 0 failed.
+
+  A subsequent read-only query confirmed `orchestration_runs` contains
+  exactly 1 run and all three `orchestration_job_runs` rows for it are
+  recorded `succeeded`. Only sanitized counts and status are recorded
+  here — no headline, URL, summary, OHLCV, or observation value from this
+  run is reproduced in this document.
+
+  **This confirms one controlled, explicitly authorized orchestration run
+  across all three existing reviewed jobs, transactional per-job storage,
+  and a persistent orchestration audit trail.** It does not establish
+  scheduling, continuous or unattended operation, dataset completeness or
+  gap-freedom for any of the three underlying datasets, prediction, agent
+  intelligence, options analysis, or trading execution — none of that
+  exists or was exercised by this run. The `alpaca_bars_spy_5min` job's
+  165 existing/updated bars and the `fred_fedfunds_observations` job's 3
+  existing/updated, 0 inserted result reflect idempotent overlap with
+  previously stored bars/observations within each job's own bounded
+  request window — not a claim of complete or gap-free coverage for
+  either dataset. See
+  [docs/INGESTION_ORCHESTRATION.md](docs/INGESTION_ORCHESTRATION.md) and
+  [docs/STORAGE_ARCHITECTURE.md](docs/STORAGE_ARCHITECTURE.md) for full
+  detail.
 
 ## Next Planned Work
 
@@ -628,17 +688,19 @@ dataset. No AI analysis or agent orchestration exists yet.
    prediction, sentiment analysis, options logic, or trading execution has
    been built on top of it, and none is planned as part of this
    infrastructure change.
-10. Ingestion-orchestration layer — done in code/tests only (see above):
-    job contracts, committed configuration, a dry-run-first CLI
-    (`scripts/run_ingestion_pipeline.py`), job adapters, a fail-closed run
-    lock, and a persistent audit trail (migration `0007`) all exist and are
-    tested against temporary databases and mocked HTTP transports only. No
-    `--execute` run has been performed against the real database, and
-    migration `0007` has not been applied to it. Remaining future work: a
-    separately authorized decision on whether/when to apply migration
-    `0007` to the real database and perform a first authorized `--execute`
-    run; this orchestration layer is groundwork for future specialized
-    agents, not an agent itself.
+10. Ingestion-orchestration layer — done, including a first authorized live
+    run (see above): job contracts, committed configuration, a
+    dry-run-first CLI (`scripts/run_ingestion_pipeline.py`), job adapters,
+    a fail-closed run lock, and a persistent audit trail (migration
+    `0007`) all exist and remain tested against temporary databases and
+    mocked HTTP transports. Migration `0007` has now been applied to the
+    real database, and one authorized `--all --execute` run has succeeded
+    across all three reviewed jobs (see above). Remaining future work: any
+    decision on scheduling, unattended/repeated operation, or additional
+    reviewed job types remains separate, future, and not yet authorized;
+    this orchestration layer is still groundwork for future specialized
+    agents, not an agent itself, and this one run is not evidence of
+    unattended reliability.
 
 ## Notes
 
