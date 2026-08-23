@@ -105,8 +105,8 @@ def test_initialize_creates_database_file(tmp_path, isolated_env_file):
 
     assert result.database_path.exists()
     assert result.database_path.name == DATABASE_FILENAME
-    assert result.applied_migration_count == 6
-    assert result.schema_version == "0006"
+    assert result.applied_migration_count == 7
+    assert result.schema_version == "0007"
 
 
 def test_initialize_creates_required_tables_and_columns(tmp_path, isolated_env_file):
@@ -243,7 +243,7 @@ def test_repeated_initialize_applies_zero_new_migrations(tmp_path, isolated_env_
     first = manager.initialize()
     second = manager.initialize()
 
-    assert first.applied_migration_count == 6
+    assert first.applied_migration_count == 7
     assert second.applied_migration_count == 0
     assert second.schema_version == first.schema_version
 
@@ -258,7 +258,7 @@ def test_repeated_initialize_does_not_duplicate_rows(tmp_path, isolated_env_file
         count = connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0]
     finally:
         connection.close()
-    assert count == 6
+    assert count == 7
 
 
 # --- migration order ---------------------------------------------------------
@@ -483,8 +483,8 @@ def test_check_health_after_initialization_reports_healthy(tmp_path, isolated_en
     assert health.migration_history_valid is True
     assert health.checksums_valid is True
     assert health.is_current is True
-    assert health.schema_version == "0006"
-    assert health.applied_migration_count == 6
+    assert health.schema_version == "0007"
+    assert health.applied_migration_count == 7
 
 
 def test_check_health_is_read_only(tmp_path, isolated_env_file):
@@ -943,6 +943,173 @@ def test_0005_to_0006_upgrade_preserves_existing_infrastructure_state(tmp_path, 
     health = manager.check_health()
     assert health.healthy is True
     assert health.schema_version == "0006"
+
+
+# --- migration 0007 (orchestration audit) schema and primary keys ------------
+
+
+def test_migration_0007_creates_orchestration_runs_and_job_runs_tables(
+    tmp_path, isolated_env_file
+):
+    manager = real_migrations_manager(tmp_path, isolated_env_file)
+    result = manager.initialize()
+
+    connection = duckdb.connect(str(result.database_path), read_only=True)
+    try:
+        tables = table_names(connection)
+    finally:
+        connection.close()
+
+    assert "orchestration_runs" in tables
+    assert "orchestration_job_runs" in tables
+    assert result.applied_migration_count == 7
+    assert result.schema_version == "0007"
+
+
+def test_migration_0007_orchestration_runs_primary_key_rejects_duplicate(
+    tmp_path, isolated_env_file
+):
+    manager = real_migrations_manager(tmp_path, isolated_env_file)
+    manager.initialize()
+
+    connection = duckdb.connect(str(manager.database_path))
+    try:
+        connection.execute(
+            "INSERT INTO orchestration_runs "
+            "(orchestration_run_id, started_at_utc, status, code_version) "
+            "VALUES ('run-1', now(), 'running', 'v1')"
+        )
+        with pytest.raises(duckdb.ConstraintException):
+            connection.execute(
+                "INSERT INTO orchestration_runs "
+                "(orchestration_run_id, started_at_utc, status, code_version) "
+                "VALUES ('run-1', now(), 'running', 'v1')"
+            )
+    finally:
+        connection.close()
+
+
+def test_migration_0007_orchestration_runs_status_check_constraint(tmp_path, isolated_env_file):
+    manager = real_migrations_manager(tmp_path, isolated_env_file)
+    manager.initialize()
+
+    connection = duckdb.connect(str(manager.database_path))
+    try:
+        with pytest.raises(duckdb.ConstraintException):
+            connection.execute(
+                "INSERT INTO orchestration_runs "
+                "(orchestration_run_id, started_at_utc, status, code_version) "
+                "VALUES ('run-1', now(), 'not_a_status', 'v1')"
+            )
+    finally:
+        connection.close()
+
+
+def test_migration_0007_orchestration_job_runs_status_check_constraint(
+    tmp_path, isolated_env_file
+):
+    manager = real_migrations_manager(tmp_path, isolated_env_file)
+    manager.initialize()
+
+    connection = duckdb.connect(str(manager.database_path))
+    try:
+        connection.execute(
+            "INSERT INTO orchestration_runs "
+            "(orchestration_run_id, started_at_utc, status, code_version) "
+            "VALUES ('run-1', now(), 'running', 'v1')"
+        )
+        with pytest.raises(duckdb.ConstraintException):
+            connection.execute(
+                "INSERT INTO orchestration_job_runs "
+                "(orchestration_job_run_id, orchestration_run_id, job_id, job_type, provider, "
+                "dataset_name, status, code_version) VALUES "
+                "('run-1:job-1', 'run-1', 'job-1', 'alpaca_news', 'alpaca', 'news', "
+                "'not_a_status', 'v1')"
+            )
+    finally:
+        connection.close()
+
+
+def test_migration_0007_orchestration_job_runs_job_type_check_constraint(
+    tmp_path, isolated_env_file
+):
+    manager = real_migrations_manager(tmp_path, isolated_env_file)
+    manager.initialize()
+
+    connection = duckdb.connect(str(manager.database_path))
+    try:
+        with pytest.raises(duckdb.ConstraintException):
+            connection.execute(
+                "INSERT INTO orchestration_job_runs "
+                "(orchestration_job_run_id, orchestration_run_id, job_id, job_type, provider, "
+                "dataset_name, status, code_version) VALUES "
+                "('run-1:job-1', 'run-1', 'job-1', 'robinhood_orders', 'alpaca', 'news', "
+                "'planned', 'v1')"
+            )
+    finally:
+        connection.close()
+
+
+# --- 0006 -> 0007 upgrade -------------------------------------------------------
+
+
+def test_0006_to_0007_upgrade_preserves_existing_infrastructure_state(tmp_path, isolated_env_file):
+    """A database already at 0006 upgrades to 0007 without losing existing rows."""
+    migrations_dir = tmp_path / "migrations"
+    write_migration(migrations_dir, *MIGRATION_0001)
+    write_migration(migrations_dir, *MIGRATION_0002)
+    write_migration(migrations_dir, *MIGRATION_0003)
+    real_migrations_dir = Path(__file__).resolve().parents[1] / "storage" / "migrations"
+    for filename in (
+        "0004_create_news_articles.sql",
+        "0005_create_market_bars.sql",
+        "0006_create_macro_observations.sql",
+    ):
+        write_migration(
+            migrations_dir, filename, (real_migrations_dir / filename).read_text(encoding="utf-8")
+        )
+    settings = isolated_settings(tmp_path, isolated_env_file)
+    manager = DuckDBManager(settings=settings, migrations_dir=migrations_dir)
+    first = manager.initialize()
+    assert first.schema_version == "0006"
+
+    connection = duckdb.connect(str(manager.database_path))
+    try:
+        connection.execute(
+            "INSERT INTO ingestion_runs "
+            "(run_id, provider, dataset_name, started_at_utc, status, code_version, "
+            "schema_version) VALUES ('run-1', 'fred', 'macro_observations', now(), "
+            "'succeeded', 'v0', '0006')"
+        )
+    finally:
+        connection.close()
+
+    migration_0007_sql = (real_migrations_dir / "0007_create_orchestration_audit.sql").read_text(
+        encoding="utf-8"
+    )
+    write_migration(migrations_dir, "0007_create_orchestration_audit.sql", migration_0007_sql)
+    second = manager.initialize()
+
+    assert second.applied_migration_count == 1
+    assert second.schema_version == "0007"
+
+    connection = duckdb.connect(str(manager.database_path), read_only=True)
+    try:
+        tables = table_names(connection)
+        row = connection.execute(
+            "SELECT run_id, provider FROM ingestion_runs WHERE run_id = 'run-1'"
+        ).fetchone()
+    finally:
+        connection.close()
+
+    assert "orchestration_runs" in tables
+    assert "orchestration_job_runs" in tables
+    assert row is not None
+    assert row[0] == "run-1"
+
+    health = manager.check_health()
+    assert health.healthy is True
+    assert health.schema_version == "0007"
 
 
 # --- database file remains ignored by Git ------------------------------------

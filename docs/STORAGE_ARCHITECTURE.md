@@ -7,8 +7,10 @@ for what data has (and has not) actually been ingested.
 
 ## Scope
 
-This foundation defines six tables, all now applied to the real database
-(see below):
+This foundation defines seven tables in code; **six are applied to the
+real database** (see below) — the seventh, `orchestration_runs`/
+`orchestration_job_runs` (migration `0007`), exists in code/tests only and
+has not been applied to the real database:
 
 - **`schema_migrations`** — tracks which versioned migrations have been
   applied, with a checksum of each migration file's content.
@@ -42,6 +44,12 @@ This foundation defines six tables, all now applied to the real database
   and the macro-observations entry in `DATA_CATALOG.md`. This confirms one
   controlled ingestion run and transactional storage; it is not a
   complete, gap-free, or research-validated macro dataset.
+
+- **`orchestration_runs` / `orchestration_job_runs`** (added in migration
+  `0007`, code/tests only, not applied to the real database) — the
+  persistent ingestion-orchestration audit trail. See
+  [docs/INGESTION_ORCHESTRATION.md](INGESTION_ORCHESTRATION.md) for full
+  detail.
 
 No forecast or trade tables exist yet. Those each require a separate,
 reviewed data contract before they are added as their own versioned
@@ -335,6 +343,11 @@ complete, gap-free, or research-validated macro dataset -- see "Status" in
   "Macro-observation storage" above). Migration `0006` has been applied to
   the real database, and one authorized live ingestion has succeeded (see
   above).
+- `market_intelligence/storage/orchestration_audit_repository.py` —
+  `OrchestrationAuditRepository`, the ingestion-orchestration audit-trail
+  storage service (migration `0007`, code/tests only, not applied to the
+  real database). See
+  [docs/INGESTION_ORCHESTRATION.md](INGESTION_ORCHESTRATION.md).
 - `scripts/initialize_database.py` — applies pending migrations to the
   configured local database; prints only the database path, schema
   version, and applied migration count.

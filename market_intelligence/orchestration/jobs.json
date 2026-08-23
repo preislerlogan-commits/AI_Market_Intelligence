@@ -1,0 +1,45 @@
+{
+  "jobs": [
+    {
+      "job_id": "alpaca_news_spy",
+      "job_type": "alpaca_news",
+      "enabled": true,
+      "provider": "alpaca",
+      "dataset_name": "news",
+      "params": {
+        "symbol": "SPY",
+        "limit": 10
+      }
+    },
+    {
+      "job_id": "alpaca_bars_spy_5min",
+      "job_type": "alpaca_bars",
+      "enabled": true,
+      "provider": "alpaca",
+      "dataset_name": "bars",
+      "params": {
+        "symbol": "SPY",
+        "timeframe": "5Min",
+        "lookback_days": 5,
+        "limit": 500,
+        "max_pages": 1,
+        "feed": "iex",
+        "adjustment": "raw",
+        "currency": "USD"
+      }
+    },
+    {
+      "job_id": "fred_fedfunds_observations",
+      "job_type": "fred_observations",
+      "enabled": true,
+      "provider": "fred",
+      "dataset_name": "macro_observations",
+      "params": {
+        "series_id": "FEDFUNDS",
+        "lookback_days": 90,
+        "limit": 1000,
+        "max_pages": 1
+      }
+    }
+  ]
+}
