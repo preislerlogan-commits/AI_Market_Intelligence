@@ -616,6 +616,32 @@ analysis, or trading execution. No AI analysis or agent orchestration
   [docs/STORAGE_ARCHITECTURE.md](docs/STORAGE_ARCHITECTURE.md) for full
   detail.
 
+- **Read-only market-context snapshot layer added (2026-08-23, code/tests
+  only; not run against the real database as part of this change).** A new
+  package, `market_intelligence/market_features/`, adds
+  `MarketContextBuilder` — a strictly validated, deterministic, read-only
+  builder that assembles exactly one JSON-ready snapshot dict from data
+  already stored in the local DuckDB database (latest stored bar plus a
+  bounded recent-bar summary, a short-period price return computed only
+  when enough stored bars exist, bounded recent news metadata, the latest
+  stored macro observation per a bounded set of configured series, source
+  provenance, and explicit missing/stale-data flags) — and
+  `scripts/build_market_context.py`, a one-shot CLI that prints one
+  sanitized snapshot to stdout. It makes no network request of any kind,
+  opens the database only via `duckdb.connect(path, read_only=True)`,
+  never writes a row or applies a migration, and does not modify any
+  connector, ingestion repository, orchestration code, or
+  `orchestration/jobs.json`. Symbol, the two result-count limits, and the
+  requested macro series IDs are all strictly validated (rejecting
+  booleans, zero, negatives, excessive limits, and malformed input) before
+  any DuckDB connection is opened. No snapshot is persisted anywhere. See
+  [docs/MARKET_CONTEXT_SNAPSHOT.md](docs/MARKET_CONTEXT_SNAPSHOT.md) for
+  the full field contract, the fixed staleness thresholds used, and known
+  limitations. This adds no sentiment, prediction, trading bias,
+  confidence score, options recommendation, or other agent conclusion —
+  only already-stored provider data plus this module's own
+  provenance/coverage/staleness bookkeeping about it.
+
 ## Next Planned Work
 
 1. Data connector design — read-only Alpaca market-data, Alpaca news,
@@ -701,6 +727,40 @@ analysis, or trading execution. No AI analysis or agent orchestration
     this orchestration layer is still groundwork for future specialized
     agents, not an agent itself, and this one run is not evidence of
     unattended reliability.
+11. Market-context snapshot layer — done, code/tests only (see above):
+    `MarketContextBuilder`
+    (`market_intelligence/market_features/market_context.py`) and
+    `scripts/build_market_context.py` exist, are read-only end to end, and
+    are covered by tests against temporary DuckDB databases only. Not yet
+    exercised against the real database as part of this change (a
+    read-only operation, so nothing to authorize or roll back). Remaining
+    future work: any decision to have an actual AI agent consume this
+    snapshot, add derived features beyond this bounded set, or persist
+    snapshots remains separate, future, and not yet authorized.
+12. Market-context snapshot fixes (2026-08-23, code/tests/docs only, not run
+    against the real database as part of this change). Two targeted fixes
+    were made to the market-context snapshot layer (item 11):
+    - **Weekend false-staleness fixed:** `BARS_STALE_AFTER` was changed from
+      a 24-hour to a 72-hour elapsed-time threshold, so a Friday-afternoon
+      bar is no longer falsely reported `bars_stale: true` over a normal
+      weekend. This remains a plain elapsed-time threshold, not an
+      exchange-calendar or holiday-aware one — it is deliberately
+      weekend-tolerant, not weekend-*aware*. The actual latest stored bar
+      timestamp remains exposed (`price.latest_bar_timestamp_utc`,
+      `coverage.bars.latest_bar_timestamp_utc`) so a future, stricter,
+      calendar-aware consumer can still make its own decision from the raw
+      timestamp. Focused tests prove a Friday bar is not stale on Saturday
+      and that a bar older than 72 hours is still correctly flagged stale.
+    - **Session provenance added:** `bars_provenance` now includes a fixed,
+      deterministic `session_scope: "provider_returned_unfiltered"` field.
+      Stored bars are not restricted to regular trading hours (no RTH
+      filter is applied anywhere in this project's ingestion or this
+      snapshot layer) and may include pre-market/after-hours observations,
+      so the latest stored bar — and `price.latest_close` — is never
+      silently implied to be an official regular-session market close.
+    No dependency, market-calendar library, migration, network call,
+    persistence, prediction, or agent logic was added as part of this
+    change. See [docs/MARKET_CONTEXT_SNAPSHOT.md](docs/MARKET_CONTEXT_SNAPSHOT.md).
 
 ## Notes
 
