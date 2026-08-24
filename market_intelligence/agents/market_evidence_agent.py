@@ -94,14 +94,18 @@ MAX_EVIDENCE_IDS_PER_OBSERVATION = 5
 # OpenAIParseFailureError / CATEGORY_RESPONSE_VALIDATION_FAILED in
 # openai_structured.py, unchanged). Their purpose is to reduce the
 # likelihood of a real model response landing close to -- or over -- one of
-# those hard bounds in the first place. OpenAI's Structured Outputs
-# generation does not enforce string/array length bounds like
-# minLength/maxLength/minItems/maxItems (see OpenAIParseFailureError's
-# docstring), which was the diagnosed probable proximate cause of the one
-# authorized 2026-08-24 live execute attempt failing structured-output
-# validation (see PROJECT_STATE.md) -- these budgets are a mitigation for
-# that failure mode, not a guarantee against it, since the model can still
-# ignore instruction-level guidance. Each budget carries deliberate margin
+# those hard bounds in the first place. The one authorized 2026-08-24 live
+# execute attempt failed structured-output validation, but the exact
+# violated response field/value from that attempt is unavailable (this
+# client never captures or logs raw model output -- see
+# OpenAIParseFailureError's docstring). Exceeding a Pydantic-only bound such
+# as minLength/maxLength/minItems/maxItems -- which OpenAI's Structured
+# Outputs generation may not enforce during generation -- is one plausible,
+# locally reproducible failure mode for that attempt, not its proven cause;
+# see PROJECT_STATE.md for the full record. These budgets reduce that
+# plausible risk; they do NOT guarantee a future request will pass
+# validation, since the model can still ignore instruction-level guidance
+# and no bound itself is changed. Each budget carries deliberate margin
 # below its corresponding hard Pydantic maximum (asserted below).
 ADVISORY_MAX_SUMMARY_LENGTH = 600
 ADVISORY_MAX_STATEMENT_LENGTH = 300

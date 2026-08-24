@@ -227,13 +227,17 @@ client is ever constructed and no network call is ever made. It also (added
 schema-incompatible `output_model`, and includes three regression tests
 using the real, production `MarketEvidenceModelAnalysis` schema from
 `market_intelligence/agents/market_evidence_agent.py`: that the real schema
-builds successfully via the installed SDK, that a synthetic
+passes this module's own production schema preflight (public Pydantic API
+only — no private/underscore-prefixed OpenAI SDK module is imported by
+production code or by this test), that a synthetic
 schema-and-bound-conformant response round-trips through `generate()`
 unchanged, and that a synthetic response violating one of the schema's
-Pydantic-only length bounds reproduces the exact sanitized error class,
-category, and message observed in the 2026-08-24 live failure (see "Known
-structured-output validation failure" above) — entirely offline, no
-network, no credentials.
+Pydantic-only length bounds reproduces the same sanitized error class,
+category, and message this client raises for `response_validation_failed`
+in general — a plausible, locally reproducible failure signature consistent
+with the 2026-08-24 live failure (see "Known structured-output validation
+failure" above), not proof of that attempt's exact cause — entirely
+offline, no network, no credentials.
 `market_intelligence/tests/test_settings.py` covers the three new settings
 fields' defaults and bounds. **As of 2026-08-23, no live OpenAI connectivity
 check existed in this branch** (unlike the Alpaca/FRED connectors, which
@@ -286,17 +290,20 @@ On 2026-08-24, the first authorized live `--execute` request made through
 validation.", category `response_validation_failed`). Offline diagnosis (no
 further live request made) confirmed: this category can only occur after a
 request was actually sent and a response was received (see above), and the
-real `MarketEvidenceModelAnalysis` schema itself builds successfully as a
-strict JSON schema under the installed OpenAI SDK — checked, for this one
-diagnostic inspection only, with a version-specific test that imports the
-SDK's private schema-conversion helper directly (see "Testing" below); it is
-not structurally incompatible. The schema does include `minLength`/
-`maxLength`/`minItems`/`maxItems` bound keywords that OpenAI's Structured
-Outputs generation is documented not to enforce (only this client's own
-Pydantic re-validation of the response enforces them), which is the most
-probable proximate cause — but since this client never captures or logs raw
-model output, the exact violated field/value from that one attempt cannot
-be proven from local evidence alone. No bound, citation check, or
+real `MarketEvidenceModelAnalysis` schema itself passes this module's own
+production schema preflight (`_validate_output_model`, public Pydantic API
+only — see "Testing" below); it is not structurally incompatible. Because
+this client never captures or logs raw model output, the exact response
+field/value that failed re-validation in that one attempt is unavailable and
+cannot be proven from local evidence alone. Exceeding one of the schema's
+Pydantic-only `minLength`/`maxLength`/`minItems`/`maxItems` bounds is one
+plausible, locally reproducible failure mode, reproduced offline in
+`market_intelligence/tests/test_openai_structured.py` — **not** an
+established proven cause of that specific live attempt. OpenAI has not
+published official documentation establishing that its Structured Outputs
+generation leaves these bound keywords unenforced specifically for the
+non-fine-tuned `gpt-5-mini` model this project uses; that remains a
+candidate explanation, not a documented fact. No bound, citation check, or
 output-policy check was weakened in response. Two mitigations were made
 instead: (1) this module's sanitized failure classification (`category`,
 the new `OpenAIRequestSchemaError` — using only public Pydantic API, with no
@@ -304,13 +311,15 @@ production dependency on any private OpenAI SDK module, per the "Sanitized
 failure classification" section above) plus regression tests using the real
 `MarketEvidenceModelAnalysis` schema
 (`market_intelligence/tests/test_openai_structured.py`) that reproduce this
-exact failure signature entirely offline; and (2) conservative advisory
+plausible failure signature entirely offline; and (2) conservative advisory
 output-length/count budgets, with margin below every corresponding hard
 Pydantic maximum, added to `MarketEvidenceAgent`'s `AGENT_INSTRUCTIONS` (see
 [docs/MARKET_EVIDENCE_AGENT.md](MARKET_EVIDENCE_AGENT.md)) to reduce the
 likelihood of a real model response landing close to -- or over -- one of
-those hard bounds, without changing any bound itself. See `PROJECT_STATE.md`
-for the full, dated record.
+those hard bounds. **These budgets reduce that plausible risk; they do not
+guarantee that any future request will pass validation** — the model is not
+required to follow instruction-level guidance, and no bound itself was
+changed. See `PROJECT_STATE.md` for the full, dated record.
 
 ## Known limitations
 

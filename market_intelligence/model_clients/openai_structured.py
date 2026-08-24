@@ -205,13 +205,20 @@ class OpenAIParseFailureError(OpenAIStructuredError):
     deeper OpenAI-strict-mode-specific construction failure not caught by
     that basic check would instead surface as ``OpenAIUnexpectedError``.
     Neither of those raises ``pydantic.ValidationError``, so this category
-    always means a request was actually sent and a response was received. A
-    known cause: OpenAI's
-    Structured Outputs strict mode does not enforce every JSON Schema
-    keyword during generation (notably string/array length bounds such as
-    ``minLength``/``maxLength``/``minItems``/``maxItems``), so a response can
-    satisfy OpenAI's own strict-schema check yet still violate a
-    Pydantic-only bound once re-validated client-side.
+    always means a request was actually sent and a response was received.
+    Because this client never captures or logs raw model output (by
+    design), the exact response field/value that failed re-validation for
+    any one occurrence of this error is unavailable and cannot be recovered
+    from local evidence. One plausible, locally reproducible failure mode
+    (see the offline regression tests in ``test_openai_structured.py`` using
+    the real ``MarketEvidenceModelAnalysis`` schema) is a response that
+    satisfies OpenAI's own strict-schema check yet violates a Pydantic-only
+    bound such as ``minLength``/``maxLength``/``minItems``/``maxItems`` --
+    this is a candidate explanation reproduced locally, not a proven cause
+    of any specific live occurrence. OpenAI has not published official
+    documentation establishing that its Structured Outputs generation
+    leaves these bound keywords unenforced specifically for the
+    non-fine-tuned ``gpt-5-mini`` model this project uses.
     """
 
     category = CATEGORY_RESPONSE_VALIDATION_FAILED

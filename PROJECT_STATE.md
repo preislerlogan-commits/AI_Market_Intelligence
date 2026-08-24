@@ -897,20 +897,24 @@ other AI analysis or agent orchestration (in the AI-agent sense) exists yet.
   the schema sent to OpenAI includes `minLength`/`maxLength`/`minItems`/
   `maxItems` bound keywords (on `evidence_summary`, every observation
   `statement`, every `limitation`, and every `evidence_ids` list) — keywords
-  the SDK's schema builder accepts and forwards, but which OpenAI's
-  Structured Outputs generation is documented not to enforce; only this
-  client's own Pydantic re-validation of the response enforces them. This is
-  the most probable proximate cause: a response that was type/enum/shape-
-  conformant but violated one of these bounds. **Because this client never
-  captures or logs raw model output (by design — see
-  `docs/OPENAI_PROVIDER_BOUNDARY.md`), the exact field/value that violated a
-  bound in this one live attempt cannot be proven from local evidence alone,
-  and that limitation is stated here honestly rather than guessed at.** No
-  strict structured output, citation validation, output-policy validation,
-  or field bound was removed or weakened to work around this — the
-  instructions given for this diagnosis explicitly required preserving all
-  of them, and the schema-buildability check above showed no structural
-  incompatibility existed to correct.
+  the SDK's schema builder accepts and forwards, and which only this
+  client's own Pydantic re-validation of the response is confirmed to
+  enforce. **Because this client never captures or logs raw model output (by
+  design — see `docs/OPENAI_PROVIDER_BOUNDARY.md`), the exact field/value
+  that violated a bound in this one live attempt is unavailable and cannot
+  be proven from local evidence alone, and that limitation is stated here
+  honestly rather than guessed at.** Exceeding one of these Pydantic-only
+  bounds is one plausible, locally reproducible failure mode for a response
+  that was otherwise type/enum/shape-conformant — it is **not** established
+  as the proven cause of this specific live attempt, and OpenAI has not
+  published official documentation establishing that its Structured Outputs
+  generation leaves these bound keywords unenforced specifically for the
+  non-fine-tuned `gpt-5-mini` model this project uses. No strict structured
+  output, citation validation, output-policy validation, or field bound was
+  removed or weakened to work around this — the instructions given for this
+  diagnosis explicitly required preserving all of them, and the
+  schema-buildability check above showed no structural incompatibility
+  existed to correct.
 
   **Fix applied (2026-08-24, code/tests only — no live request made): sanitized
   failure classification hardened, regression tests added.** Every
@@ -940,13 +944,16 @@ other AI analysis or agent orchestration (in the AI-agent sense) exists yet.
   New, focused offline regression tests were added to
   `market_intelligence/tests/test_openai_structured.py` using the real,
   production `MarketEvidenceModelAnalysis` schema (not only that file's
-  pre-existing generic toy model): one proves the schema builds successfully
-  via the installed SDK; one proves a synthetic, schema-and-bound-conformant
-  response round-trips through `generate()` unchanged; and one proves a
-  synthetic response violating one of the schema's Pydantic-only length
-  bounds reproduces the exact same sanitized error class, category, and
-  message text observed in the live failure — entirely offline, no network,
-  no credentials. `market_intelligence/tests/test_run_market_evidence_agent.py`
+  pre-existing generic toy model): one proves the schema passes production's
+  own schema preflight (`_validate_output_model`, public Pydantic API only);
+  one proves a synthetic, schema-and-bound-conformant response round-trips
+  through `generate()` unchanged; and one proves a synthetic response
+  violating one of the schema's Pydantic-only length bounds reproduces the
+  same sanitized error class, category, and message text this client raises
+  for `response_validation_failed` in general — a plausible, locally
+  reproducible failure signature consistent with the live failure, not proof
+  of that attempt's exact cause — entirely offline, no network, no
+  credentials. `market_intelligence/tests/test_run_market_evidence_agent.py`
   gained matching CLI-level regression tests confirming the new `category`
   field. No live OpenAI request, real-database access, dependency addition,
   or orchestration integration was made as part of this diagnostic/hardening
@@ -994,12 +1001,19 @@ other AI analysis or agent orchestration (in the AI-agent sense) exists yet.
      boundary, as `OpenAIUnexpectedError`. A grep of `market_intelligence/`
      and `scripts/` confirms zero remaining production references to
      `openai.lib` (only explanatory prose/comments naming it, and no
-     `import`). One version-specific SDK-compatibility test
+     `import`). **A version-specific SDK-compatibility test
      (`test_real_market_evidence_schema_builds_a_valid_strict_json_schema`
-     in `market_intelligence/tests/test_openai_structured.py`) still
-     imports `openai.lib._pydantic` directly, now clearly documented in its
-     own docstring as a test-only, version-pinned (`openai==3.3.1`)
-     compatibility check with no bearing on production behavior.
+     in `market_intelligence/tests/test_openai_structured.py`) originally
+     added here still imported `openai.lib._pydantic` directly. Its
+     docstring named `openai==3.3.1` as the installed version it was written
+     against, but `pyproject.toml` only declares `openai>=1.99.0` — no exact
+     version is actually pinned, so that docstring overstated the guarantee
+     the test provided. This has since been superseded in the PR #20 review
+     response below: that test was replaced with
+     `test_real_market_evidence_schema_passes_the_production_schema_preflight`,
+     which exercises production's own `_validate_output_model` preflight and
+     `MarketEvidenceModelAnalysis.model_json_schema()` (public Pydantic API
+     only), eliminating the private-SDK test dependency entirely.**
 
   `docs/OPENAI_PROVIDER_BOUNDARY.md` and `docs/MARKET_EVIDENCE_AGENT.md`
   were updated to match. All existing schema bounds, citation validation,
@@ -1008,6 +1022,49 @@ other AI analysis or agent orchestration (in the AI-agent sense) exists yet.
   DuckDB access/modification, or dependency addition was made. Full test
   suite: 1412 passed (up from 1405). `ruff check .` and `git diff --check`
   both pass.
+
+- **PR #20 review response (2026-08-24, same day, docs/tests-only — no live
+  request, DuckDB access, or dependency change made).** Two review findings
+  on the diagnosis/hardening above were addressed, with zero runtime
+  behavior change (no schema bound, advisory budget, error category, retry
+  behavior, dependency, or the recorded 2026-08-24 live failure itself was
+  altered):
+
+  1. **Overclaiming corrected.** Every claim in code, tests, and docs stating
+     or implying that OpenAI's Structured Outputs generation is *documented*
+     not to enforce `minLength`/`maxLength`/`minItems`/`maxItems`, or that
+     exceeding one of these bounds was the *proven* cause of the one
+     authorized 2026-08-24 live failure, has been corrected
+     (`market_intelligence/model_clients/openai_structured.py`'s
+     `OpenAIParseFailureError` docstring,
+     `market_intelligence/agents/market_evidence_agent.py`'s advisory-budget
+     comment, `docs/OPENAI_PROVIDER_BOUNDARY.md`, this file, and the
+     `test_openai_structured.py` regression-test docstrings/comments) to
+     instead state plainly: the exact violated response field/value from
+     that live attempt was, and remains, unavailable (this client never
+     captures or logs raw model output); exceeding a Pydantic-only bound is
+     one plausible, locally reproducible failure mode for that attempt, not
+     its established/proven cause; the advisory prompt budgets added above
+     reduce that plausible risk but do not guarantee any future request will
+     pass validation; and no claim is made that official OpenAI
+     documentation establishes this non-enforcement behavior specifically
+     for the non-fine-tuned `gpt-5-mini` model this project uses.
+  2. **Version-specific private-SDK test removed.** The one remaining
+     `openai.lib._pydantic`-importing test (see item 2 immediately above)
+     has been replaced with
+     `test_real_market_evidence_schema_passes_the_production_schema_preflight`,
+     which exercises production's own `_validate_output_model` preflight and
+     the real `MarketEvidenceModelAnalysis.model_json_schema()` output (both
+     public Pydantic v2 API only). `market_intelligence/tests/
+     test_openai_structured.py` now has zero imports of any
+     private/underscore-prefixed OpenAI SDK module, and this test suite no
+     longer depends on the installed OpenAI SDK version at all (previously
+     the test's docstring named `openai==3.3.1` as a version it assumed,
+     even though `pyproject.toml` never pinned an exact version).
+
+  Full test suite: 1412 passed (unchanged from the count recorded above —
+  one test was replaced, not added or removed). `ruff check .` and
+  `git diff --check` both pass.
 
 ## Next Planned Work
 

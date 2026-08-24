@@ -1147,10 +1147,14 @@ def test_generate_maps_pydantic_validation_error_category_is_response_validation
 
 
 class UnschemaableModel(BaseModel):
-    """A Pydantic model the installed OpenAI SDK's strict-schema builder
-    cannot convert (a ``Callable`` field has no JSON Schema representation)
-    -- used to prove ``OpenAIRequestSchemaError`` is raised offline, before
-    any SDK client is built or network call is attempted."""
+    """A Pydantic model that public Pydantic v2 API
+    (``BaseModel.model_json_schema()``) cannot convert (a ``Callable`` field
+    has no JSON Schema representation, raising
+    ``pydantic.PydanticInvalidForJsonSchema``) -- used to prove
+    ``OpenAIRequestSchemaError`` is raised offline, before any SDK client is
+    built or network call is attempted. Note: production's preflight check
+    (``_validate_output_model``) uses only this public Pydantic API, never
+    any private/underscore-prefixed OpenAI SDK module."""
 
     handler: typing.Callable
 
@@ -1158,10 +1162,12 @@ class UnschemaableModel(BaseModel):
 def test_generate_rejects_output_model_with_unbuildable_strict_schema(
     monkeypatch, isolated_env_file
 ):
-    """Proves offline, using the real installed OpenAI SDK's own strict-schema
-    builder, that a structurally incompatible ``output_model`` is rejected
-    with zero tokens spent (``request_schema_invalid``) rather than only
-    failing later as an opaque unexpected error after a live request."""
+    """Proves offline, using production's own schema preflight
+    (``_validate_output_model``, public Pydantic API only -- no OpenAI SDK
+    schema builder involved), that a structurally incompatible
+    ``output_model`` is rejected with zero tokens spent
+    (``request_schema_invalid``) rather than only failing later as an
+    opaque unexpected error after a live request."""
     settings = configured_settings(monkeypatch, isolated_env_file)
     fake = FakeSDKClient(result=completed_response())
     client = OpenAIStructuredClient(settings, sdk_client=fake)
@@ -1180,44 +1186,43 @@ def test_generate_rejects_output_model_with_unbuildable_strict_schema(
 # ---------------------------------------------------------------------------
 # Regression coverage using the real, production MarketEvidenceModelAnalysis
 # schema (market_intelligence.agents.market_evidence_agent) -- reproduces,
-# entirely offline, the exact failure signature observed in the one
-# authorized live execute attempt on 2026-08-24
-# ("OpenAI response failed structured-output validation."), and proves the
-# real agent schema is itself still structurally valid/buildable.
+# entirely offline, the same sanitized error class/category/message
+# ("OpenAI response failed structured-output validation.",
+# response_validation_failed) observed in the one authorized live execute
+# attempt on 2026-08-24, for one plausible failure mode (a Pydantic-only
+# bound violation) -- not proof of that attempt's exact cause, which remains
+# unrecoverable from local evidence -- and proves the real agent schema is
+# itself still structurally valid/buildable via the production preflight.
 # ---------------------------------------------------------------------------
 
 
-def test_real_market_evidence_schema_builds_a_valid_strict_json_schema():
-    """VERSION-SPECIFIC SDK COMPATIBILITY TEST -- imports a private OpenAI SDK
-    module (``openai.lib._pydantic``, pinned installed version ``openai==3.3.1``
-    at the time this test was written) solely to inspect the exact strict
-    JSON schema the SDK builds for the real MarketEvidenceModelAnalysis
-    schema. This private import is deliberately confined to this one test;
-    production code (``market_intelligence/model_clients/openai_structured.py``)
-    has no runtime dependency on it -- its own preflight check uses only
-    public Pydantic API (``BaseModel.model_json_schema()``). If a future
-    OpenAI SDK upgrade moves/removes ``openai.lib._pydantic``, only this one
-    test needs updating or skipping; production behavior is unaffected.
+def test_real_market_evidence_schema_passes_the_production_schema_preflight():
+    """Regression check using only production's own schema preflight and
+    public Pydantic v2 API -- no private/underscore-prefixed OpenAI SDK
+    module (e.g. ``openai.lib._pydantic``) is imported here or by
+    production code, so this test carries no dependency on the installed
+    OpenAI SDK's internal layout or version.
 
-    Offline proof (item 2/5 of the 2026-08-24 diagnosis): the real
-    MarketEvidenceModelAnalysis schema is NOT structurally incompatible with
-    the installed OpenAI SDK's strict-schema builder -- it builds cleanly,
-    with additionalProperties=False, every property required, and its
-    Annotated Field bounds (minLength/maxLength/minItems/maxItems) present
-    in the schema sent to OpenAI. Those bound keywords are accepted by the
-    schema builder but are a documented OpenAI Structured Outputs limitation:
-    they are not enforced during generation, only by this SDK's own
-    client-side Pydantic re-validation of the response -- see
-    OpenAIParseFailureError's docstring."""
-    from openai.lib._pydantic import to_strict_json_schema
-
+    Offline proof: the real ``MarketEvidenceModelAnalysis`` schema passes
+    ``_validate_output_model`` (the same production preflight
+    ``generate()`` runs before any request is built), so it is not
+    fundamentally unrepresentable as JSON Schema -- and its own
+    ``model_json_schema()`` output confirms ``additionalProperties: false``
+    and the Annotated Field bounds (minLength/maxLength/minItems/maxItems)
+    this project's Pydantic models enforce client-side. This does NOT prove
+    what OpenAI's own server-side strict-schema check or generation-time
+    enforcement does with these keywords -- see OpenAIParseFailureError's
+    docstring for what remains an unproven, plausible explanation only."""
     from market_intelligence.agents.market_evidence_agent import MarketEvidenceModelAnalysis
+    from market_intelligence.model_clients.openai_structured import _validate_output_model
 
-    schema = to_strict_json_schema(MarketEvidenceModelAnalysis)
+    # Does not raise OpenAIRequestSchemaError -- passes the production preflight.
+    _validate_output_model(MarketEvidenceModelAnalysis)
+
+    schema = MarketEvidenceModelAnalysis.model_json_schema()
 
     assert schema["type"] == "object"
     assert schema["additionalProperties"] is False
-    assert set(schema["required"]) == set(schema["properties"].keys())
     assert schema["properties"]["evidence_summary"]["minLength"] == 1
     assert schema["properties"]["evidence_summary"]["maxLength"] == 800
     assert schema["properties"]["observations"]["minItems"] == 1
@@ -1278,31 +1283,37 @@ def test_generate_completed_with_real_market_evidence_schema_and_synthetic_valid
 def test_generate_maps_real_market_evidence_schema_bound_violation_to_response_validation_failed(
     monkeypatch, isolated_env_file
 ):
-    """Regression test for the diagnosed 2026-08-24 live failure class.
+    """Regression test for one plausible explanation of the diagnosed
+    2026-08-24 live failure class -- not proof of that attempt's exact
+    cause (see OpenAIParseFailureError's docstring: the exact response
+    field/value from that live attempt is unavailable and unrecoverable).
 
-    OpenAI's strict Structured Outputs mode does not enforce every JSON
-    Schema keyword during generation -- notably minLength/maxLength/
-    minItems/maxItems (see test_real_market_evidence_schema_builds_a_valid_strict_json_schema).
-    This means the model can return a response that satisfies OpenAI's own
-    server-side strict-schema check (correct types/enum/required/
-    additionalProperties) yet still violates one of MarketEvidenceModelAnalysis's
-    Pydantic-only length bounds. The installed OpenAI SDK's own
-    ``responses.parse()`` re-validates the response against ``output_model``
-    client-side (see ``openai.lib._parsing._responses.parse_text``), and that
-    re-validation is exactly what raises ``pydantic.ValidationError`` -- the
-    same exception this module's ``except pydantic.ValidationError`` clause
-    catches. This test proves, entirely offline, that such a violation with
-    the *real* production schema maps to the same
-    ``OpenAIParseFailureError``/``response_validation_failed`` category, and
-    the exact same sanitized message, observed in the one authorized live
-    execute attempt on 2026-08-24."""
+    IF a response were to satisfy OpenAI's own server-side strict-schema
+    check (correct types/enum/required/additionalProperties) yet still
+    violate one of MarketEvidenceModelAnalysis's Pydantic-only length
+    bounds -- a scenario this project cannot confirm OpenAI's
+    documentation rules out for the non-fine-tuned ``gpt-5-mini`` model
+    used here (see
+    test_real_market_evidence_schema_passes_the_production_schema_preflight)
+    -- the installed OpenAI SDK's own ``responses.parse()`` re-validates the
+    response against ``output_model`` client-side, and that re-validation is
+    what would raise ``pydantic.ValidationError`` -- the same exception this
+    module's ``except pydantic.ValidationError`` clause catches. This test
+    proves, entirely offline, that such a violation with the *real*
+    production schema maps to the same
+    ``OpenAIParseFailureError``/``response_validation_failed`` category and
+    the same sanitized message this client raises for that category in
+    general -- a plausible, locally reproducible failure signature
+    consistent with the one authorized live execute attempt on 2026-08-24,
+    not proof that this was what actually happened in that attempt."""
     from market_intelligence.agents.market_evidence_agent import MarketEvidenceModelAnalysis
 
     settings = configured_settings(monkeypatch, isolated_env_file)
 
-    # Shaped correctly (right keys/types/enum) but evidence_summary violates
-    # the schema's maxLength=800 bound -- a bound OpenAI does not enforce
-    # during generation, only Pydantic does, client-side, after the fact.
+    # Shaped correctly (right keys/types/enum) but evidence_summary exceeds
+    # the schema's maxLength=800 bound -- this client's own Pydantic
+    # re-validation enforces this bound client-side regardless of whether
+    # OpenAI's generation-time check enforces it too.
     oversized_summary_payload = {
         "evidence_quality": "sufficient",
         "evidence_summary": "x" * 801,
