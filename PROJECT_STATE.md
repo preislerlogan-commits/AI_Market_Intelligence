@@ -762,6 +762,60 @@ analysis, or trading execution. No AI analysis or agent orchestration
     persistence, prediction, or agent logic was added as part of this
     change. See [docs/MARKET_CONTEXT_SNAPSHOT.md](docs/MARKET_CONTEXT_SNAPSHOT.md).
 
+13. **Session-quality feature layer added (2026-08-23, code/tests/docs
+    only; not run against the real database as part of this change).** A
+    new module, `market_intelligence/market_features/session_quality.py`
+    (`SessionQualityBuilder`), and a companion CLI,
+    `scripts/build_session_quality.py`, add a strictly validated,
+    deterministic, read-only report on whether stored `5Min` bars for one
+    symbol/session date represent a complete regular trading session --
+    intended so a future agent can check data quality before analyzing
+    stored price evidence. It makes no network request of any kind, opens
+    the database only via `duckdb.connect(path, read_only=True)`, never
+    writes a row or applies a migration, and adds no prediction,
+    recommendation, or trading-signal logic of any kind.
+
+    Regular session is defined using Python `zoneinfo`
+    (`America/New_York`) as weekdays (Monday-Friday) with 78 five-minute
+    slots from `09:30` through the slot beginning `15:55` inclusive. **This
+    is explicitly weekday/time-window logic only** -- it is not an
+    exchange-holiday or early-close calendar, and a stored date that
+    happens to be a U.S. market holiday is evaluated with the same rule and
+    reported incomplete, never flagged as "no session expected." Symbol and
+    an optional explicit session date are strictly validated before any
+    DuckDB connection is opened. Exactly one bar identity
+    (`provider, symbol, timeframe='5Min', feed, adjustment, currency`) is
+    selected per report (whichever identity produced the most recently
+    stored `5Min` bar for the symbol) and never mixed with any other
+    identity. If no session date is supplied, the most recent stored date
+    (under that identity) containing at least one regular-session bar is
+    used automatically.
+
+    The report includes: bar provenance; session-definition metadata
+    (including the weekday/time-window-only limitation, in the output
+    itself); the fixed expected slot count (`78`); the observed
+    regular-session slot count; missing expected UTC timestamps; any
+    unexpected/off-grid or duplicate timestamps (if detectable -- true
+    duplicates are already prevented by `market_bars`'s primary key);
+    `complete`/`partial_session`/`missing_data` flags; first/last
+    regular-session timestamps; regular-session open (only from an actual
+    `09:30` bar) and latest close (explicitly flagged
+    `latest_close_is_full_session_close: false` whenever the session is not
+    complete, so a partial session's latest observed close is never
+    described as an official close); session return (only when both open
+    and latest close are available); session high/low/range/total volume
+    and a volume-weighted VWAP (only when every observed regular-session
+    bar has a stored `vwap`); and same-date premarket/after-hours stored
+    bar counts. A missing database file, empty database, or symbol/date
+    with no stored regular-session bars all produce a truthful,
+    non-crashing report rather than an error. See
+    [docs/SESSION_QUALITY.md](docs/SESSION_QUALITY.md) for the full field
+    contract and known limitations. No dependency, market-calendar
+    library, migration, network call, persistence, prediction, or agent
+    logic was added as part of this change; it was not run against the
+    real repository database (a read-only operation, so nothing to
+    authorize or roll back).
+
 ## Notes
 
 - This file should be updated as phases progress. Treat entries here as
