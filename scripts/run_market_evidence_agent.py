@@ -53,6 +53,24 @@ _SANITIZED_AGENT_ERRORS = (
 )
 
 
+def _agent_error_payload(exc: Exception) -> dict[str, str]:
+    """Build the sanitized JSON error payload for a ``_SANITIZED_AGENT_ERRORS`` exception.
+
+    ``str(exc)`` is always one of this codebase's own fixed, sanitized
+    messages (never raw provider output, evidence, a database path, or a
+    credential -- see each error class's docstring). ``category``, when
+    present, is one of the fixed ``CATEGORY_*``/``AGENT_CATEGORY_*``
+    constants defined on the error classes (e.g. ``request_schema_invalid``,
+    ``response_validation_failed``) -- included so an operator or a future
+    caller can distinguish failure classes without parsing ``detail`` text.
+    """
+    payload = {"error": "agent_error", "detail": str(exc)}
+    category = getattr(exc, "category", None)
+    if isinstance(category, str):
+        payload["category"] = category
+    return payload
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run the Market Evidence Agent (dry-run by default; zero OpenAI requests)."
@@ -91,7 +109,7 @@ def main(argv: list[str] | None = None, *, agent: MarketEvidenceAgent | None = N
             print(json.dumps({"error": "invalid_input", "detail": str(exc)}))
             return 2
         except _SANITIZED_AGENT_ERRORS as exc:
-            print(json.dumps({"error": "agent_error", "detail": str(exc)}))
+            print(json.dumps(_agent_error_payload(exc)))
             return 1
         except Exception:
             # Never print the exception type, message, path, SQL, traceback, or any
@@ -128,7 +146,7 @@ def main(argv: list[str] | None = None, *, agent: MarketEvidenceAgent | None = N
         print(json.dumps({"error": "model_incomplete", "detail": str(exc)}))
         return 1
     except _SANITIZED_AGENT_ERRORS as exc:
-        print(json.dumps({"error": "agent_error", "detail": str(exc)}))
+        print(json.dumps(_agent_error_payload(exc)))
         return 1
     except Exception:
         print(json.dumps({"error": "unexpected_error"}))

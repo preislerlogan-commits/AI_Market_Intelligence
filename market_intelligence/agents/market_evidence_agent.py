@@ -69,6 +69,51 @@ from market_intelligence.model_clients.openai_structured import (
     OpenAIStructuredError,
 )
 
+# --- Bounded field limits ---------------------------------------------------
+#
+# These are the hard, enforced Pydantic Field bounds on MarketEvidenceModelAnalysis
+# below -- unchanged by the advisory budgets that follow.
+
+MAX_STATEMENT_LENGTH = 400
+MAX_SUMMARY_LENGTH = 800
+MAX_LIMITATION_LENGTH = 300
+MAX_EVIDENCE_ID_LENGTH = 64
+MIN_OBSERVATIONS = 1
+MAX_OBSERVATIONS = 6
+MAX_LIMITATIONS = 6
+MIN_EVIDENCE_IDS_PER_OBSERVATION = 1
+MAX_EVIDENCE_IDS_PER_OBSERVATION = 5
+
+# --- Advisory output budgets given to the model (added 2026-08-24) ---------
+#
+# Instruction-level guidance only -- these do NOT change any hard Pydantic
+# Field bound above, and this agent still performs zero truncation, silent
+# modification, retry, or acceptance of invalid output: a response that
+# ignores this guidance and still violates a MAX_*/MIN_* bound above still
+# fails schema validation exactly as before (surfacing as
+# OpenAIParseFailureError / CATEGORY_RESPONSE_VALIDATION_FAILED in
+# openai_structured.py, unchanged). Their purpose is to reduce the
+# likelihood of a real model response landing close to -- or over -- one of
+# those hard bounds in the first place. OpenAI's Structured Outputs
+# generation does not enforce string/array length bounds like
+# minLength/maxLength/minItems/maxItems (see OpenAIParseFailureError's
+# docstring), which was the diagnosed probable proximate cause of the one
+# authorized 2026-08-24 live execute attempt failing structured-output
+# validation (see PROJECT_STATE.md) -- these budgets are a mitigation for
+# that failure mode, not a guarantee against it, since the model can still
+# ignore instruction-level guidance. Each budget carries deliberate margin
+# below its corresponding hard Pydantic maximum (asserted below).
+ADVISORY_MAX_SUMMARY_LENGTH = 600
+ADVISORY_MAX_STATEMENT_LENGTH = 300
+ADVISORY_MAX_LIMITATION_LENGTH = 200
+ADVISORY_PREFERRED_MIN_OBSERVATIONS = 1
+ADVISORY_PREFERRED_MAX_OBSERVATIONS = 4
+
+assert ADVISORY_MAX_SUMMARY_LENGTH < MAX_SUMMARY_LENGTH
+assert ADVISORY_MAX_STATEMENT_LENGTH < MAX_STATEMENT_LENGTH
+assert ADVISORY_MAX_LIMITATION_LENGTH < MAX_LIMITATION_LENGTH
+assert ADVISORY_PREFERRED_MAX_OBSERVATIONS < MAX_OBSERVATIONS
+
 # --- Fixed, code-authored developer instructions ---------------------------
 #
 # Never derived from evidence, provider text, or any other untrusted data --
@@ -94,20 +139,17 @@ AGENT_INSTRUCTIONS = (
     "never cite one that was not provided, and never cite the same "
     "evidence_id twice within a single observation. If the evidence is thin "
     "or conflicting, say so honestly in evidence_quality and "
-    "evidence_summary rather than fabricating detail or false confidence."
+    "evidence_summary rather than fabricating detail or false confidence. "
+    "Use concise, factual wording only -- no padding, filler, or repetition. "
+    f"Keep evidence_summary to at most {ADVISORY_MAX_SUMMARY_LENGTH} "
+    f"characters. Keep each observation's statement to at most "
+    f"{ADVISORY_MAX_STATEMENT_LENGTH} characters. Keep each limitation to at "
+    f"most {ADVISORY_MAX_LIMITATION_LENGTH} characters. Prefer "
+    f"{ADVISORY_PREFERRED_MIN_OBSERVATIONS} to "
+    f"{ADVISORY_PREFERRED_MAX_OBSERVATIONS} observations, and only exceed "
+    "that range if genuinely necessary to cover materially distinct "
+    "evidence."
 )
-
-# --- Bounded field limits ---------------------------------------------------
-
-MAX_STATEMENT_LENGTH = 400
-MAX_SUMMARY_LENGTH = 800
-MAX_LIMITATION_LENGTH = 300
-MAX_EVIDENCE_ID_LENGTH = 64
-MIN_OBSERVATIONS = 1
-MAX_OBSERVATIONS = 6
-MAX_LIMITATIONS = 6
-MIN_EVIDENCE_IDS_PER_OBSERVATION = 1
-MAX_EVIDENCE_IDS_PER_OBSERVATION = 5
 
 _EvidenceIdStr = Annotated[str, Field(min_length=1, max_length=MAX_EVIDENCE_ID_LENGTH)]
 _LimitationStr = Annotated[str, Field(min_length=1, max_length=MAX_LIMITATION_LENGTH)]
@@ -125,19 +167,36 @@ PREFLIGHT_REASON_MISSING_DATA = "missing_data"
 PREFLIGHT_REASON_UNEXPECTED_TIMESTAMPS = "unexpected_or_duplicate_timestamps"
 PREFLIGHT_REASON_SYMBOL_MISMATCH = "symbol_mismatch"
 
+# Fixed, sanitized failure-category strings for MarketEvidenceAgentError
+# subclasses, mirroring the ``category`` convention on
+# ``OpenAIStructuredError`` (see ``openai_structured.py``). Lets calling code
+# (including ``scripts/run_market_evidence_agent.py``) distinguish failure
+# classes programmatically without parsing message text.
+AGENT_CATEGORY_INVALID_INPUT = "invalid_input"
+AGENT_CATEGORY_REFUSAL = "refusal"
+AGENT_CATEGORY_INCOMPLETE = "incomplete"
+AGENT_CATEGORY_CITATION_INVALID = "citation_invalid"
+AGENT_CATEGORY_POLICY_VIOLATION = "policy_violation"
+AGENT_CATEGORY_UNEXPECTED = "unexpected_error"
+
 
 class MarketEvidenceAgentError(RuntimeError):
     """Sanitized base error for the Market Evidence Agent.
 
     Never includes a database path, SQL text, API key, raw provider output,
     or raw evidence content -- only a fixed, non-input-derived description.
+    ``category`` is one of the fixed ``AGENT_CATEGORY_*`` constants above.
     """
+
+    category: str = AGENT_CATEGORY_UNEXPECTED
 
 
 class MarketEvidenceValidationError(MarketEvidenceAgentError):
     """Raised when ``symbol``/``session_date`` fails validation before any
     database or model access. The message never echoes raw, unvalidated
     input."""
+
+    category = AGENT_CATEGORY_INVALID_INPUT
 
 
 class MarketEvidenceRefusalError(MarketEvidenceAgentError):
@@ -146,6 +205,8 @@ class MarketEvidenceRefusalError(MarketEvidenceAgentError):
     The refusal explanation text itself is never read or included anywhere
     -- ``OpenAIStructuredClient`` already never returns it.
     """
+
+    category = AGENT_CATEGORY_REFUSAL
 
 
 class MarketEvidenceIncompleteError(MarketEvidenceAgentError):
@@ -156,10 +217,14 @@ class MarketEvidenceIncompleteError(MarketEvidenceAgentError):
     ``"content_filter"``, or ``"other"``) -- never arbitrary provider text.
     """
 
+    category = AGENT_CATEGORY_INCOMPLETE
+
 
 class MarketEvidenceCitationError(MarketEvidenceAgentError):
     """Raised when the model's response cites a missing, fabricated,
     duplicated, or excessive evidence ID."""
+
+    category = AGENT_CATEGORY_CITATION_INVALID
 
 
 class MarketEvidencePolicyError(MarketEvidenceAgentError):
@@ -175,10 +240,14 @@ class MarketEvidencePolicyError(MarketEvidenceAgentError):
     are recorded.
     """
 
+    category = AGENT_CATEGORY_POLICY_VIOLATION
+
 
 class MarketEvidenceUnexpectedError(MarketEvidenceAgentError):
     """Raised for any other unexpected failure. No raw exception type,
     message, or content is ever attached."""
+
+    category = AGENT_CATEGORY_UNEXPECTED
 
 
 # --- Model-facing structured-output schema ----------------------------------

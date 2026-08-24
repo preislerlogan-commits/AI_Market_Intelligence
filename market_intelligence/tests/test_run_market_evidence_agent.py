@@ -15,13 +15,19 @@ from types import ModuleType
 import pytest
 
 from market_intelligence.agents.market_evidence_agent import (
+    AGENT_CATEGORY_CITATION_INVALID,
     AgentRunResult,
+    MarketEvidenceCitationError,
     MarketEvidenceIncompleteError,
     MarketEvidenceRefusalError,
     MarketEvidenceReport,
     MarketEvidenceValidationError,
     ModelMetadata,
     PreflightResult,
+)
+from market_intelligence.model_clients.openai_structured import (
+    CATEGORY_RESPONSE_VALIDATION_FAILED,
+    OpenAIParseFailureError,
 )
 
 SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "run_market_evidence_agent.py"
@@ -273,6 +279,47 @@ def test_execute_prints_model_incomplete_error_with_sanitized_reason(capsys):
     output = json.loads(capsys.readouterr().out)
     assert output["error"] == "model_incomplete"
     assert "max_output_tokens" in output["detail"]
+
+
+# --- Sanitized failure classification: agent_error payloads carry `category` ---
+
+
+def test_execute_prints_response_validation_failed_category_for_parse_failure(capsys):
+    """Reproduces the sanitized CLI shape of the one authorized 2026-08-24
+    live execute attempt (OpenAIParseFailureError propagating unchanged from
+    ``MarketEvidenceAgent.run()``), and confirms the improved classification
+    now surfaces a fixed ``category`` alongside the existing sanitized
+    ``detail`` message -- entirely offline, no network or credentials."""
+    module = load_script_module()
+    fake_agent = FakeAgent(
+        run_exception=OpenAIParseFailureError(
+            "OpenAI response failed structured-output validation."
+        )
+    )
+
+    exit_code = module.main(["--symbol", "SPY", "--execute"], agent=fake_agent)
+
+    assert exit_code == 1
+    output = json.loads(capsys.readouterr().out)
+    assert output["error"] == "agent_error"
+    assert output["detail"] == "OpenAI response failed structured-output validation."
+    assert output["category"] == CATEGORY_RESPONSE_VALIDATION_FAILED
+
+
+def test_dry_run_prints_category_for_market_evidence_agent_errors(capsys):
+    module = load_script_module()
+    fake_agent = FakeAgent(
+        preflight_exception=MarketEvidenceCitationError(
+            "Model output cited an evidence ID that was not in the evidence package sent."
+        )
+    )
+
+    exit_code = module.main(["--symbol", "SPY"], agent=fake_agent)
+
+    assert exit_code == 1
+    output = json.loads(capsys.readouterr().out)
+    assert output["error"] == "agent_error"
+    assert output["category"] == AGENT_CATEGORY_CITATION_INVALID
 
 
 # --- Defensive final except: never leak a raw exception ------------------------
