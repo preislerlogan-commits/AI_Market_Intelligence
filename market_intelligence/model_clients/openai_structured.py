@@ -57,6 +57,11 @@ from pydantic import BaseModel
 
 from market_intelligence.config.settings import Settings
 
+# Deliberately no dependency on any private/underscore-prefixed OpenAI SDK
+# module (e.g. ``openai.lib._pydantic``) anywhere in this file. The
+# schema-buildability preflight below uses only public Pydantic v2 API
+# (``BaseModel.model_json_schema()``); see ``_validate_output_model``.
+
 MAX_INSTRUCTIONS_LENGTH = 8_000
 MAX_EVIDENCE_BYTES = 32_000
 MAX_EVIDENCE_DEPTH = 8
@@ -76,6 +81,28 @@ _RESPONSE_ID_PATTERN = re.compile(rf"^resp_[A-Za-z0-9_-]{{1,{MAX_RESPONSE_ID_SUF
 KNOWN_INCOMPLETE_REASONS = frozenset({"max_output_tokens", "content_filter"})
 OTHER_INCOMPLETE_REASON = "other"
 
+# Fixed, sanitized failure-category strings. Every ``OpenAIStructuredError``
+# subclass exposes one of these on its ``category`` class attribute so
+# calling code (and this module's own CLI-facing callers) can distinguish
+# failure classes programmatically -- without parsing message text and
+# without ever needing the raw exception type, request body, evidence, or
+# provider output. ``CATEGORY_RESPONSE_VALIDATION_FAILED`` and
+# ``CATEGORY_REQUEST_SCHEMA_INVALID`` are deliberately distinct: the former
+# means a request was actually sent and a response was received but its
+# content did not validate against ``output_model`` (tokens may have been
+# spent); the latter means ``output_model`` itself could not be converted
+# into a valid strict JSON schema, caught before any request is sent (zero
+# tokens spent). See ``_validate_output_model``/``generate()`` below.
+CATEGORY_REQUEST_INVALID = "request_invalid"
+CATEGORY_REQUEST_SCHEMA_INVALID = "request_schema_invalid"
+CATEGORY_CONFIG_MISSING = "config_missing"
+CATEGORY_TIMEOUT = "timeout"
+CATEGORY_CONNECTION_ERROR = "connection_error"
+CATEGORY_RATE_LIMIT = "rate_limit"
+CATEGORY_AUTHENTICATION_FAILED = "authentication_failed"
+CATEGORY_RESPONSE_VALIDATION_FAILED = "response_validation_failed"
+CATEGORY_UNEXPECTED = "unexpected_error"
+
 # Fixed, non-caller-overridable framing around the evidence payload. Owned
 # entirely by this module so the untrusted-data boundary holds regardless of
 # what a caller's own instructions say.
@@ -94,12 +121,19 @@ class OpenAIStructuredError(RuntimeError):
 
     Every message is a fixed, sanitized category string. No API key,
     request body, evidence, headline, raw model output, raw SDK exception,
-    URL, or header is ever included.
+    URL, or header is ever included. ``category`` is one of the fixed
+    ``CATEGORY_*`` constants above -- a stable, sanitized string calling
+    code can use to distinguish failure classes programmatically, without
+    parsing message text.
     """
+
+    category: str = CATEGORY_UNEXPECTED
 
 
 class OpenAIConfigMissingError(OpenAIStructuredError):
     """Raised when no OpenAI API key is configured."""
+
+    category = CATEGORY_CONFIG_MISSING
 
 
 class OpenAIInvalidRequestError(OpenAIStructuredError):
@@ -109,29 +143,91 @@ class OpenAIInvalidRequestError(OpenAIStructuredError):
     made. The message never echoes the raw, invalid input.
     """
 
+    category = CATEGORY_REQUEST_INVALID
+
+
+class OpenAIRequestSchemaError(OpenAIInvalidRequestError):
+    """Raised when ``output_model`` cannot even be represented as a basic
+    JSON schema (see ``_validate_output_model`` -- checked using only public
+    Pydantic API, never OpenAI's private schema-conversion internals).
+
+    Raised before the OpenAI SDK client is constructed or any request is
+    made -- zero tokens are ever spent for this failure. This is distinct
+    from ``OpenAIParseFailureError``: that error means a request was sent
+    and a response was received but its *content* did not validate against
+    ``output_model``; this error means ``output_model`` itself is
+    fundamentally unrepresentable as JSON Schema. An ``output_model`` that
+    passes this basic check but is still incompatible with OpenAI's
+    *stricter* Structured Outputs subset (e.g. a keyword combination plain
+    JSON Schema allows but OpenAI's strict mode rejects) is not caught here
+    -- it would only surface later, inside ``generate()``'s existing
+    sanitized exception boundary, as ``OpenAIUnexpectedError``. The message
+    never echoes the raw schema, model name, or underlying exception.
+    """
+
+    category = CATEGORY_REQUEST_SCHEMA_INVALID
+
 
 class OpenAITimeoutError(OpenAIStructuredError):
     """Raised when the request exceeds the configured timeout."""
+
+    category = CATEGORY_TIMEOUT
 
 
 class OpenAIConnectionError(OpenAIStructuredError):
     """Raised on a network/connection failure reaching OpenAI."""
 
+    category = CATEGORY_CONNECTION_ERROR
+
 
 class OpenAIRateLimitError(OpenAIStructuredError):
     """Raised when OpenAI reports a rate limit."""
+
+    category = CATEGORY_RATE_LIMIT
 
 
 class OpenAIAuthenticationError(OpenAIStructuredError):
     """Raised when OpenAI rejects the configured API key."""
 
+    category = CATEGORY_AUTHENTICATION_FAILED
+
 
 class OpenAIParseFailureError(OpenAIStructuredError):
-    """Raised when the model's output cannot be parsed into ``output_model``."""
+    """Raised when a received response's content fails to validate against
+    ``output_model``.
+
+    This is only ever raised from a ``pydantic.ValidationError`` surfaced by
+    the OpenAI SDK's own client-side re-validation of the model's response
+    text against ``output_model`` (see ``generate()``). A basic
+    schema-*representability* failure (e.g. an ``output_model`` field with no
+    JSON Schema representation at all) is instead caught before any request
+    by ``_validate_output_model`` and raises ``OpenAIRequestSchemaError``; a
+    deeper OpenAI-strict-mode-specific construction failure not caught by
+    that basic check would instead surface as ``OpenAIUnexpectedError``.
+    Neither of those raises ``pydantic.ValidationError``, so this category
+    always means a request was actually sent and a response was received.
+    Because this client never captures or logs raw model output (by
+    design), the exact response field/value that failed re-validation for
+    any one occurrence of this error is unavailable and cannot be recovered
+    from local evidence. One plausible, locally reproducible failure mode
+    (see the offline regression tests in ``test_openai_structured.py`` using
+    the real ``MarketEvidenceModelAnalysis`` schema) is a response that
+    satisfies OpenAI's own strict-schema check yet violates a Pydantic-only
+    bound such as ``minLength``/``maxLength``/``minItems``/``maxItems`` --
+    this is a candidate explanation reproduced locally, not a proven cause
+    of any specific live occurrence. OpenAI has not published official
+    documentation establishing that its Structured Outputs generation
+    leaves these bound keywords unenforced specifically for the
+    non-fine-tuned ``gpt-5-mini`` model this project uses.
+    """
+
+    category = CATEGORY_RESPONSE_VALIDATION_FAILED
 
 
 class OpenAIUnexpectedError(OpenAIStructuredError):
     """Raised for any other SDK failure or unrecognized response shape."""
+
+    category = CATEGORY_UNEXPECTED
 
 
 @dataclass(frozen=True)
@@ -245,11 +341,35 @@ def _validate_and_serialize_evidence(evidence: Any) -> str:
 
 
 def _validate_output_model(output_model: Any) -> type[BaseModel]:
-    """Validate that ``output_model`` is a Pydantic ``BaseModel`` subclass (not an instance)."""
+    """Validate that ``output_model`` is a Pydantic ``BaseModel`` subclass (not an
+    instance) and, best-effort, that it is representable as a JSON schema at all.
+
+    The schema-buildability check runs before the OpenAI SDK client is
+    constructed or any request is made, using only public Pydantic v2 API
+    (``BaseModel.model_json_schema()``) -- deliberately not OpenAI's private
+    ``openai.lib._pydantic`` strict-schema builder, so this module carries no
+    runtime dependency on any underscore-prefixed OpenAI SDK module. This is
+    a *basic* preflight: it catches an ``output_model`` that is fundamentally
+    unrepresentable as JSON Schema (e.g. a field typed as ``Callable``,
+    which raises ``pydantic.PydanticInvalidForJsonSchema``) with zero tokens
+    spent, as ``OpenAIRequestSchemaError``. It does not replicate every
+    additional constraint OpenAI's strict Structured Outputs mode imposes on
+    top of plain JSON Schema (e.g. ``additionalProperties: false``, fully
+    required properties) -- an ``output_model`` that passes this basic check
+    but is still incompatible with OpenAI's stricter subset would only be
+    discovered later, inside ``generate()``'s existing sanitized exception
+    boundary (as ``OpenAIUnexpectedError``), not here.
+    """
     if not isinstance(output_model, type) or not issubclass(output_model, BaseModel):
         raise OpenAIInvalidRequestError(
             "Invalid output_model: expected a Pydantic BaseModel subclass."
         )
+    try:
+        output_model.model_json_schema()
+    except Exception:
+        raise OpenAIRequestSchemaError(
+            "Invalid output_model: could not be represented as a JSON schema."
+        ) from None
     return output_model
 
 

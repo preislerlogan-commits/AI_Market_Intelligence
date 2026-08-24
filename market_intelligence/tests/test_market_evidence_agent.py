@@ -16,8 +16,17 @@ import pytest
 from pydantic import ValidationError
 
 from market_intelligence.agents.market_evidence_agent import (
+    ADVISORY_MAX_LIMITATION_LENGTH,
+    ADVISORY_MAX_STATEMENT_LENGTH,
+    ADVISORY_MAX_SUMMARY_LENGTH,
+    ADVISORY_PREFERRED_MAX_OBSERVATIONS,
+    ADVISORY_PREFERRED_MIN_OBSERVATIONS,
     AGENT_INSTRUCTIONS,
+    MAX_LIMITATION_LENGTH,
     MAX_LIMITATIONS,
+    MAX_OBSERVATIONS,
+    MAX_STATEMENT_LENGTH,
+    MAX_SUMMARY_LENGTH,
     PREFLIGHT_REASON_BARS_MISSING,
     PREFLIGHT_REASON_BARS_STALE,
     PREFLIGHT_REASON_MISSING_DATA,
@@ -778,3 +787,72 @@ def test_report_schema_forbids_extra_fields():
 def test_report_status_only_accepts_completed_or_abstained():
     with pytest.raises(ValidationError):
         MarketEvidenceReport(status="refused", symbol="SPY", session_date_et=None)
+
+
+# ---------------------------------------------------------------------------
+# Advisory output budgets (added 2026-08-24): instruction-level guidance
+# intended to reduce the likelihood of a real model response landing close
+# to -- or over -- a hard Pydantic bound (the diagnosed probable proximate
+# cause of the one authorized 2026-08-24 live execute failure; see
+# PROJECT_STATE.md). These budgets do not change any Pydantic Field bound,
+# and the agent still performs zero truncation, silent modification, retry,
+# or acceptance of invalid output -- see test_model_analysis_schema_forbids_extra_fields
+# and the citation/policy/schema tests elsewhere in this file for those
+# still-unchanged hard guarantees.
+# ---------------------------------------------------------------------------
+
+
+def test_advisory_budgets_are_strictly_below_the_enforced_schema_maxima():
+    """The whole point of an advisory budget is margin below the hard
+    Pydantic maximum it corresponds to -- prove that offline, numerically,
+    rather than only informally in a comment."""
+    assert ADVISORY_MAX_SUMMARY_LENGTH < MAX_SUMMARY_LENGTH
+    assert ADVISORY_MAX_STATEMENT_LENGTH < MAX_STATEMENT_LENGTH
+    assert ADVISORY_MAX_LIMITATION_LENGTH < MAX_LIMITATION_LENGTH
+    assert ADVISORY_PREFERRED_MAX_OBSERVATIONS < MAX_OBSERVATIONS
+    assert ADVISORY_PREFERRED_MIN_OBSERVATIONS >= 1
+
+
+def test_agent_instructions_state_the_evidence_summary_budget():
+    assert f"at most {ADVISORY_MAX_SUMMARY_LENGTH} " in AGENT_INSTRUCTIONS
+    assert "evidence_summary" in AGENT_INSTRUCTIONS
+
+
+def test_agent_instructions_state_the_observation_statement_budget():
+    assert f"at most {ADVISORY_MAX_STATEMENT_LENGTH} " in AGENT_INSTRUCTIONS
+    assert "statement" in AGENT_INSTRUCTIONS
+
+
+def test_agent_instructions_state_the_limitation_budget():
+    assert f"at most {ADVISORY_MAX_LIMITATION_LENGTH} " in AGENT_INSTRUCTIONS
+    assert "limitation" in AGENT_INSTRUCTIONS
+
+
+def test_agent_instructions_state_the_preferred_observation_count_range():
+    assert (
+        f"Prefer {ADVISORY_PREFERRED_MIN_OBSERVATIONS} to "
+        f"{ADVISORY_PREFERRED_MAX_OBSERVATIONS} observations" in AGENT_INSTRUCTIONS
+    )
+
+
+def test_agent_instructions_ask_for_concise_factual_wording():
+    assert "concise, factual wording" in AGENT_INSTRUCTIONS
+
+
+def _field_max_length(field_info) -> int:
+    from annotated_types import MaxLen
+
+    for constraint in field_info.metadata:
+        if isinstance(constraint, MaxLen):
+            return constraint.max_length
+    raise AssertionError("no MaxLen constraint found on field")
+
+
+def test_agent_instructions_never_change_the_enforced_pydantic_bounds():
+    """The advisory budgets must be additive guidance only -- confirm the
+    hard MarketEvidenceModelAnalysis schema bounds are untouched."""
+    fields = MarketEvidenceModelAnalysis.model_fields
+    assert _field_max_length(fields["evidence_summary"]) == MAX_SUMMARY_LENGTH == 800
+    assert _field_max_length(fields["observations"]) == MAX_OBSERVATIONS == 6
+    observation_fields = EvidenceObservation.model_fields
+    assert _field_max_length(observation_fields["statement"]) == MAX_STATEMENT_LENGTH == 400

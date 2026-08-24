@@ -160,6 +160,26 @@ builder or by this agent.
 
 ## Structured output
 
+**Advisory output budgets (added 2026-08-24).** `AGENT_INSTRUCTIONS` asks the
+model to keep `evidence_summary` to at most 600 characters, each observation
+`statement` to at most 300 characters, each `limitation` to at most 200
+characters, and to prefer 1-4 observations (only exceeding that if genuinely
+necessary) using concise, factual wording. Each of these is deliberately set
+with margin below the corresponding hard Pydantic maximum below (800 / 400 /
+300 / 6) -- see `ADVISORY_MAX_SUMMARY_LENGTH`/`ADVISORY_MAX_STATEMENT_LENGTH`/
+`ADVISORY_MAX_LIMITATION_LENGTH`/`ADVISORY_PREFERRED_MAX_OBSERVATIONS` in
+`market_evidence_agent.py`. **This is instruction-level guidance only: it
+does not change any Pydantic Field bound, and the agent still performs zero
+truncation, silent modification, retry, or acceptance of invalid output** --
+a response that ignores this guidance and still violates a hard bound still
+fails schema validation exactly as before. Its purpose is to reduce the
+likelihood of a real model response landing close to, or over, one of those
+hard bounds in the first place -- a mitigation for, not a guarantee against,
+the failure mode diagnosed in the one authorized 2026-08-24 live execute
+attempt (see
+[docs/OPENAI_PROVIDER_BOUNDARY.md](OPENAI_PROVIDER_BOUNDARY.md)'s "Known
+structured-output validation failure" section and `PROJECT_STATE.md`).
+
 Two strict Pydantic models (`extra="forbid"`, every field bounded):
 
 - **`MarketEvidenceModelAnalysis`** -- the *only* schema sent to OpenAI as
@@ -245,21 +265,34 @@ accuracy exists in this repository.
 
 All errors are sanitized `RuntimeError` subclasses under
 `MarketEvidenceAgentError`; none ever include a database path, SQL text, API
-key, raw provider output, or raw evidence content.
+key, raw provider output, or raw evidence content. Each also exposes a
+fixed, sanitized `category` string class attribute (added 2026-08-24,
+mirroring `OpenAIStructuredError.category` -- see
+[docs/OPENAI_PROVIDER_BOUNDARY.md](OPENAI_PROVIDER_BOUNDARY.md)) so a
+failure's class can be identified programmatically without parsing message
+text; `scripts/run_market_evidence_agent.py` includes it in its sanitized
+`agent_error` JSON output.
 
-| Exception | Cause |
-|---|---|
-| `MarketEvidenceValidationError` | Invalid `symbol`/`session_date`, before any database or model access |
-| `MarketEvidenceRefusalError` | The model refused the request |
-| `MarketEvidenceIncompleteError` | The model's response was incomplete |
-| `MarketEvidenceCitationError` | Missing, fabricated, duplicated, or excessive evidence-ID citation |
-| `MarketEvidencePolicyError` | Model-authored free text failed the post-response content policy check (directional prediction, bullish/bearish bias, trade recommendation/action, or options detail) |
-| `MarketEvidenceUnexpectedError` | Any other unexpected failure |
+| Exception | `category` | Cause |
+|---|---|---|
+| `MarketEvidenceValidationError` | `invalid_input` | Invalid `symbol`/`session_date`, before any database or model access |
+| `MarketEvidenceRefusalError` | `refusal` | The model refused the request |
+| `MarketEvidenceIncompleteError` | `incomplete` | The model's response was incomplete |
+| `MarketEvidenceCitationError` | `citation_invalid` | Missing, fabricated, duplicated, or excessive evidence-ID citation |
+| `MarketEvidencePolicyError` | `policy_violation` | Model-authored free text failed the post-response content policy check (directional prediction, bullish/bearish bias, trade recommendation/action, or options detail) |
+| `MarketEvidenceUnexpectedError` | `unexpected_error` | Any other unexpected failure |
 
 A sanitized `OpenAIStructuredError` subclass (config missing, timeout,
-connection failure, rate limit, authentication failure, parse failure) also
-propagates unchanged from `run()` -- it is already fully sanitized by
-`OpenAIStructuredClient`.
+connection failure, rate limit, authentication failure, parse failure,
+or -- added 2026-08-24 -- an unbuildable output schema, category
+`request_schema_invalid`) also propagates unchanged from `run()` -- it is
+already fully sanitized by `OpenAIStructuredClient`, including its own
+`category` attribute. See
+[docs/OPENAI_PROVIDER_BOUNDARY.md](OPENAI_PROVIDER_BOUNDARY.md)'s "Known
+structured-output validation failure" section for the first authorized live
+`--execute` attempt (2026-08-24), which failed with
+`OpenAIParseFailureError`/`response_validation_failed` -- diagnosed entirely
+offline, with no schema weakening and no further live request made.
 
 ## Command-line usage
 
@@ -360,6 +393,17 @@ this repository** (see [CLAUDE.md](../CLAUDE.md)/[AGENTS.md](../AGENTS.md)'s
 
 ## Known limitations
 
+- **First authorized live run (2026-08-24):** a dry run against the real
+  database succeeded (eligible, 20 evidence items, every blocking quality
+  flag clear), but the one authorized live `--execute` attempt failed
+  `OpenAIParseFailureError`/`response_validation_failed` before any analysis
+  was accepted -- see
+  [docs/OPENAI_PROVIDER_BOUNDARY.md](OPENAI_PROVIDER_BOUNDARY.md)'s "Known
+  structured-output validation failure" section and `PROJECT_STATE.md` for
+  the full record. **As of this entry, no live end-to-end run of this agent
+  has yet produced an accepted, completed analysis.** No retry was made; the
+  failure was diagnosed and the sanitized failure classification hardened
+  entirely offline (see the "Error categories" table above).
 - Single symbol, single optional session date per call -- no batch, no
   multi-symbol comparison, no multi-turn conversation.
 - No tools, no web search, no file access by the model, no persistence, no
