@@ -400,10 +400,26 @@ this repository** (see [CLAUDE.md](../CLAUDE.md)/[AGENTS.md](../AGENTS.md)'s
   was accepted -- see
   [docs/OPENAI_PROVIDER_BOUNDARY.md](OPENAI_PROVIDER_BOUNDARY.md)'s "Known
   structured-output validation failure" section and `PROJECT_STATE.md` for
-  the full record. **As of this entry, no live end-to-end run of this agent
-  has yet produced an accepted, completed analysis.** No retry was made; the
-  failure was diagnosed and the sanitized failure classification hardened
-  entirely offline (see the "Error categories" table above).
+  the full record. That failure was diagnosed and the sanitized failure
+  classification hardened entirely offline (see the "Error categories"
+  table above); no retry was made as part of that diagnosis.
+- **First completed live run (2026-08-24, same day, after the PR #20
+  structured-output hardening described above):** a separately authorized
+  follow-up `--execute` attempt (symbol `SPY`, `session_date_et=2026-08-21`)
+  completed -- schema validation, evidence-ID citation validation, and the
+  post-response content policy check all passed, producing the first
+  accepted `status="completed"` `MarketEvidenceReport` this agent has
+  produced from a live run (`evidence_quality="sufficient"`, 5 observations,
+  model `gpt-5-mini`, `input_tokens=1648`, `output_tokens=1535`,
+  `total_tokens=3183`; `directional_assessment`/`trade_recommendation`
+  remained the fixed `"not_performed"` value as always). No persistence and
+  no automatic retry occurred. A sanitized record of this run and a manual
+  quality read of the one accepted report are kept in
+  [docs/MARKET_EVIDENCE_EVALUATIONS.md](MARKET_EVIDENCE_EVALUATIONS.md) as
+  evaluation example #1. **This is one accepted example from one live run --
+  it is not repeated or statistically characterized reliability, not an
+  automated evaluation methodology, and not proof of factual accuracy,
+  prediction quality, analytical reliability, or trading usefulness.**
 - Single symbol, single optional session date per call -- no batch, no
   multi-symbol comparison, no multi-turn conversation.
 - No tools, no web search, no file access by the model, no persistence, no
