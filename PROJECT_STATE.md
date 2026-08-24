@@ -107,8 +107,22 @@ policy check (added 2026-08-24, code/tests/docs only, see
 known directional-prediction, bullish/bearish-bias, trade-recommendation/
 action, and options-related language — a conservative, bounded filter and
 defense-in-depth on top of its developer instructions, not proof that every
-possible semantic violation is detectable. Beyond this one narrow agent, no
-other AI analysis or agent orchestration (in the AI-agent sense) exists yet.
+possible semantic violation is detectable. A second narrow agent, the News
+Analyst (`market_intelligence/agents/news_analyst.py`), has also since been
+added (2026-08-24, code/tests/docs only — see Status below and
+[docs/NEWS_ANALYST.md](docs/NEWS_ANALYST.md)): it extracts and organizes
+provider-reported event claims and conditional market-transmission
+mechanisms from already-stored news, built on the existing
+`NewsEvidenceBuilder` snapshot behind its own deterministic preflight gate.
+It shares the Market Evidence Agent's non-directional guarantee
+(`directional_assessment`/`trade_recommendation` always `"not_performed"`,
+the model-facing schema excludes those fields entirely) and reuses the same
+extracted, shared post-response content-policy matcher
+(`market_intelligence/agents/non_directional_output_policy.py`). As of this
+entry, the News Analyst has not been run against the real database and no
+live OpenAI request has been made using it. Beyond these two narrow agents,
+no other AI analysis or agent orchestration (in the AI-agent sense) exists
+yet.
 
 ## Status
 
@@ -1190,6 +1204,77 @@ other AI analysis or agent orchestration (in the AI-agent sense) exists yet.
   analysis, or a validated news dataset -- see `DATA_CATALOG.md` for the
   underlying news dataset's own status.
 
+- **News Analyst added (2026-08-24, code/tests/docs only; no live database
+  access or live OpenAI request made as part of this change).** A new
+  agent, `NewsAnalyst` (`market_intelligence/agents/news_analyst.py`), and a
+  dry-run-first CLI, `scripts/run_news_analyst.py`, exist, mirroring the
+  Market Evidence Agent's pattern but built on `NewsEvidenceBuilder` (see
+  above) instead of `MarketContextBuilder`/`SessionQualityBuilder`. This is
+  a **single-turn, no-tools analysis component** -- not an autonomous or
+  multi-agent system -- that extracts and organizes provider-reported event
+  claims and conditional market-transmission mechanisms from already-stored
+  news. It **never predicts SPY (or any symbol's) direction, never states or
+  implies a bullish/bearish bias, never recommends a trade, and never
+  discusses options** -- `directional_assessment`/`trade_recommendation` on
+  every report it produces are always the fixed value `"not_performed"`, and
+  the model-facing schema does not even include those fields, so this
+  restriction is absolute, exactly as for the Market Evidence Agent.
+
+  A fixed, deterministic preflight gate (symbol match, `freshness.missing`/
+  `freshness.stale`/`freshness.future_timestamp_detected` all `False`, and
+  at least one article returned) must pass before any OpenAI request is
+  made; any failure returns a truthful `status="abstained"` report with
+  fixed reason categories and makes **zero OpenAI requests**. The
+  model-facing evidence package is built from the snapshot's `articles`
+  only -- `audit_provenance` and every article URL are never read or
+  referenced anywhere in that construction -- and every headline/
+  provider_summary is labeled directly in the evidence payload itself as
+  untrusted, provider-reported text, never independently verified fact.
+  Every model-authored event claim must cite 1-5 of the exact evidence IDs
+  supplied (validated post-response against fabrication, duplication, and
+  excess), and a claim asserting the richer
+  `content_basis="headline_and_provider_summary"` must actually cite an
+  article with that content scope in the evidence sent, or the response is
+  rejected (`NewsAnalystContentBasisError`) rather than accepted with an
+  overstated evidentiary basis.
+
+  The Market Evidence Agent's post-response content policy check (rejecting
+  known directional-prediction, bullish/bearish-bias, trade-recommendation/
+  action, and options-related language) was extracted into a small shared
+  module, `market_intelligence/agents/non_directional_output_policy.py`,
+  exposing exactly one function
+  (`find_prohibited_content_category(text) -> str | None`); the Market
+  Evidence Agent's own `MarketEvidencePolicyError` and behavior are
+  unchanged (its existing 95-test suite -- `test_market_evidence_agent.py`,
+  its eval-fixtures file, `test_run_market_evidence_agent.py`, and
+  `test_news_evidence.py` -- was re-run after this extraction and still
+  passes unchanged), and the News Analyst applies the same shared matcher
+  to every event claim's `claim_summary`/`conditional_mechanism` and every
+  model-supplied `limitation`, raising its own sanitized
+  `NewsAnalystPolicyError` on a match. **This remains a conservative,
+  bounded filter and defense-in-depth on top of developer instructions for
+  both agents -- not proof that every possible semantic violation is
+  detectable.**
+
+  Covered by 75 tests (`test_news_analyst.py`,
+  `test_news_analyst_eval_fixtures.py`, `test_run_news_analyst.py`,
+  `test_non_directional_output_policy.py`) against fake evidence-builder/
+  model-client stand-ins -- no real database or network access in tests.
+  The CLI's default mode is a dry run (zero OpenAI requests, prints only
+  eligibility, reasons, symbol, article count, freshness flags, and
+  headline-only/summary-available counts); `--execute` is required for one
+  billed OpenAI request, and execute output never prints a response ID,
+  article URLs, `audit_provenance`, the full evidence payload, credentials,
+  a database path, the raw provider response, or a traceback. See
+  [docs/NEWS_ANALYST.md](docs/NEWS_ANALYST.md) for the full contract. As of
+  this entry, `NewsAnalyst` has not been run against the real local
+  database, and no live OpenAI request has been made using it -- both
+  remain separate, future, and not yet authorized. It is not integrated
+  into `market_intelligence/orchestration/`, adds no persistence or
+  migration, and adds no dashboard, alerting, or brokerage/Robinhood
+  integration. Full test suite: 1528 passed. `ruff check .` and
+  `git diff --check` both pass.
+
 ## Next Planned Work
 
 1. Data connector design — read-only Alpaca market-data, Alpaca news,
@@ -1419,7 +1504,22 @@ other AI analysis or agent orchestration (in the AI-agent sense) exists yet.
     above). Remaining future work: any actual News Analyst agent that
     consumes this snapshot (mirroring `MarketEvidenceAgent`'s pattern), and
     any decision to expand this snapshot's scope, remain separate, future,
-    and not yet authorized.
+    and not yet authorized. **This has since been superseded -- see item 17
+    below.**
+
+17. **News Analyst added** -- done, code/tests/docs only (see above):
+    `NewsAnalyst` (`market_intelligence/agents/news_analyst.py`) and
+    `scripts/run_news_analyst.py` exist (see Status above and
+    [docs/NEWS_ANALYST.md](docs/NEWS_ANALYST.md)), covered by 75 tests
+    against fake evidence-builder/model-client stand-ins (no real database
+    or network access in tests). Not yet run against the real database, and
+    no live OpenAI request has been made using it. Remaining future work:
+    any live dry run or authorized `--execute` run against the real
+    database, any orchestration integration, any repeated/broader
+    evaluation of this agent's outputs (mirroring
+    `docs/MARKET_EVIDENCE_EVALUATIONS.md`), and any decision to build
+    further agents on this same pattern all remain separate, future, and
+    not yet authorized.
 
 ## Notes
 
