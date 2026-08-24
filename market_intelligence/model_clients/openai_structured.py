@@ -283,14 +283,16 @@ def _sanitize_token_count(value: Any) -> int | None:
 def _sanitize_incomplete_reason(value: Any) -> str | None:
     """Map ``value`` to one of OpenAI's known fixed incomplete-reason categories.
 
-    ``None`` stays ``None``. A recognized category (see
-    ``KNOWN_INCOMPLETE_REASONS``) is returned as-is. Anything else is
-    normalized to the fixed ``"other"`` category so arbitrary provider
-    text is never surfaced through this field.
+    ``None`` stays ``None``. A recognized string category (see
+    ``KNOWN_INCOMPLETE_REASONS``) is returned as-is. Anything else --
+    including an unrecognized string, a list, a dict, a bool, a number, or
+    any other object, whether or not it is hashable -- is normalized to
+    the fixed ``"other"`` category so arbitrary or malformed provider
+    metadata is never surfaced through this field and never raises.
     """
     if value is None:
         return None
-    if value in KNOWN_INCOMPLETE_REASONS:
+    if isinstance(value, str) and value in KNOWN_INCOMPLETE_REASONS:
         return value
     return OTHER_INCOMPLETE_REASON
 
@@ -445,13 +447,15 @@ class OpenAIStructuredClient:
         failure. Never raises for a model refusal or an incomplete
         response -- both are reported via ``StructuredOutputResult.status``.
 
-        The SDK call and response normalization both run inside one
-        sanitized exception boundary: any exception not matched by a
-        specific mapping below -- including a malformed response with
-        missing/non-iterable output, an unexpected status shape, or a
-        parsed object of the wrong type -- becomes a fixed
-        ``OpenAIUnexpectedError`` with no raw type/message/body/path/
-        header/evidence attached.
+        SDK client construction, the SDK call, and response normalization
+        all run inside one sanitized exception boundary: any exception not
+        matched by a specific mapping below -- including a client
+        construction failure, a malformed response with missing/
+        non-iterable output, an unexpected status shape, or a parsed object
+        of the wrong type -- becomes a fixed ``OpenAIUnexpectedError`` with
+        no raw type/message/body/path/header/evidence attached. A client
+        construction failure always becomes ``OpenAIUnexpectedError``,
+        never one of the more specific SDK-call error categories below.
         """
         normalized_instructions = _validate_instructions(instructions)
         serialized_evidence = _validate_and_serialize_evidence(evidence)
@@ -464,12 +468,14 @@ class OpenAIStructuredClient:
         timeout = self._settings.openai_request_timeout_seconds
         max_output_tokens = self._settings.openai_max_output_tokens
 
-        sdk_client = self._sdk_client or self._build_sdk_client()
-
         final_instructions = f"{normalized_instructions}\n\n{EVIDENCE_SAFETY_APPENDIX}"
         input_content = f"{EVIDENCE_LABEL}\n{serialized_evidence}"
 
         try:
+            try:
+                sdk_client = self._sdk_client or self._build_sdk_client()
+            except Exception:
+                raise OpenAIUnexpectedError("OpenAI request failed unexpectedly.") from None
             response = sdk_client.responses.parse(
                 model=model,
                 instructions=final_instructions,

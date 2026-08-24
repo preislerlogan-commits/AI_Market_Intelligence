@@ -36,6 +36,7 @@ from market_intelligence.model_clients.openai_structured import (
     OpenAITimeoutError,
     OpenAIUnexpectedError,
     StructuredOutputResult,
+    _sanitize_incomplete_reason,
 )
 
 CREDENTIAL_ENV_VARS = [
@@ -756,6 +757,64 @@ def test_generate_sanitizes_injection_shaped_incomplete_reason_to_other(
     assert result.incomplete_reason == "other"
 
 
+def test_sanitize_incomplete_reason_never_raises_on_unhashable_or_non_string_values():
+    """``_sanitize_incomplete_reason`` must never raise on provider-controlled
+    metadata, including unhashable values that would break a naive
+    ``value in KNOWN_INCOMPLETE_REASONS`` membership check."""
+    unhashable_and_non_string_values = [
+        ["max_output_tokens"],
+        {"reason": "max_output_tokens"},
+        {"max_output_tokens"},
+        True,
+        False,
+        404,
+        3.14,
+        object(),
+    ]
+    for value in unhashable_and_non_string_values:
+        assert _sanitize_incomplete_reason(value) == "other"
+
+
+def test_generate_sanitizes_list_incomplete_reason_to_other_without_raising(
+    monkeypatch, isolated_env_file
+):
+    settings = configured_settings(monkeypatch, isolated_env_file)
+    fake = FakeSDKClient(result=incomplete_response(reason=["max_output_tokens"]))
+    client = OpenAIStructuredClient(settings, sdk_client=fake)
+
+    result = client.generate(
+        instructions=VALID_INSTRUCTIONS, evidence=VALID_EVIDENCE, output_model=Verdict
+    )
+
+    assert result.incomplete_reason == "other"
+
+
+def test_generate_sanitizes_dict_incomplete_reason_to_other_without_raising(
+    monkeypatch, isolated_env_file
+):
+    settings = configured_settings(monkeypatch, isolated_env_file)
+    fake = FakeSDKClient(result=incomplete_response(reason={"reason": "max_output_tokens"}))
+    client = OpenAIStructuredClient(settings, sdk_client=fake)
+
+    result = client.generate(
+        instructions=VALID_INSTRUCTIONS, evidence=VALID_EVIDENCE, output_model=Verdict
+    )
+
+    assert result.incomplete_reason == "other"
+
+
+def test_generate_sanitizes_boolean_incomplete_reason_to_other(monkeypatch, isolated_env_file):
+    settings = configured_settings(monkeypatch, isolated_env_file)
+    fake = FakeSDKClient(result=incomplete_response(reason=True))
+    client = OpenAIStructuredClient(settings, sdk_client=fake)
+
+    result = client.generate(
+        instructions=VALID_INSTRUCTIONS, evidence=VALID_EVIDENCE, output_model=Verdict
+    )
+
+    assert result.incomplete_reason == "other"
+
+
 # ---------------------------------------------------------------------------
 # Sanitized error-category mapping for SDK/parse failures
 # ---------------------------------------------------------------------------
@@ -839,6 +898,50 @@ def test_generate_maps_other_sdk_status_errors_to_unexpected(monkeypatch, isolat
         )
 
     assert "secret headline text" not in str(exc_info.value)
+
+
+def test_generate_maps_sdk_construction_failure_to_unexpected_without_leaking(
+    monkeypatch, isolated_env_file
+):
+    """No ``sdk_client`` is injected, so ``generate`` must call ``_build_sdk_client``."""
+    settings = configured_settings(monkeypatch, isolated_env_file)
+    client = OpenAIStructuredClient(settings)
+
+    def raise_secret() -> None:
+        raise RuntimeError(f"boom secret={FAKE_SECRET_MARKER}")
+
+    monkeypatch.setattr(client, "_build_sdk_client", raise_secret)
+
+    with pytest.raises(OpenAIUnexpectedError) as exc_info:
+        client.generate(
+            instructions=VALID_INSTRUCTIONS, evidence=VALID_EVIDENCE, output_model=Verdict
+        )
+
+    assert FAKE_SECRET_MARKER not in str(exc_info.value)
+    assert "RuntimeError" not in str(exc_info.value)
+
+
+def test_generate_maps_sdk_construction_openai_error_to_unexpected_not_specific_category(
+    monkeypatch, isolated_env_file
+):
+    """A construction failure must become ``OpenAIUnexpectedError`` even when its type
+    would otherwise map to a more specific category (e.g. authentication) for a
+    failure during the SDK call itself."""
+    settings = configured_settings(monkeypatch, isolated_env_file)
+    client = OpenAIStructuredClient(settings)
+    exc = openai.AuthenticationError(
+        f"invalid api key {FAKE_OPENAI_KEY}", response=_fake_response(401), body=None
+    )
+
+    def raise_auth_error() -> None:
+        raise exc
+
+    monkeypatch.setattr(client, "_build_sdk_client", raise_auth_error)
+
+    with pytest.raises(OpenAIUnexpectedError):
+        client.generate(
+            instructions=VALID_INSTRUCTIONS, evidence=VALID_EVIDENCE, output_model=Verdict
+        )
 
 
 def test_generate_maps_pydantic_validation_error_to_parse_failure(monkeypatch, isolated_env_file):
