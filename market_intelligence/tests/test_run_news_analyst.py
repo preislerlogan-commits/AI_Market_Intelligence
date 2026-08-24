@@ -116,6 +116,11 @@ def completed_run_result(**overrides) -> NewsAnalystRunResult:
                 "evidence_ids": ["news_aaaa1111bbbb2222"],
                 "content_basis": "headline_only",
                 "transmission_channels": ["rates"],
+                "relevance": "broad_market",
+                "relevance_rationale": (
+                    "The cited article reports a Fed policy-rate decision, affecting "
+                    "broad equity markets through the rates channel."
+                ),
                 "conditional_mechanism": None,
             }
         ],

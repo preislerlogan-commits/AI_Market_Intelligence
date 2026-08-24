@@ -208,11 +208,29 @@ Three new non-secret fields on `Settings`
 environment (see `.env.example`):
 
 - `openai_model: str = "gpt-5-mini"` — must be non-blank.
-- `openai_request_timeout_seconds: float = 30.0` — bounded to `(0, 120]`.
-- `openai_max_output_tokens: int = 2048` — bounded to `[1, 16000]`.
+- `openai_request_timeout_seconds: float = 120.0` — bounded to `(0, 120]`
+  (upper bound unchanged; still overridable via `.env`/the environment).
+- `openai_max_output_tokens: int = 4096` — bounded to `[1, 16000]` (upper
+  bound unchanged; still overridable via `.env`/the environment).
 
 `openai_api_key` (`SecretStr | None`) already existed and is unchanged —
 this branch adds no new credential field.
+
+**Defaults corrected to match the News Analyst's live run sequence (added
+2026-08-24, changed again same day after a follow-up review).** These two
+fields' *built-in* defaults were raised from `30.0`/`2048` to `120.0`/`4096`
+(the upper bounds themselves, `(0, 120]`/`[1, 16000]`, are unchanged) after
+the News Analyst's live SPY/`limit=5` `--execute` sequence showed the prior
+defaults were operationally insufficient: two attempts under the old
+defaults did not complete (an `"incomplete"` response at
+`max_output_tokens=2048`, then a local request timeout at the old default
+30-second timeout once `max_output_tokens` was raised to 4096 locally)
+before a fourth attempt with both raised together (120s / 4096 tokens)
+completed successfully (`input_tokens=1575`, `output_tokens=2474`,
+`total_tokens=4049`). `.env.example` documents the same values explicitly
+for visibility; both remain overridable per-environment. See
+[docs/NEWS_ANALYST.md](NEWS_ANALYST.md)'s "Live run sequence and manual
+quality review" section and `PROJECT_STATE.md` for the full, dated record.
 
 ## Testing
 
