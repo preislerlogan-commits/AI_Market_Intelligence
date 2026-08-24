@@ -247,6 +247,41 @@ def test_build_snapshot_orders_articles_newest_first_with_tie_breaker(
     assert ids == ["2", "3", "1"]
 
 
+def test_build_snapshot_orders_articles_by_provider_when_created_at_and_id_tie(
+    tmp_path, isolated_env_file
+):
+    settings, builder = initialized_builder(tmp_path, isolated_env_file)
+    repo = NewsArticleRepository(settings=settings)
+    # Identical created_at and identical provider_article_id, but from
+    # different providers -- the full stored identity
+    # (created_at, provider, provider_article_id) must still be a
+    # deterministic tie-breaker. store_news_items requires every item in one
+    # call to share the same declared provider, so each provider is stored
+    # in its own call.
+    repo.store_news_items(
+        [
+            make_news_item(
+                provider="zeta_wire", provider_article_id="1", created_at="2026-08-21T12:00:00Z"
+            )
+        ],
+        provider="zeta_wire",
+    )
+    repo.store_news_items(
+        [
+            make_news_item(
+                provider="alpaca", provider_article_id="1", created_at="2026-08-21T12:00:00Z"
+            )
+        ]
+    )
+
+    first_snapshot = builder.build_snapshot("SPY")
+    second_snapshot = builder.build_snapshot("SPY")
+
+    providers = [article["provider"] for article in first_snapshot["articles"]]
+    assert providers == ["alpaca", "zeta_wire"]
+    assert [a["provider"] for a in second_snapshot["articles"]] == providers
+
+
 def test_build_snapshot_respects_limit_and_reports_total_count(tmp_path, isolated_env_file):
     settings, builder = initialized_builder(tmp_path, isolated_env_file)
     repo = NewsArticleRepository(settings=settings)
@@ -302,6 +337,31 @@ def test_build_snapshot_content_scope_reflects_summary_presence(tmp_path, isolat
     assert by_id["2"]["provider_summary"] is None
 
 
+def test_build_snapshot_content_scope_for_blank_summaries(tmp_path, isolated_env_file):
+    settings, builder = initialized_builder(tmp_path, isolated_env_file)
+    repo = NewsArticleRepository(settings=settings)
+    repo.store_news_items(
+        [
+            make_news_item(provider_article_id="1", summary=None),
+            make_news_item(provider_article_id="2", summary=""),
+            make_news_item(provider_article_id="3", summary="   \t\n  "),
+            make_news_item(provider_article_id="4", summary="Rates held steady."),
+        ]
+    )
+
+    snapshot = builder.build_snapshot("SPY")
+
+    by_id = {a["provider_article_id"]: a for a in snapshot["articles"]}
+    assert by_id["1"]["content_scope"] == HEADLINE_ONLY_SCOPE
+    assert by_id["1"]["provider_summary"] is None
+    assert by_id["2"]["content_scope"] == HEADLINE_ONLY_SCOPE
+    assert by_id["2"]["provider_summary"] == ""
+    assert by_id["3"]["content_scope"] == HEADLINE_ONLY_SCOPE
+    assert by_id["3"]["provider_summary"] == "   \t\n  "
+    assert by_id["4"]["content_scope"] == HEADLINE_AND_SUMMARY_SCOPE
+    assert by_id["4"]["provider_summary"] == "Rates held steady."
+
+
 # --- Freshness / staleness ------------------------------------------------------------
 
 
@@ -337,6 +397,53 @@ def test_build_snapshot_stale_when_latest_published_at_is_null(tmp_path, isolate
     assert snapshot["freshness"]["missing"] is False
     assert snapshot["freshness"]["stale"] is True
     assert snapshot["coverage"]["latest_published_at_utc"] is None
+
+
+# --- Future publication timestamps / clock-skew tolerance -----------------------------
+
+
+def test_build_snapshot_future_timestamp_within_tolerance_is_normal_freshness(
+    tmp_path, isolated_env_file
+):
+    settings, builder = initialized_builder(tmp_path, isolated_env_file)
+    repo = NewsArticleRepository(settings=settings)
+    # Exactly at the 5-minute tolerance boundary (as_of + 5m).
+    repo.store_news_items([make_news_item(created_at="2026-08-24T12:05:00Z")])
+
+    snapshot = builder.build_snapshot("SPY")
+
+    assert snapshot["freshness"]["future_timestamp_detected"] is False
+    assert snapshot["freshness"]["stale"] is False
+    assert snapshot["coverage"]["latest_published_at_utc"] == "2026-08-24T12:05:00Z"
+
+
+def test_build_snapshot_future_timestamp_beyond_tolerance_flags_and_preserves_article(
+    tmp_path, isolated_env_file
+):
+    settings, builder = initialized_builder(tmp_path, isolated_env_file)
+    repo = NewsArticleRepository(settings=settings)
+    # One second beyond the 5-minute tolerance boundary.
+    repo.store_news_items([make_news_item(created_at="2026-08-24T12:05:01Z")])
+
+    snapshot = builder.build_snapshot("SPY")
+
+    assert snapshot["freshness"]["future_timestamp_detected"] is True
+    assert snapshot["freshness"]["stale"] is True
+    # The stored timestamp is preserved exactly, not discarded or altered.
+    assert snapshot["coverage"]["latest_published_at_utc"] == "2026-08-24T12:05:01Z"
+    assert snapshot["article_count_returned"] == 1
+    assert snapshot["articles"][0]["published_at_utc"] == "2026-08-24T12:05:01Z"
+
+
+def test_build_snapshot_empty_snapshot_future_timestamp_detected_is_false(
+    tmp_path, isolated_env_file
+):
+    settings = isolated_settings(tmp_path, isolated_env_file)
+    builder = NewsEvidenceBuilder(settings=settings, clock=fixed_clock(DEFAULT_AS_OF))
+
+    snapshot = builder.build_snapshot("SPY")
+
+    assert snapshot["freshness"]["future_timestamp_detected"] is False
 
 
 # --- Untrusted provider text preserved exactly -----------------------------------------

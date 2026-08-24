@@ -81,7 +81,8 @@ injected clock in tests).
   "freshness": {
     "stale_after_hours": 168,
     "missing": false,
-    "stale": false
+    "stale": false,
+    "future_timestamp_detected": false
   },
   "articles": [
     {
@@ -135,19 +136,26 @@ below), never sentiment, never an inferred category, never a model output.
   call.
 - **`provider_summary`** -- `null` when the provider did not report a
   summary for this article; otherwise the provider's summary text preserved
-  exactly as stored.
+  exactly as stored, **including** an empty string or a whitespace-only
+  string if that is what was stored.
 - **`content_scope`** -- `"headline_only"` when `provider_summary` is
-  `null`, otherwise `"headline_and_provider_summary"`. This tells a future
-  consumer how much text is actually available to reason about for this
-  article, without it having to inspect `provider_summary` itself.
+  `null`, an empty string, or a whitespace-only string; otherwise
+  `"headline_and_provider_summary"` (a substantive, non-whitespace summary).
+  This tells a future consumer how much text is actually available to
+  reason about for this article, without it having to inspect
+  `provider_summary` itself -- a blank summary is content-equivalent to no
+  summary at all for this purpose, even though the blank value itself is
+  still preserved unchanged in `provider_summary`.
 - **`headline`** / **`provider_summary`** -- preserved byte-for-byte as
-  stored. This module performs **no** HTML stripping, prompt-injection
-  filtering, truncation, whitespace normalization, or semantic
-  interpretation of either field. Any future consumer (e.g. a News Analyst
-  passing this data to a model) is responsible for treating this text as
-  untrusted, exactly as `OpenAIStructuredClient` already treats evidence
-  dicts passed to it (see
-  [docs/OPENAI_PROVIDER_BOUNDARY.md](OPENAI_PROVIDER_BOUNDARY.md) and
+  stored (this includes blank/whitespace-only summaries -- only
+  `content_scope`'s classification treats them as equivalent to "no
+  summary," the stored value itself is never altered or discarded). This
+  module performs **no** HTML stripping, prompt-injection filtering,
+  truncation, whitespace normalization, or semantic interpretation of
+  either field. Any future consumer (e.g. a News Analyst passing this data
+  to a model) is responsible for treating this text as untrusted, exactly
+  as `OpenAIStructuredClient` already treats evidence dicts passed to it
+  (see [docs/OPENAI_PROVIDER_BOUNDARY.md](OPENAI_PROVIDER_BOUNDARY.md) and
   [docs/MARKET_EVIDENCE_AGENT.md](MARKET_EVIDENCE_AGENT.md)).
 
 ### Article URLs and `audit_provenance`
@@ -176,21 +184,37 @@ labeling is a mitigation, not a guarantee (see
   not exist yet, e.g. before migration `0004` has been applied, or before
   the database file exists).
 - **`freshness.stale`** -- `true` if `missing` is `true`, if the latest
-  stored article has no `created_at` (publication timestamp unknown), or if
+  stored article has no `created_at` (publication timestamp unknown), if
   the latest stored `created_at` is more than `stale_after_hours` (168
   hours / 7 days, mirroring `MarketContextBuilder`'s `NEWS_STALE_AFTER`
-  rationale) old. This is a plain elapsed-time threshold, not a
-  market-calendar- or news-cadence-aware one -- it says "is this data fresh
-  by a fixed clock," not "is this data unexpectedly stale given how often
-  this symbol is normally covered."
+  rationale) old, or if `future_timestamp_detected` is `true` (see below).
+  This is a plain elapsed-time threshold, not a market-calendar- or
+  news-cadence-aware one -- it says "is this data fresh by a fixed clock,"
+  not "is this data unexpectedly stale given how often this symbol is
+  normally covered."
+- **`freshness.future_timestamp_detected`** -- `true` only when the latest
+  stored `created_at` across all stored articles for the symbol is *more
+  than* a fixed, documented 5-minute clock-skew tolerance
+  (`FUTURE_TIMESTAMP_TOLERANCE`) ahead of the snapshot's `as_of` instant.
+  `false` for an empty snapshot (`missing: true`), for a latest
+  `created_at` that is unknown (`null`), and for a latest `created_at` at
+  or before `as_of + 5 minutes` (ordinary clock skew, folded into the
+  normal elapsed-time freshness calculation above). When `true`, `stale` is
+  also forced `true`, but the article itself, its `published_at_utc`, and
+  `coverage.latest_published_at_utc` are **never** discarded, dropped, or
+  rewritten -- the implausible timestamp is reported exactly as stored, and
+  the snapshot only adds the explicit flag so a consumer can decide how to
+  treat it rather than silently trusting or silently discarding it.
 
 ## Ordering
 
 Articles are returned **newest-first** by `published_at_utc` (`created_at`,
-`NULLS LAST`), with `provider_article_id` (ascending) as a stable
-tie-breaker for articles sharing the same `created_at` -- so the returned
-order is fully deterministic and reproducible across repeated calls against
-the same stored data.
+`NULLS LAST`), tie-broken by the full remaining stored identity of a row --
+`provider` (ascending), then `provider_article_id` (ascending) -- so two
+articles from different providers sharing the same `created_at` (and even
+the same `provider_article_id`, which is only unique per provider) still
+sort identically across repeated calls against the same stored data. The
+returned order is fully deterministic and reproducible.
 
 ## Behavior with no stored data
 

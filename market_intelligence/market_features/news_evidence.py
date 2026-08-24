@@ -70,6 +70,14 @@ MAX_LIMIT = 20
 # actively covered symbol without flagging routine quiet periods as stale.
 NEWS_STALE_AFTER = timedelta(days=7)
 
+# A fixed, documented tolerance for clock skew between this process and a
+# news provider's own clock. A latest publication timestamp at or before
+# ``as_of + FUTURE_TIMESTAMP_TOLERANCE`` is treated as ordinary clock skew
+# and folded into the normal freshness calculation; anything beyond that is
+# implausible enough to flag explicitly (``future_timestamp_detected``)
+# rather than silently trusted or discarded.
+FUTURE_TIMESTAMP_TOLERANCE = timedelta(minutes=5)
+
 HEADLINE_ONLY_SCOPE = "headline_only"
 HEADLINE_AND_SUMMARY_SCOPE = "headline_and_provider_summary"
 
@@ -164,6 +172,7 @@ def _empty_snapshot(symbol: str, limit: int, as_of: datetime) -> dict[str, Any]:
             "stale_after_hours": _stale_after_hours(),
             "missing": True,
             "stale": True,
+            "future_timestamp_detected": False,
         },
         "articles": [],
         "audit_provenance": {
@@ -275,7 +284,7 @@ class NewsEvidenceBuilder:
                    summary, created_at, updated_at, retrieved_at, related_symbols
             FROM news_articles
             WHERE list_contains(related_symbols, ?)
-            ORDER BY created_at DESC NULLS LAST, provider_article_id ASC
+            ORDER BY created_at DESC NULLS LAST, provider ASC, provider_article_id ASC
             LIMIT ?
             """,
             [symbol, limit],
@@ -299,7 +308,9 @@ class NewsEvidenceBuilder:
 
             evidence_id = _evidence_id(provider, provider_article_id)
             content_scope = (
-                HEADLINE_AND_SUMMARY_SCOPE if summary is not None else HEADLINE_ONLY_SCOPE
+                HEADLINE_AND_SUMMARY_SCOPE
+                if summary is not None and summary.strip() != ""
+                else HEADLINE_ONLY_SCOPE
             )
 
             articles.append(
@@ -320,11 +331,16 @@ class NewsEvidenceBuilder:
             audit_articles.append({"evidence_id": evidence_id, "article_url": article_url})
 
         missing = total_count == 0
-        stale = (
-            missing
-            or latest_published is None
-            or (as_of - latest_published.replace(tzinfo=UTC)) > NEWS_STALE_AFTER
-        )
+        future_timestamp_detected = False
+        if missing or latest_published is None:
+            stale = True
+        else:
+            latest_published_utc = latest_published.replace(tzinfo=UTC)
+            if latest_published_utc > as_of + FUTURE_TIMESTAMP_TOLERANCE:
+                future_timestamp_detected = True
+                stale = True
+            else:
+                stale = (as_of - latest_published_utc) > NEWS_STALE_AFTER
 
         return {
             "snapshot_created_at_utc": _format_as_of(as_of),
@@ -340,6 +356,7 @@ class NewsEvidenceBuilder:
                 "stale_after_hours": _stale_after_hours(),
                 "missing": missing,
                 "stale": stale,
+                "future_timestamp_detected": future_timestamp_detected,
             },
             "articles": articles,
             "audit_provenance": {
