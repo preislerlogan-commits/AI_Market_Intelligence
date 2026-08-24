@@ -150,7 +150,17 @@ when no supplied article is sufficiently relevant, and `Settings`' own
 corrected to 4096/120) — see the same Status entry and
 [docs/NEWS_ANALYST.md](docs/NEWS_ANALYST.md).** Beyond these two narrow
 agents, no other AI analysis or agent orchestration (in the AI-agent sense)
-exists yet.
+exists yet. A read-only Macro Evidence Snapshot layer
+(`market_intelligence/market_features/macro_evidence.py`,
+`scripts/build_macro_evidence.py`) has also since been added (2026-08-24,
+code/tests/docs only -- see Status below and
+[docs/MACRO_EVIDENCE_SNAPSHOT.md](docs/MACRO_EVIDENCE_SNAPSHOT.md)),
+mirroring `MarketContextBuilder`'s/`NewsEvidenceBuilder`'s pattern for
+already-stored FRED macro observations. **This is infrastructure for a
+future Macro Analyst agent, not an agent itself** -- it makes no model
+request, no FRED request, and no prediction, market-regime label, or
+transmission-mechanism inference of any kind, and it has not been run
+against the real local database as part of this change.
 
 ## Status
 
@@ -1555,6 +1565,105 @@ exists yet.
   live OpenAI request, DuckDB access/modification, commit, or push was made
   as part of this change.
 
+- **Macro Evidence Snapshot layer added (2026-08-24, code/tests/docs only;
+  read-only, no database write, no live provider request, no OpenAI/
+  Anthropic call).** A new module,
+  `market_intelligence/market_features/macro_evidence.py`
+  (`MacroEvidenceBuilder`), and a companion CLI,
+  `scripts/build_macro_evidence.py`, add a strictly validated,
+  deterministic, read-only builder that assembles exactly one JSON-ready
+  snapshot dict from data already stored in `macro_observations` (migration
+  `0006`) -- infrastructure for a future Macro Analyst agent, not an AI
+  agent or model request itself. It makes no network request of any kind,
+  opens the database only via `duckdb.connect(path, read_only=True)`, never
+  writes a row or applies a migration, and imports only one small,
+  already-reviewed read-only validation pair from `data_connectors/`
+  (`normalize_series_id`/`FredInvalidSeriesIdError`) -- no connector HTTP
+  client, storage-repository write path, or model client is imported. It
+  never labels a series bullish/bearish, never classifies a market regime,
+  never infers a rate-cut/hike direction, never predicts, never describes a
+  transmission mechanism, and never recommends anything (including options
+  language); it performs no transformation, interpolation, forward-filling,
+  seasonal adjustment, or derived-change calculation of any kind.
+
+  The requested FRED series IDs are strictly validated and normalized
+  before any DuckDB connection is opened: a bare string or boolean passed
+  as the series collection is rejected (not treated as a sequence), an
+  empty selection is rejected, more than `MAX_SERIES_IDS` (`10`) series is
+  rejected, each entry is validated via the same `normalize_series_id`
+  used by `FredMacroDataClient`, and -- unlike `MarketContextBuilder`'s
+  macro-series handling -- a duplicate series ID *after* normalization
+  (e.g. `"fedfunds"` and `"FEDFUNDS"`) is rejected outright rather than
+  silently deduplicated. The normalized result preserves the caller's
+  requested order (never sorted), so the snapshot's `series` array always
+  reflects the order actually requested. Default series: `FEDFUNDS`.
+
+  **Vintage handling:** a series' full stored identity is `(provider,
+  series_id, observation_date, realtime_start, realtime_end)`. For each
+  requested series, exactly one row is selected via a fixed, documented
+  ordering -- `ORDER BY observation_date DESC, realtime_start DESC,
+  realtime_end DESC LIMIT 1` -- i.e. the latest observation date on file,
+  then the most recently reported revision of that date. Every field on
+  the resulting entry comes from that single chosen row; fields from a
+  different vintage are never mixed in, and `realtime_start`/
+  `realtime_end` are always reported explicitly so a future consumer can
+  audit exactly which revision window was selected.
+
+  **Freshness:** a fixed, documented `stale_after_days` threshold (`90`
+  elapsed days, chosen as a conservative default suitable for monthly
+  macro observations, mirroring `MarketContextBuilder`'s `MACRO_STALE_AFTER`
+  rationale) is reported on every series entry; a series under this
+  threshold is not thereby claimed to be economically current, only "not
+  yet flagged stale by this fixed clock." A future-dated observation is
+  flagged (`future_date_detected`, which also forces `stale: true`) only
+  beyond a small, fixed, documented one-day tolerance
+  (`FUTURE_DATE_TOLERANCE_DAYS`) -- absorbing ordinary date/timezone
+  rounding around a calendar-only `observation_date` without hiding a
+  genuinely implausible future-dated observation -- and the implausible
+  date itself is always preserved exactly, never discarded or rewritten.
+  FRED's own `"."` missing-observation marker is preserved as
+  `latest_value: null`, `latest_is_missing: true`, distinct from
+  `has_stored_observation: false` (no row at all).
+
+  Every entry's stable `evidence_id` (prefixed `macro_`, a truncated
+  SHA-256 hash) is derived only from the chosen row's full stored identity
+  -- provider, series ID, observation date, and realtime window --
+  **never from its value**, so re-selecting the same stored vintage always
+  produces the same ID and a genuinely different vintage always produces a
+  different one. A missing database file, a missing `macro_observations`
+  table, or a requested series with no stored observation all produce a
+  valid, non-crashing snapshot (`has_stored_observation: false`,
+  `freshness.missing`/`freshness.stale` both `true`), mirroring
+  `MarketContextBuilder`'s/`NewsEvidenceBuilder`'s established behavior.
+  The database connection is always closed on every code path, and a
+  close() failure never masks an earlier, already-sanitized read failure.
+  Aggregate `flags.missing_series`/`flags.stale_series`/
+  `flags.future_dated_series` summarize the per-series flags across the
+  whole requested set. See
+  [docs/MACRO_EVIDENCE_SNAPSHOT.md](docs/MACRO_EVIDENCE_SNAPSHOT.md) for
+  the full field contract and known limitations.
+
+  Covered by 40 tests (temporary DuckDB databases only; no live network
+  access; no access to the real repository database) covering: input
+  validation before any DuckDB access (non-sequence, boolean, empty,
+  excessive count, malformed ID, boolean entry, duplicate-after-
+  normalization), missing database/table/series, deterministic requested
+  ordering, partial coverage across a mixed requested set, latest-
+  observation/latest-vintage selection (including that vintages are never
+  combined), missing-value preservation, staleness at/beyond the 90-day
+  threshold, future-date detection at/beyond the one-day tolerance,
+  evidence-ID stability and identity-not-value derivation, aggregate flag
+  correctness, coverage/missing-observation counts, Decimal/date
+  serialization, connection closure/error masking, sanitized CLI failures
+  (including a repeatable `--series` argument and rejected duplicates), and
+  proof of no network/model imports. Full test suite: 1607 passed (up from
+  1567). `ruff check .` and `git diff --check` both pass. This has **not**
+  been run against the real local database as part of this change (a
+  read-only operation with no separate authorization sought as part of
+  this task). No migration, dependency, agent, prompt, OpenAI/FRED call,
+  scheduling, persistence, direction, prediction, or trading functionality
+  was added.
+
 ## Next Planned Work
 
 1. Data connector design — read-only Alpaca market-data, Alpaca news,
@@ -1809,6 +1918,20 @@ exists yet.
     `docs/MARKET_EVIDENCE_EVALUATIONS.md`), and any decision to build
     further agents on this same pattern all remain separate, future, and
     not yet authorized.
+
+18. **Macro Evidence Snapshot layer** -- done, code/tests/docs only (see
+    above): `MacroEvidenceBuilder`
+    (`market_intelligence/market_features/macro_evidence.py`) and
+    `scripts/build_macro_evidence.py` exist, are read-only end to end, and
+    are covered by 40 tests against temporary DuckDB databases only. Not
+    yet run against the real database as part of this change (a read-only
+    operation, so nothing to authorize or roll back, but no separate
+    authorization was sought as part of this task either). Remaining
+    future work: any actual Macro Analyst agent that consumes this
+    snapshot (mirroring `MarketEvidenceAgent`'s/`NewsAnalyst`'s pattern),
+    any decision to add derived macro features (e.g. period-over-period
+    change) beyond this bounded set, and any decision to expand this
+    snapshot's scope all remain separate, future, and not yet authorized.
 
 ## Notes
 
