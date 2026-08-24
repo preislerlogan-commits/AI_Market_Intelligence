@@ -5,12 +5,19 @@ This document describes the OpenAI provider boundary added under
 infrastructure only — see [PROJECT_STATE.md](../PROJECT_STATE.md) for what
 has (and has not) actually been exercised.
 
-**Status: code and mocked tests only. No live OpenAI request or
-connectivity check has been made from this branch.** No agent, prompt,
-market bias, forecast, recommendation, or brokerage integration is built on
-top of this boundary — it is a single, narrow, defensive client for one
-structured-output request at a time, intended as groundwork for a future,
-separately reviewed agent.
+**Status (as of 2026-08-23): code and mocked tests only. No live OpenAI
+request or connectivity check has been made from this branch.** No agent,
+prompt, market bias, forecast, recommendation, or brokerage integration is
+built on top of this boundary — it is a single, narrow, defensive client for
+one structured-output request at a time, intended as groundwork for a
+future, separately reviewed agent.
+
+**This "no live request" status has since been superseded: on 2026-08-24, a
+first authorized live connectivity check succeeded — see "First authorized
+live connectivity check (2026-08-24)" below.** That check confirms live
+connectivity and response normalization only; it remains true, unchanged by
+that check, that no agent, prompt, market bias, forecast, recommendation, or
+brokerage integration is built on top of this boundary.
 
 ## Purpose and scope
 
@@ -183,15 +190,55 @@ category, using an injected fake SDK client (`sdk_client=`) that records
 call kwargs and returns/raises canned results — no real `openai.OpenAI`
 client is ever constructed and no network call is ever made.
 `market_intelligence/tests/test_settings.py` covers the three new settings
-fields' defaults and bounds. No live OpenAI connectivity check exists in
-this branch (unlike the Alpaca/FRED connectors, which each have a
-`check_connection` method and a companion script) — that remains separate,
-future, and not yet authorized.
+fields' defaults and bounds. **As of 2026-08-23, no live OpenAI connectivity
+check existed in this branch** (unlike the Alpaca/FRED connectors, which
+each have a `check_connection` method and a companion script) — that
+remained separate, future, and not yet authorized. **This has since been
+superseded: see "First authorized live connectivity check (2026-08-24)"
+below.** That check used the existing `generate()` method directly, with a
+minimal fixed instructions string and a minimal evidence dict — no dedicated
+`check_connection` method or companion script has been added to this
+module, so this remains the only way to exercise live connectivity.
+
+## First authorized live connectivity check (2026-08-24)
+
+On 2026-08-24, a separately authorized, minimal live connectivity check was
+run against the real OpenAI API using the existing `OpenAIStructuredClient`
+and real local `.env` credentials — no code, test, configuration, `.env`, or
+migration was changed to run it, and no further live request has been made
+since. The request used fixed, minimal developer instructions and an
+evidence dict containing only `{"test_type": "provider_connectivity",
+"contains_market_data": false}`. No market data, news, credentials, prompts
+from providers, predictions, recommendations, or agent analysis were sent in
+the request or produced in the response.
+
+Sanitized results recorded here (per the sanitization contract in
+"Sanitized error categories"/`StructuredOutputResult` above, no raw
+provider output, response ID value, or credential is reproduced):
+
+- `configured=True`
+- connection outcome: `status="completed"`
+- `model="gpt-5-mini"`
+- parsed structured output present: `True`
+- a sanitized `response_id` matching OpenAI's bounded `resp_...` ID shape
+  was returned (present, but the value itself is not reproduced here)
+- `input_tokens=143`, `output_tokens=63`, `total_tokens=206`
+
+**This confirms only that the existing OpenAI provider boundary can reach
+the OpenAI API, authenticate with the configured API key, and receive and
+parse one minimal structured-output response end to end.** It does not
+confirm anything about model output quality, latency under load, rate-limit
+behavior, cost at scale, or any agent, forecast, recommendation, or
+market-analysis capability — none of that was exercised by this check, and
+no such capability exists in this branch.
 
 ## Known limitations
 
-- No live request or connectivity check has been made against the real
-  OpenAI API from this branch.
+- **As of 2026-08-23:** no live request or connectivity check had been made
+  against the real OpenAI API from this branch. **Superseded 2026-08-24 —
+  see "First authorized live connectivity check (2026-08-24)" above.** That
+  check confirmed connectivity and response normalization only, not scale,
+  cost, latency, or any agent/analysis capability.
 - No agent prompt, market bias, forecast, recommendation, or brokerage
   integration exists here — this is provider-boundary infrastructure only.
 - `max_retries=0` is fixed on the constructed SDK client, so a request
