@@ -8,6 +8,7 @@ settings file lookup is pointed at a path that does not exist.
 
 from pathlib import Path
 
+import pydantic
 import pytest
 
 from market_intelligence.config.settings import REPO_ROOT, Settings
@@ -157,6 +158,49 @@ def test_provider_status_treats_whitespace_only_credential_as_not_configured(
         "openai": False,
         "anthropic": False,
     }
+
+
+def test_openai_settings_defaults(isolated_settings_env):
+    settings = make_settings(isolated_settings_env)
+
+    assert settings.openai_model == "gpt-5-mini"
+    assert settings.openai_request_timeout_seconds == 30.0
+    assert settings.openai_max_output_tokens == 2048
+
+
+def test_openai_model_rejects_blank_value(monkeypatch, isolated_settings_env):
+    monkeypatch.setenv("OPENAI_MODEL", "   ")
+
+    with pytest.raises(pydantic.ValidationError):
+        make_settings(isolated_settings_env)
+
+
+def test_openai_request_timeout_seconds_rejects_non_positive(monkeypatch, isolated_settings_env):
+    monkeypatch.setenv("OPENAI_REQUEST_TIMEOUT_SECONDS", "0")
+
+    with pytest.raises(pydantic.ValidationError):
+        make_settings(isolated_settings_env)
+
+
+def test_openai_request_timeout_seconds_rejects_excessive_value(monkeypatch, isolated_settings_env):
+    monkeypatch.setenv("OPENAI_REQUEST_TIMEOUT_SECONDS", "121")
+
+    with pytest.raises(pydantic.ValidationError):
+        make_settings(isolated_settings_env)
+
+
+def test_openai_max_output_tokens_rejects_non_positive(monkeypatch, isolated_settings_env):
+    monkeypatch.setenv("OPENAI_MAX_OUTPUT_TOKENS", "0")
+
+    with pytest.raises(pydantic.ValidationError):
+        make_settings(isolated_settings_env)
+
+
+def test_openai_max_output_tokens_rejects_excessive_value(monkeypatch, isolated_settings_env):
+    monkeypatch.setenv("OPENAI_MAX_OUTPUT_TOKENS", "16001")
+
+    with pytest.raises(pydantic.ValidationError):
+        make_settings(isolated_settings_env)
 
 
 def test_env_example_has_placeholders_for_expected_credentials():

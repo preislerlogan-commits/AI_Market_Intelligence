@@ -642,6 +642,55 @@ analysis, or trading execution. No AI analysis or agent orchestration
   only already-stored provider data plus this module's own
   provenance/coverage/staleness bookkeeping about it.
 
+- **OpenAI structured-output provider boundary added (2026-08-23, code/tests
+  only; no live OpenAI request or connectivity check made as part of this
+  change).** A new package,
+  `market_intelligence/model_clients/`, adds `OpenAIStructuredClient`
+  (`market_intelligence/model_clients/openai_structured.py`) — a minimal,
+  defensive wrapper around the official OpenAI Python SDK's Responses API
+  (`client.responses.parse`) using native Pydantic Structured Outputs. The
+  official `openai` package was added as a runtime dependency
+  (`pyproject.toml`, `openai>=1.99.0` as a compatible lower bound; installed
+  version at the time of writing is `3.3.1`, which depends on `httpx2`, the
+  official SDK's current HTTP-layer dependency per PyPI's published package
+  metadata for `openai`).
+
+  `OpenAIStructuredClient.generate()` accepts exactly three inputs — fixed
+  developer instructions (a trusted string authored by calling code, never
+  derived from untrusted data), one bounded JSON-ready evidence dict, and
+  one explicitly supplied Pydantic output model — and makes one request
+  with a fixed, non-caller-overridable shape: the single model configured
+  via the new `Settings.openai_model` (default `"gpt-5-mini"`), `store=False`,
+  no tools (no function calling, web search, file search, or code
+  execution), no conversation persistence, and no caller-supplied
+  `base_url`/organization/project/headers. The API key comes only from the
+  existing `Settings.openai_api_key` (`SecretStr`). All limits and evidence
+  size/shape are validated before the OpenAI SDK client is constructed or
+  any request is made; evidence is always serialized deterministically and
+  wrapped with a fixed, module-owned label and safety appendix so it can
+  never override the developer instructions, including when it contains
+  news headlines or other third-party text. The normalized
+  `StructuredOutputResult` never raises for a model refusal or an
+  incomplete response (both are reported via a `status` category, never
+  with refusal text); a fixed, sanitized `OpenAIStructuredError` subclass is
+  raised for missing configuration, timeout, connection failure, rate
+  limit, authentication failure, parse failure, and any other unexpected
+  SDK failure or unrecognized response shape — no raised error ever
+  includes the API key, request body, evidence, headline, raw model output,
+  raw SDK exception message, URL, or header. Two new non-secret `Settings`
+  fields (`openai_request_timeout_seconds`, default 30s, bounded to
+  `(0, 120]`; `openai_max_output_tokens`, default 2048, bounded to
+  `[1, 16000]`) plus `openai_model` are documented in `.env.example`
+  (`.env` itself was not touched). The SDK client is injectable
+  (`sdk_client=`) so tests never construct a real `openai.OpenAI` client or
+  make a network call. See
+  [docs/OPENAI_PROVIDER_BOUNDARY.md](docs/OPENAI_PROVIDER_BOUNDARY.md) for
+  the full contract. This adds no agent prompt, market bias, prediction,
+  recommendation, brokerage integration, persistence, migration, dashboard,
+  scheduler, Anthropic client, retry framework, or general agent
+  framework — it is a single, narrow provider boundary intended as
+  groundwork for a future, separately reviewed agent.
+
 ## Next Planned Work
 
 1. Data connector design — read-only Alpaca market-data, Alpaca news,
@@ -815,6 +864,19 @@ analysis, or trading execution. No AI analysis or agent orchestration
     logic was added as part of this change; it was not run against the
     real repository database (a read-only operation, so nothing to
     authorize or roll back).
+
+14. **OpenAI structured-output provider boundary added (2026-08-23,
+    code/tests/docs only; no live OpenAI request or connectivity check made
+    as part of this change).** `OpenAIStructuredClient`
+    (`market_intelligence/model_clients/openai_structured.py`) and two new
+    non-secret `Settings` fields exist (see above and
+    [docs/OPENAI_PROVIDER_BOUNDARY.md](docs/OPENAI_PROVIDER_BOUNDARY.md)),
+    covered by 37 mocked tests using an injected fake SDK client (no real
+    `openai.OpenAI` client is ever constructed in tests, no network call is
+    ever made). Remaining future work: any live connectivity check, any
+    agent that actually calls this client with real developer instructions
+    and evidence, and any decision to build forecast/recommendation logic
+    on top of it all remain separate, future, and not yet authorized.
 
 ## Notes
 

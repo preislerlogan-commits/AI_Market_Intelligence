@@ -8,10 +8,12 @@ instantiation time, and no credential value is ever printed or logged.
 
 from pathlib import Path
 
-from pydantic import SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+DEFAULT_OPENAI_MODEL = "gpt-5-mini"
 
 
 class Settings(BaseSettings):
@@ -46,6 +48,22 @@ class Settings(BaseSettings):
     fred_api_key: SecretStr | None = None
     openai_api_key: SecretStr | None = None
     anthropic_api_key: SecretStr | None = None
+
+    # Non-secret OpenAI request configuration. The API key is configured
+    # exclusively via ``openai_api_key`` above (SecretStr) — never via these
+    # fields, and never accepted per-request from a caller.
+    openai_model: str = DEFAULT_OPENAI_MODEL
+    openai_request_timeout_seconds: float = Field(default=30.0, gt=0, le=120)
+    openai_max_output_tokens: int = Field(default=2048, ge=1, le=16000)
+
+    @field_validator("openai_model")
+    @classmethod
+    def _validate_openai_model(cls, value: str) -> str:
+        """Reject a blank/whitespace-only configured model name."""
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("openai_model must not be blank.")
+        return trimmed
 
     @staticmethod
     def _is_configured(value: SecretStr | None) -> bool:
