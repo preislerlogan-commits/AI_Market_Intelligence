@@ -371,6 +371,93 @@ def test_build_report_partial_session_reports_missing_timestamps(tmp_path, isola
     assert report["regular_session"]["latest_close_is_full_session_close"] is False
 
 
+def _full_session_categorized_bars(day: date = SESSION_DATE) -> list:
+    """78 ``_CategorizedBar`` objects covering every expected regular-session slot.
+
+    Built directly against ``_build_report_dict`` (bypassing storage) because
+    ``market_bars`` has a primary key on (identity, bar_timestamp), so a
+    genuine duplicate timestamp can never reach storage through
+    ``BarRepository`` -- the only way to exercise the duplicate-detection
+    branch is to construct bars directly.
+    """
+    bars = []
+    total_minutes = 9 * 60 + 30
+    for i in range(EXPECTED_SLOT_COUNT):
+        hour, minute = divmod(total_minutes, 60)
+        et_dt = datetime(day.year, day.month, day.day, hour, minute, tzinfo=EASTERN)
+        bars.append(
+            session_quality._CategorizedBar(
+                bar_timestamp_utc=et_dt.astimezone(UTC),
+                et_datetime=et_dt,
+                open=Decimal("100"),
+                high=Decimal("101"),
+                low=Decimal("99"),
+                close=Decimal("100") + Decimal(i) * Decimal("0.01"),
+                volume=1000,
+                vwap=Decimal("100.2"),
+            )
+        )
+        total_minutes += 5
+    return bars
+
+
+def _extra_categorized_bar(day: date, hour: int, minute: int):
+    et_dt = datetime(day.year, day.month, day.day, hour, minute, tzinfo=EASTERN)
+    return session_quality._CategorizedBar(
+        bar_timestamp_utc=et_dt.astimezone(UTC),
+        et_datetime=et_dt,
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+        volume=500,
+        vwap=Decimal("100"),
+    )
+
+
+def test_build_report_dict_all_78_slots_plus_unexpected_bar_is_incomplete():
+    bars = _full_session_categorized_bars()
+    # Off-grid time (09:32) within the regular window but not a valid 5-minute slot.
+    bars.append(_extra_categorized_bar(SESSION_DATE, 9, 32))
+
+    report = session_quality._build_report_dict(
+        symbol="SPY",
+        identity=None,
+        session_date=SESSION_DATE,
+        session_date_source="explicit",
+        bars=bars,
+        generated_at=datetime.now(UTC),
+    )
+
+    completeness = report["completeness"]
+    assert completeness["observed_regular_session_slot_count"] == EXPECTED_SLOT_COUNT
+    assert len(completeness["unexpected_or_duplicate_timestamps_utc"]) == 1
+    assert completeness["complete"] is False
+    assert report["regular_session"]["latest_close_is_full_session_close"] is False
+
+
+def test_build_report_dict_all_78_slots_plus_duplicate_timestamp_is_incomplete():
+    bars = _full_session_categorized_bars()
+    # Two bars sharing the same (premarket) timestamp -- a duplicate, not just off-grid.
+    bars.append(_extra_categorized_bar(SESSION_DATE, 9, 0))
+    bars.append(_extra_categorized_bar(SESSION_DATE, 9, 0))
+
+    report = session_quality._build_report_dict(
+        symbol="SPY",
+        identity=None,
+        session_date=SESSION_DATE,
+        session_date_source="explicit",
+        bars=bars,
+        generated_at=datetime.now(UTC),
+    )
+
+    completeness = report["completeness"]
+    assert completeness["observed_regular_session_slot_count"] == EXPECTED_SLOT_COUNT
+    assert len(completeness["unexpected_or_duplicate_timestamps_utc"]) == 1
+    assert completeness["complete"] is False
+    assert report["regular_session"]["latest_close_is_full_session_close"] is False
+
+
 # --- Premarket / after-hours -----------------------------------------------------------
 
 
@@ -572,10 +659,150 @@ def test_build_report_is_json_serializable_with_fixed_decimal_scale(tmp_path, is
     assert '"latest_close": "123.400000"' in serialized
 
 
-# --- Connection-close error handling --------------------------------------------------------
+# --- Connection-closure guarantees -----------------------------------------------------------
 
 _CLOSE_FAILURE_MARKER = "simulated close failure C:\\secret\\path SELECT * FROM market_bars"
 _READ_FAILURE_MARKER = "simulated read failure C:\\secret\\path SELECT * FROM market_bars"
+
+
+class _CloseTrackingConnection:
+    """Wraps a real connection and records whether ``close()`` was called."""
+
+    def __init__(self, real_connection):
+        self._real_connection = real_connection
+        self.closed = False
+
+    def __getattr__(self, name):
+        return getattr(self._real_connection, name)
+
+    def close(self):
+        self.closed = True
+        self._real_connection.close()
+
+
+def _patch_connect_with_tracking(monkeypatch) -> list[_CloseTrackingConnection]:
+    connections: list[_CloseTrackingConnection] = []
+    real_connect = session_quality.duckdb.connect
+
+    def fake_connect(*args, **kwargs):
+        wrapped = _CloseTrackingConnection(real_connect(*args, **kwargs))
+        connections.append(wrapped)
+        return wrapped
+
+    monkeypatch.setattr(session_quality.duckdb, "connect", fake_connect)
+    return connections
+
+
+class _ReadFailingConnection:
+    """Wraps a real connection: first ``execute`` succeeds, later ones fail; close succeeds."""
+
+    def __init__(self, real_connection):
+        self._real_connection = real_connection
+        self._execute_count = 0
+        self.closed = False
+
+    def __getattr__(self, name):
+        return getattr(self._real_connection, name)
+
+    def execute(self, *args, **kwargs):
+        self._execute_count += 1
+        if self._execute_count == 1:
+            return self._real_connection.execute(*args, **kwargs)
+        raise duckdb.Error(_READ_FAILURE_MARKER)
+
+    def close(self):
+        self.closed = True
+        self._real_connection.close()
+
+
+def test_build_report_closes_connection_when_table_missing(
+    tmp_path, isolated_env_file, monkeypatch
+):
+    settings = isolated_settings(tmp_path, isolated_env_file)
+    builder = SessionQualityBuilder(settings=settings)
+    database_path = default_database_path(settings)
+    database_path.parent.mkdir(parents=True, exist_ok=True)
+    # Create the database file itself without ever creating market_bars.
+    duckdb.connect(str(database_path)).close()
+    assert database_path.exists()
+
+    connections = _patch_connect_with_tracking(monkeypatch)
+
+    report = builder.build_report("SPY")
+
+    assert report["completeness"]["missing_data"] is True
+    assert len(connections) == 1
+    assert connections[0].closed is True
+
+
+def test_build_report_closes_connection_when_identity_not_found(
+    tmp_path, isolated_env_file, monkeypatch
+):
+    settings, builder = initialized_builder(tmp_path, isolated_env_file)
+    repo = BarRepository(settings=settings)
+    repo.store_bars([make_bar(symbol="QQQ", timestamp=et_to_utc_str(SESSION_DATE, 9, 30))])
+
+    connections = _patch_connect_with_tracking(monkeypatch)
+
+    report = builder.build_report("SPY")
+
+    assert report["bar_provenance"]["provider"] is None
+    assert len(connections) == 1
+    assert connections[0].closed is True
+
+
+def test_build_report_closes_connection_when_no_session_date_available(
+    tmp_path, isolated_env_file, monkeypatch
+):
+    settings, builder = initialized_builder(tmp_path, isolated_env_file)
+    repo = BarRepository(settings=settings)
+    # Only a premarket bar -- never within the 09:30-15:55 regular window.
+    repo.store_bars([make_bar(timestamp=et_to_utc_str(SESSION_DATE, 8, 0))])
+
+    connections = _patch_connect_with_tracking(monkeypatch)
+
+    report = builder.build_report("SPY")
+
+    assert report["session_date_source"] == "none_available"
+    assert len(connections) == 1
+    assert connections[0].closed is True
+
+
+def test_build_report_closes_connection_on_success(tmp_path, isolated_env_file, monkeypatch):
+    settings, builder = initialized_builder(tmp_path, isolated_env_file)
+    repo = BarRepository(settings=settings)
+    repo.store_bars(full_session_bars())
+
+    connections = _patch_connect_with_tracking(monkeypatch)
+
+    report = builder.build_report("SPY", session_date=SESSION_DATE.isoformat())
+
+    assert report["completeness"]["complete"] is True
+    assert len(connections) == 1
+    assert connections[0].closed is True
+
+
+def test_build_report_closes_connection_on_read_failure(tmp_path, isolated_env_file, monkeypatch):
+    settings, builder = initialized_builder(tmp_path, isolated_env_file)
+    repo = BarRepository(settings=settings)
+    repo.store_bars([make_bar(timestamp=et_to_utc_str(SESSION_DATE, 9, 30))])
+
+    real_connect = session_quality.duckdb.connect
+    connections: list[_ReadFailingConnection] = []
+
+    def fake_connect(*args, **kwargs):
+        wrapped = _ReadFailingConnection(real_connect(*args, **kwargs))
+        connections.append(wrapped)
+        return wrapped
+
+    monkeypatch.setattr(session_quality.duckdb, "connect", fake_connect)
+
+    with pytest.raises(SessionQualityError) as exc_info:
+        builder.build_report("SPY")
+
+    assert _READ_FAILURE_MARKER not in str(exc_info.value)
+    assert len(connections) == 1
+    assert connections[0].closed is True
 
 
 class _CloseFailingConnection:

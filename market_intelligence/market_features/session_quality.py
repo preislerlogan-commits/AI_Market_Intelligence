@@ -232,24 +232,36 @@ class SessionQualityBuilder:
                     "WHERE table_name = 'market_bars'"
                 ).fetchone()[0]
                 if not table_exists:
-                    return _empty_report(normalized_symbol, requested_session_date, generated_at)
-
-                identity = self._resolve_identity(connection, normalized_symbol)
-                if identity is None:
-                    return _empty_report(normalized_symbol, requested_session_date, generated_at)
-
-                effective_session_date, session_date_source = self._resolve_session_date(
-                    connection, identity, requested_session_date
-                )
-                if effective_session_date is None:
-                    return _empty_report(
-                        normalized_symbol,
-                        requested_session_date,
-                        generated_at,
-                        identity=identity,
-                    )
-
-                bars = self._fetch_same_date_bars(connection, identity, effective_session_date)
+                    result = _empty_report(normalized_symbol, requested_session_date, generated_at)
+                else:
+                    identity = self._resolve_identity(connection, normalized_symbol)
+                    if identity is None:
+                        result = _empty_report(
+                            normalized_symbol, requested_session_date, generated_at
+                        )
+                    else:
+                        effective_session_date, session_date_source = self._resolve_session_date(
+                            connection, identity, requested_session_date
+                        )
+                        if effective_session_date is None:
+                            result = _empty_report(
+                                normalized_symbol,
+                                requested_session_date,
+                                generated_at,
+                                identity=identity,
+                            )
+                        else:
+                            bars = self._fetch_same_date_bars(
+                                connection, identity, effective_session_date
+                            )
+                            result = _build_report_dict(
+                                symbol=normalized_symbol,
+                                identity=identity,
+                                session_date=effective_session_date,
+                                session_date_source=session_date_source,
+                                bars=bars,
+                                generated_at=generated_at,
+                            )
             except duckdb.Error:
                 raise SessionQualityError(
                     "Failed to read session quality data from local storage."
@@ -268,14 +280,7 @@ class SessionQualityBuilder:
                     "Failed to close local storage connection."
                 ) from None
 
-        return _build_report_dict(
-            symbol=normalized_symbol,
-            identity=identity,
-            session_date=effective_session_date,
-            session_date_source=session_date_source,
-            bars=bars,
-            generated_at=generated_at,
-        )
+        return result
 
     @staticmethod
     def _normalize_symbol(symbol: str) -> str:
@@ -490,7 +495,11 @@ def _build_report_dict(
                 missing_expected_timestamps_utc.append(_utc_timestamp_str(expected_utc))
 
     observed_count = len(regular_bars)
-    complete = session_date is not None and observed_count == EXPECTED_SLOT_COUNT
+    complete = (
+        session_date is not None
+        and observed_count == EXPECTED_SLOT_COUNT
+        and not unexpected_or_duplicate
+    )
     missing_data = observed_count == 0
     partial_session = 0 < observed_count < EXPECTED_SLOT_COUNT
 
