@@ -4,7 +4,7 @@ This document is the **authoritative source of truth** for the current status
 of AI Market Intelligence. It must be read before beginning any work in this
 repository, and updated whenever the project's status materially changes.
 
-Last updated: 2026-08-23
+Last updated: 2026-08-24
 
 ## Current Phase
 
@@ -73,7 +73,13 @@ orchestration run then succeeded the same day** (see Status below) —
 this confirms one controlled, explicitly authorized orchestrated
 ingestion run; it does not confirm scheduling, continuous or unattended
 operation, dataset completeness, prediction, agent intelligence, options
-analysis, or trading execution. No AI analysis or agent orchestration
+analysis, or trading execution. A first authorized live OpenAI
+structured-output provider connectivity check has also since succeeded
+(2026-08-24, see Status below, superseding the earlier "no live OpenAI
+request" status) — this confirms only that the existing OpenAI provider
+boundary can reach OpenAI, authenticate, and receive/parse one minimal
+structured-output response; it is not an agent, prediction, recommendation,
+or market-analysis capability. No AI analysis or agent orchestration
 (in the AI-agent sense) exists yet.
 
 ## Status
@@ -706,6 +712,41 @@ analysis, or trading execution. No AI analysis or agent orchestration
   framework — it is a single, narrow provider boundary intended as
   groundwork for a future, separately reviewed agent.
 
+  **This "code and mocked tests only, no live OpenAI request" status
+  reflects the state as of 2026-08-23. It has since been superseded — see
+  the "First authorized live OpenAI connectivity check" entry immediately
+  below** — but the underlying claims that remain true (no agent, prompt,
+  market bias, forecast, recommendation, brokerage integration, or general
+  agent framework exists on top of this boundary) are not retracted by that
+  check.
+
+- **First authorized live OpenAI connectivity check (2026-08-24).** A
+  separately authorized, minimal live connectivity check was run against
+  the real OpenAI API using the existing `OpenAIStructuredClient` and real
+  local `.env` credentials, via a minimal fixed instructions string and an
+  evidence dict containing only `{"test_type": "provider_connectivity",
+  "contains_market_data": false}`. No market data, news, credentials,
+  prompts from providers, predictions, recommendations, or agent analysis
+  were sent in the request or produced in the response, and no code, test,
+  configuration, `.env`, or migration was changed to run it.
+
+  Sanitized results: `configured=True`, connection outcome
+  `status="completed"`, `model="gpt-5-mini"`, parsed structured output
+  present (`True`), a sanitized `response_id` matching OpenAI's bounded
+  `resp_...` ID shape was returned (present, but the value itself is not
+  reproduced in this document, consistent with this client's sanitization
+  contract), `input_tokens=143`, `output_tokens=63`, `total_tokens=206`.
+
+  **This confirms only that the existing OpenAI provider boundary can reach
+  the OpenAI API, authenticate with the configured API key, and receive and
+  parse one minimal structured-output response end to end.** It does not
+  confirm model output quality, latency under load, rate-limit behavior,
+  cost at scale, or any agent, forecast, recommendation, or market-analysis
+  capability — none of that was exercised by this check, and none of it
+  exists in this repository. See
+  [docs/OPENAI_PROVIDER_BOUNDARY.md](docs/OPENAI_PROVIDER_BOUNDARY.md) for
+  full detail.
+
 ## Next Planned Work
 
 1. Data connector design — read-only Alpaca market-data, Alpaca news,
@@ -888,10 +929,16 @@ analysis, or trading execution. No AI analysis or agent orchestration
     [docs/OPENAI_PROVIDER_BOUNDARY.md](docs/OPENAI_PROVIDER_BOUNDARY.md)),
     covered by 37 mocked tests using an injected fake SDK client (no real
     `openai.OpenAI` client is ever constructed in tests, no network call is
-    ever made). Remaining future work: any live connectivity check, any
-    agent that actually calls this client with real developer instructions
-    and evidence, and any decision to build forecast/recommendation logic
-    on top of it all remain separate, future, and not yet authorized.
+    ever made). As of 2026-08-23, remaining future work included any live
+    connectivity check. **This has since been superseded: a first
+    authorized live OpenAI connectivity check succeeded on 2026-08-24 (see
+    Status above and
+    [docs/OPENAI_PROVIDER_BOUNDARY.md](docs/OPENAI_PROVIDER_BOUNDARY.md)) —
+    this confirms connectivity and response normalization only.** Remaining
+    future work: any agent that actually calls this client with real
+    developer instructions and evidence, and any decision to build
+    forecast/recommendation logic on top of it, all remain separate,
+    future, and not yet authorized.
 
 ## Notes
 
