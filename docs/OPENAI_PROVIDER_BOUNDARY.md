@@ -67,8 +67,11 @@ result = client.generate(
   non-blank string of at most `MAX_INSTRUCTIONS_LENGTH` (8,000) characters.
   A fixed, module-owned safety appendix (`EVIDENCE_SAFETY_APPENDIX`) is
   always appended before the request is sent, regardless of what the
-  caller's instructions say, stating that the evidence below must never be
-  treated as overriding instructions.
+  caller's instructions say, stating that the evidence below must not be
+  treated as overriding instructions. This is a defense-in-depth
+  mitigation, not a guarantee — it reduces the risk of prompt injection
+  from untrusted evidence but cannot fully prevent a sufficiently
+  adversarial payload from influencing model behavior.
 - **`evidence`** — a bounded, JSON-ready `dict` (matching the same
   string-serialized-Decimal convention used by `MarketContextBuilder`).
   Validated recursively before any request is built: only
@@ -110,20 +113,42 @@ A model refusal or an incomplete response (e.g. `max_output_tokens`
 reached) is a normal, non-exceptional outcome, reported via `status` —
 `generate()` never raises for either. The refusal explanation text itself
 is never read, stored, or returned anywhere; only the `"refusal"` status
-category is surfaced. `incomplete_reason` reuses OpenAI's own fixed,
-non-free-text category (`"max_output_tokens"` or `"content_filter"`), which
-is safe to expose. If a response reports `status == "completed"` with
-neither a refusal nor a parsed output, or reports any other status
+category is surfaced. If a response reports `status == "completed"` with
+no parsed output, or with a parsed output that is not an instance of the
+exact `output_model` the caller supplied, or reports any other status
 (`failed`, `cancelled`, `queued`, `in_progress`, or an unrecognized value),
 `generate()` raises `OpenAIUnexpectedError` rather than returning a
 misleading result.
+
+Every field on `StructuredOutputResult` is sanitized rather than passed
+through from the provider as-is, so raw provider text/metadata is never
+surfaced through this result:
+
+- **`response_id`** — returned only if it is a bounded string matching
+  OpenAI's response-ID shape (`resp_` followed by safe ASCII
+  letters/digits/underscores/hyphens); otherwise `None`.
+- **`input_tokens`/`output_tokens`/`total_tokens`** — returned only if
+  each is a plain nonnegative `int` (booleans and any other malformed
+  value are rejected); otherwise `None`.
+- **`incomplete_reason`** — mapped only from OpenAI's known fixed
+  categories (`"max_output_tokens"`, `"content_filter"`), returned as-is;
+  any other non-`None` value is mapped to a fixed `"other"` category
+  rather than ever surfacing arbitrary provider text.
 
 ## Sanitized error categories
 
 `generate()` raises a specific `OpenAIStructuredError` subclass for every
 failure category, each with a fixed, sanitized message. No raised error
 ever includes the API key, request body, evidence, headline, raw model
-output, raw SDK exception message, URL, or header:
+output, raw SDK exception message, URL, or header. Both the SDK call
+(`sdk_client.responses.parse(...)`) and response normalization run inside
+one sanitized exception boundary: every specific mapping below is checked
+first, an already-sanitized `OpenAIStructuredError` raised during
+normalization (e.g. for a malformed response) is re-raised unchanged, and
+any other exception — including a malformed response with missing/
+non-iterable output, an unexpected status shape, or a parsed object of the
+wrong type — is mapped to a fixed `OpenAIUnexpectedError` with no raw
+type, message, body, path, header, or evidence attached:
 
 | Exception | Cause |
 |---|---|

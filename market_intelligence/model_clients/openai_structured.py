@@ -28,8 +28,12 @@ data: it is serialized deterministically and wrapped with a fixed label
 this module owns (see ``EVIDENCE_LABEL``), and a fixed safety appendix this
 module owns (see ``EVIDENCE_SAFETY_APPENDIX``) is always appended to the
 instructions actually sent -- regardless of what the caller's instructions
-say -- so evidence, especially news headlines, can never override developer
-instructions.
+say -- so the model is told, every time, that evidence (especially news
+headlines) must not be treated as overriding developer instructions. This
+labeling and appendix is a defense-in-depth mitigation, not a guarantee:
+it reduces the risk of prompt injection from untrusted evidence but cannot
+fully prevent a sufficiently adversarial payload from influencing model
+behavior.
 
 All limits (instructions length, evidence size/shape, output model type)
 are validated before the OpenAI SDK client is constructed or any request is
@@ -43,6 +47,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -56,6 +61,20 @@ MAX_INSTRUCTIONS_LENGTH = 8_000
 MAX_EVIDENCE_BYTES = 32_000
 MAX_EVIDENCE_DEPTH = 8
 MAX_EVIDENCE_NODES = 500
+
+# Bounded, strict shape for a sanitized OpenAI response ID: "resp_" followed
+# by 1-128 safe ASCII letters/digits/underscores/hyphens. Anything else
+# (wrong type, wrong prefix, unsafe characters, or too long) is treated as
+# untrusted provider metadata and normalized to None rather than echoed.
+MAX_RESPONSE_ID_SUFFIX_LENGTH = 128
+_RESPONSE_ID_PATTERN = re.compile(rf"^resp_[A-Za-z0-9_-]{{1,{MAX_RESPONSE_ID_SUFFIX_LENGTH}}}$")
+
+# OpenAI's own documented, fixed, non-free-text incomplete-status reason
+# categories. Any other value is normalized to "other" (see
+# ``_sanitize_incomplete_reason``) rather than ever surfacing arbitrary
+# provider text.
+KNOWN_INCOMPLETE_REASONS = frozenset({"max_output_tokens", "content_filter"})
+OTHER_INCOMPLETE_REASON = "other"
 
 # Fixed, non-caller-overridable framing around the evidence payload. Owned
 # entirely by this module so the untrusted-data boundary holds regardless of
@@ -120,11 +139,19 @@ class StructuredOutputResult[T: BaseModel]:
     """Normalized, sanitized result of one structured-output request.
 
     ``status`` is one of ``"completed"``, ``"refusal"``, or ``"incomplete"``.
-    ``parsed`` is only present (non-``None``) when ``status == "completed"``.
-    ``incomplete_reason`` (OpenAI's own fixed category, e.g.
-    ``"max_output_tokens"`` or ``"content_filter"``) is only present when
-    ``status == "incomplete"``. Refusal text itself is never included
-    anywhere on this result -- only the ``"refusal"`` status category.
+    ``parsed`` is only present (non-``None``) when ``status == "completed"``,
+    and is guaranteed to be an instance of the exact ``output_model`` class
+    the caller supplied. Refusal text itself is never included anywhere on
+    this result -- only the ``"refusal"`` status category.
+
+    Every field is sanitized rather than passed through from the provider
+    as-is: ``response_id`` is ``None`` unless it is a bounded string
+    matching OpenAI's ``resp_...`` ID shape; ``input_tokens``/
+    ``output_tokens``/``total_tokens`` are ``None`` unless each is a plain
+    nonnegative ``int``; ``incomplete_reason`` (only present when
+    ``status == "incomplete"``) is one of OpenAI's known fixed categories
+    (``"max_output_tokens"``, ``"content_filter"``) or the fixed
+    ``"other"`` category -- arbitrary provider text is never surfaced.
     """
 
     status: str
@@ -226,12 +253,60 @@ def _validate_output_model(output_model: Any) -> type[BaseModel]:
     return output_model
 
 
+def _sanitize_response_id(value: Any) -> str | None:
+    """Return ``value`` only if it is a bounded string matching OpenAI's response-ID shape.
+
+    Anything else (wrong type, wrong prefix, unsafe characters, or too
+    long) is untrusted provider metadata and is normalized to ``None``
+    rather than ever being echoed as-is.
+    """
+    if not isinstance(value, str):
+        return None
+    if not _RESPONSE_ID_PATTERN.fullmatch(value):
+        return None
+    return value
+
+
+def _sanitize_token_count(value: Any) -> int | None:
+    """Return ``value`` only if it is a plain nonnegative ``int`` (``bool`` excluded).
+
+    Any malformed value (wrong type, ``bool``, or negative) is normalized
+    to ``None`` rather than ever being echoed as-is.
+    """
+    if not isinstance(value, int) or isinstance(value, bool):
+        return None
+    if value < 0:
+        return None
+    return value
+
+
+def _sanitize_incomplete_reason(value: Any) -> str | None:
+    """Map ``value`` to one of OpenAI's known fixed incomplete-reason categories.
+
+    ``None`` stays ``None``. A recognized category (see
+    ``KNOWN_INCOMPLETE_REASONS``) is returned as-is. Anything else is
+    normalized to the fixed ``"other"`` category so arbitrary provider
+    text is never surfaced through this field.
+    """
+    if value is None:
+        return None
+    if value in KNOWN_INCOMPLETE_REASONS:
+        return value
+    return OTHER_INCOMPLETE_REASON
+
+
 def _has_refusal(response: Any) -> bool:
     """Return True if any message output item on ``response`` contains a refusal.
 
-    Never reads or returns the refusal explanation text itself.
+    Never reads or returns the refusal explanation text itself. Raises
+    ``OpenAIUnexpectedError`` if ``response.output`` is missing or not a
+    list, so a malformed/non-iterable output shape never leaks a raw
+    ``AttributeError``/``TypeError``.
     """
-    for output_item in response.output:
+    output = getattr(response, "output", None)
+    if not isinstance(output, list):
+        raise OpenAIUnexpectedError("OpenAI response had an unrecognized output shape.")
+    for output_item in output:
         if getattr(output_item, "type", None) != "message":
             continue
         for content in getattr(output_item, "content", []):
@@ -240,19 +315,28 @@ def _has_refusal(response: Any) -> bool:
     return False
 
 
-def _normalize_response(response: Any, *, requested_model: str) -> StructuredOutputResult[Any]:
+def _normalize_response[T: BaseModel](
+    response: Any, *, requested_model: str, output_model: type[T]
+) -> StructuredOutputResult[T]:
     """Build a sanitized ``StructuredOutputResult`` from a raw SDK ``ParsedResponse``.
 
     Raises ``OpenAIUnexpectedError`` for any response shape/status this
-    module does not recognize as one of completed/refusal/incomplete, so an
-    unexpected provider behavior is never silently normalized into a
-    plausible-looking result.
+    module does not recognize as one of completed/refusal/incomplete
+    (including a completed response whose parsed output is not an
+    instance of the exact ``output_model`` supplied), so an unexpected
+    provider behavior is never silently normalized into a
+    plausible-looking result. Every returned field is sanitized -- see
+    ``_sanitize_response_id``/``_sanitize_token_count``/
+    ``_sanitize_incomplete_reason``.
     """
-    response_id = getattr(response, "id", None)
+    response_id = _sanitize_response_id(getattr(response, "id", None))
     usage = getattr(response, "usage", None)
-    input_tokens = getattr(usage, "input_tokens", None) if usage is not None else None
-    output_tokens = getattr(usage, "output_tokens", None) if usage is not None else None
-    total_tokens = getattr(usage, "total_tokens", None) if usage is not None else None
+    raw_input_tokens = getattr(usage, "input_tokens", None) if usage is not None else None
+    raw_output_tokens = getattr(usage, "output_tokens", None) if usage is not None else None
+    raw_total_tokens = getattr(usage, "total_tokens", None) if usage is not None else None
+    input_tokens = _sanitize_token_count(raw_input_tokens)
+    output_tokens = _sanitize_token_count(raw_output_tokens)
+    total_tokens = _sanitize_token_count(raw_total_tokens)
 
     if _has_refusal(response):
         return StructuredOutputResult(
@@ -270,7 +354,8 @@ def _normalize_response(response: Any, *, requested_model: str) -> StructuredOut
 
     if status == "incomplete":
         incomplete_details = getattr(response, "incomplete_details", None)
-        incomplete_reason = getattr(incomplete_details, "reason", None)
+        raw_incomplete_reason = getattr(incomplete_details, "reason", None)
+        incomplete_reason = _sanitize_incomplete_reason(raw_incomplete_reason)
         return StructuredOutputResult(
             status="incomplete",
             parsed=None,
@@ -284,9 +369,9 @@ def _normalize_response(response: Any, *, requested_model: str) -> StructuredOut
 
     if status == "completed":
         parsed = getattr(response, "output_parsed", None)
-        if parsed is None:
+        if not isinstance(parsed, output_model):
             raise OpenAIUnexpectedError(
-                "OpenAI response completed without a parsed output or refusal."
+                "OpenAI response completed without a parsed output matching the requested model."
             )
         return StructuredOutputResult(
             status="completed",
@@ -345,9 +430,11 @@ class OpenAIStructuredClient:
         code -- never derived from evidence or other untrusted data.
         ``evidence`` must be a bounded, JSON-ready dict (see
         ``_validate_and_serialize_evidence``); it is always treated as
-        untrusted data (see ``EVIDENCE_SAFETY_APPENDIX``) and never overrides
-        ``instructions``. ``output_model`` must be a Pydantic ``BaseModel``
-        subclass.
+        untrusted data and labeled as such (see ``EVIDENCE_SAFETY_APPENDIX``)
+        so the model is instructed not to treat it as overriding
+        ``instructions`` -- a defense-in-depth mitigation, not a guaranteed
+        prevention of prompt injection. ``output_model`` must be a Pydantic
+        ``BaseModel`` subclass.
 
         Every input is validated before the OpenAI SDK client is constructed
         or any request is made. Raises ``OpenAIInvalidRequestError`` for
@@ -357,6 +444,14 @@ class OpenAIStructuredClient:
         authentication failure, parse failure, or any other unexpected SDK
         failure. Never raises for a model refusal or an incomplete
         response -- both are reported via ``StructuredOutputResult.status``.
+
+        The SDK call and response normalization both run inside one
+        sanitized exception boundary: any exception not matched by a
+        specific mapping below -- including a malformed response with
+        missing/non-iterable output, an unexpected status shape, or a
+        parsed object of the wrong type -- becomes a fixed
+        ``OpenAIUnexpectedError`` with no raw type/message/body/path/
+        header/evidence attached.
         """
         normalized_instructions = _validate_instructions(instructions)
         serialized_evidence = _validate_and_serialize_evidence(evidence)
@@ -384,6 +479,7 @@ class OpenAIStructuredClient:
                 max_output_tokens=max_output_tokens,
                 timeout=timeout,
             )
+            return _normalize_response(response, requested_model=model, output_model=output_model)
         except openai.APITimeoutError:
             raise OpenAITimeoutError("OpenAI request timed out.") from None
         except openai.RateLimitError:
@@ -398,5 +494,7 @@ class OpenAIStructuredClient:
             ) from None
         except openai.OpenAIError:
             raise OpenAIUnexpectedError("OpenAI request failed unexpectedly.") from None
-
-        return _normalize_response(response, requested_model=model)
+        except OpenAIStructuredError:
+            raise
+        except Exception:
+            raise OpenAIUnexpectedError("OpenAI response could not be processed.") from None

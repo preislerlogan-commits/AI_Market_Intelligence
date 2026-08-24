@@ -667,17 +667,32 @@ analysis, or trading execution. No AI analysis or agent orchestration
   existing `Settings.openai_api_key` (`SecretStr`). All limits and evidence
   size/shape are validated before the OpenAI SDK client is constructed or
   any request is made; evidence is always serialized deterministically and
-  wrapped with a fixed, module-owned label and safety appendix so it can
-  never override the developer instructions, including when it contains
-  news headlines or other third-party text. The normalized
+  wrapped with a fixed, module-owned label and safety appendix instructing
+  the model not to treat it as overriding the developer instructions,
+  including when it contains news headlines or other third-party text --
+  a defense-in-depth mitigation, not a guaranteed prevention of prompt
+  injection. The normalized
   `StructuredOutputResult` never raises for a model refusal or an
   incomplete response (both are reported via a `status` category, never
   with refusal text); a fixed, sanitized `OpenAIStructuredError` subclass is
   raised for missing configuration, timeout, connection failure, rate
   limit, authentication failure, parse failure, and any other unexpected
-  SDK failure or unrecognized response shape — no raised error ever
-  includes the API key, request body, evidence, headline, raw model output,
-  raw SDK exception message, URL, or header. Two new non-secret `Settings`
+  SDK failure or unrecognized response shape — the entire SDK call and
+  response-normalization step is wrapped in one sanitized exception
+  boundary, so any exception type not already mapped to a specific
+  category (including a malformed response with missing/non-iterable
+  output, an unexpected status shape, or a parsed object of the wrong
+  type) becomes a fixed `OpenAIUnexpectedError` with no raw
+  type/message/body/path/header/evidence attached. Provider-reported
+  metadata on the result is also sanitized rather than passed through
+  as-is: `response_id` is returned only if it matches OpenAI's bounded
+  `resp_...` ID shape (otherwise `None`), token counts are accepted only
+  as plain nonnegative integers (otherwise `None`), and
+  `incomplete_reason` is mapped only from OpenAI's known fixed categories
+  (otherwise `"other"`/`None`) — no raised error or result field ever
+  includes the API key, request body, evidence, headline, raw model
+  output, raw SDK exception message, URL, or header. Two new non-secret
+  `Settings`
   fields (`openai_request_timeout_seconds`, default 30s, bounded to
   `(0, 120]`; `openai_max_output_tokens`, default 2048, bounded to
   `[1, 16000]`) plus `openai_model` are documented in `.env.example`
