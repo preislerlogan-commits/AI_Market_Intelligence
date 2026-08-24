@@ -30,6 +30,7 @@ from market_intelligence.agents.market_evidence_agent import (
     MarketEvidenceCitationError,
     MarketEvidenceIncompleteError,
     MarketEvidenceModelAnalysis,
+    MarketEvidencePolicyError,
     MarketEvidenceRefusalError,
     MarketEvidenceReport,
     MarketEvidenceUnexpectedError,
@@ -625,6 +626,93 @@ def test_run_accepts_valid_multi_evidence_citation():
     result = agent.run("SPY")
 
     assert result.report.status == "completed"
+
+
+# ---------------------------------------------------------------------------
+# Post-response content policy check
+# ---------------------------------------------------------------------------
+
+
+def test_run_rejects_policy_violation_in_evidence_summary():
+    bad_analysis = completed_analysis(
+        evidence_summary="The stock is bullish and will likely rally further."
+    )
+    agent, *_ = make_agent(model_result=completed_result(parsed=bad_analysis))
+
+    with pytest.raises(MarketEvidencePolicyError):
+        agent.run("SPY")
+
+
+def test_run_rejects_policy_violation_in_observation_statement():
+    bad_observation = valid_observation(statement="We recommend buying this stock now.")
+    bad_analysis = completed_analysis(observations=[bad_observation])
+    agent, *_ = make_agent(model_result=completed_result(parsed=bad_analysis))
+
+    with pytest.raises(MarketEvidencePolicyError):
+        agent.run("SPY")
+
+
+def test_run_rejects_policy_violation_in_limitation():
+    bad_analysis = completed_analysis(
+        limitations=["You should sell this stock due to weak volume."]
+    )
+    agent, *_ = make_agent(model_result=completed_result(parsed=bad_analysis))
+
+    with pytest.raises(MarketEvidencePolicyError):
+        agent.run("SPY")
+
+
+def test_run_rejects_options_language_without_leaking_rejected_text():
+    secret_options_text = f"Discuss the {FAKE_SECRET_MARKER} call option strike premium."
+    bad_analysis = completed_analysis(evidence_summary=secret_options_text)
+    agent, *_ = make_agent(model_result=completed_result(parsed=bad_analysis))
+
+    with pytest.raises(MarketEvidencePolicyError) as exc_info:
+        agent.run("SPY")
+
+    message = str(exc_info.value)
+    assert FAKE_SECRET_MARKER not in message
+    assert secret_options_text not in message
+    assert "call option" not in message.lower()
+    assert "premium" not in message.lower()
+
+
+def test_run_accepts_safe_factual_finance_wording():
+    safe_analysis = completed_analysis(
+        evidence_summary=(
+            "The stored evidence shows consistent price and volume data with "
+            "adequate coverage for the session; the close increased from the "
+            "prior stored value and macro data reflects the latest recorded "
+            "federal funds rate observation."
+        ),
+        observations=[
+            valid_observation(
+                statement=(
+                    "The latest stored close was higher than the earlier stored "
+                    "close, and volume for the session was within recent norms."
+                )
+            )
+        ],
+        limitations=["Only one stored news article is available for this symbol."],
+    )
+    agent, *_ = make_agent(model_result=completed_result(parsed=safe_analysis))
+
+    result = agent.run("SPY")
+
+    assert result.report.status == "completed"
+    assert result.report.evidence_summary == safe_analysis.evidence_summary
+
+
+def test_run_policy_check_happens_before_completed_report_is_returned():
+    bad_analysis = completed_analysis(evidence_summary="Shares are bearish going forward.")
+    agent, *_ = make_agent(model_result=completed_result(parsed=bad_analysis))
+
+    with pytest.raises(MarketEvidencePolicyError):
+        result = agent.run("SPY")
+        # If a MarketEvidencePolicyError were not raised first, this line
+        # would execute and prove the policy check did not gate report
+        # construction.
+        assert result.report.status != "completed"
 
 
 # ---------------------------------------------------------------------------

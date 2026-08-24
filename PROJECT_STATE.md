@@ -86,12 +86,18 @@ below and
 summarizes and organizes already-stored evidence behind a deterministic
 preflight gate, and has not been run against the real database or made a
 live OpenAI request as part of this change. It is not integrated into
-`market_intelligence/orchestration/`, and it never predicts market
-direction, recommends a trade, or discusses option strikes/contracts —
-`directional_assessment`/`trade_recommendation` on every report it produces
-are always the fixed value `"not_performed"`. Beyond this one narrow agent,
-no other AI analysis or agent orchestration (in the AI-agent sense) exists
-yet.
+`market_intelligence/orchestration/`. `directional_assessment`/
+`trade_recommendation` on every report it produces are always the fixed
+value `"not_performed"` — the model-facing schema does not even include
+those fields, so this restriction is absolute. Its free-text fields are
+additionally screened by a deterministic, fail-closed post-response content
+policy check (added 2026-08-24, code/tests/docs only, see
+[docs/MARKET_EVIDENCE_AGENT.md](docs/MARKET_EVIDENCE_AGENT.md)) that rejects
+known directional-prediction, bullish/bearish-bias, trade-recommendation/
+action, and options-related language — a conservative, bounded filter and
+defense-in-depth on top of its developer instructions, not proof that every
+possible semantic violation is detectable. Beyond this one narrow agent, no
+other AI analysis or agent orchestration (in the AI-agent sense) exists yet.
 
 ## Status
 
@@ -789,9 +795,17 @@ yet.
   report, adding `status`, `symbol`, `session_date_et`, and two **fixed**
   literal fields, `directional_assessment` and `trade_recommendation`, both
   always `"not_performed"` — the model-facing schema does not even include
-  these fields, so the model cannot set them). This agent never predicts
-  market direction, never recommends a trade, and never discusses option
-  strikes or contracts.
+  these fields, so the model cannot set them; that restriction is absolute).
+  The model's free-text fields (`evidence_summary`, every observation
+  `statement`, every model-supplied `limitation`) are additionally screened
+  by a deterministic, fail-closed post-response content policy check
+  (`MarketEvidencePolicyError`, added 2026-08-24) that rejects known
+  directional-prediction, bullish/bearish-bias, trade-recommendation/action,
+  and options-related (strikes/contracts/premiums) language before
+  `MarketEvidenceReport` is constructed — a conservative, bounded filter and
+  defense-in-depth on top of the model's developer instructions, not proof
+  that every possible semantic violation is detectable. The rejected text is
+  never echoed in the raised error.
 
   Every evidence ID the model cites in its response is validated after the
   fact against the exact evidence package sent for that request; a missing,

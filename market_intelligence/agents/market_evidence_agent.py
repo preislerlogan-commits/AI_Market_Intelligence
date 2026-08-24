@@ -13,14 +13,21 @@ one bounded evidence package out, at most one model request, no tools, no
 loop, no persistence, no orchestration integration. See
 ``docs/MARKET_EVIDENCE_AGENT.md`` for the full contract.
 
-**This agent never predicts market direction, never recommends a trade, and
-never discusses option strikes or contracts.** ``directional_assessment`` and
-``trade_recommendation`` on every report are always the fixed literal string
-``"not_performed"`` -- the agent-authored report schema does not even let the
-model set them (see ``MarketEvidenceModelAnalysis`` vs ``MarketEvidenceReport``
-below). Passing schema validation or citation validation is not the same as
-the analysis being factually correct -- see "Known limitations" in
-``docs/MARKET_EVIDENCE_AGENT.md``.
+``directional_assessment`` and ``trade_recommendation`` on every report are
+always the fixed literal string ``"not_performed"`` -- the model-facing
+schema (``MarketEvidenceModelAnalysis``) does not even include these fields,
+so the model has no way to set them; that restriction is absolute. The
+model's free-text fields (``evidence_summary``, every observation
+``statement``, every model-supplied limitation) are additionally screened by
+a deterministic, fail-closed post-response policy check (see
+``_enforce_output_policy``/``MarketEvidencePolicyError`` below) that rejects
+known directional-prediction, bullish/bearish-bias, trade-recommendation/
+action, and options-related language before ``MarketEvidenceReport`` is
+constructed. **This is a conservative, bounded filter and defense-in-depth on
+top of ``AGENT_INSTRUCTIONS`` -- it is not proof that every possible semantic
+violation is detectable.** Passing schema validation, citation validation,
+and this policy check is not the same as the analysis being factually
+correct -- see "Known limitations" in ``docs/MARKET_EVIDENCE_AGENT.md``.
 
 Deterministic preflight (before any OpenAI request is made, see
 ``_evaluate_preflight``): the agent requires the requested symbol to match
@@ -39,6 +46,7 @@ surfaced as a deterministic limitation on the final report instead (see
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal
@@ -152,6 +160,20 @@ class MarketEvidenceIncompleteError(MarketEvidenceAgentError):
 class MarketEvidenceCitationError(MarketEvidenceAgentError):
     """Raised when the model's response cites a missing, fabricated,
     duplicated, or excessive evidence ID."""
+
+
+class MarketEvidencePolicyError(MarketEvidenceAgentError):
+    """Raised when model-authored free text fails the fixed, deterministic
+    post-response content policy check (see ``_enforce_output_policy``).
+
+    This is a conservative, bounded denylist of known directional-prediction,
+    bullish/bearish-bias, trade-recommendation/action, and options-related
+    language -- defense-in-depth on top of ``AGENT_INSTRUCTIONS``, not proof
+    that every possible semantic violation is detectable. The rejected text
+    itself is never included in this error or logged anywhere; only a fixed
+    field name and violation category (both code-authored, never model text)
+    are recorded.
+    """
 
 
 class MarketEvidenceUnexpectedError(MarketEvidenceAgentError):
@@ -519,6 +541,101 @@ def _validate_citations(
                 )
 
 
+# --- Post-response content policy (defense-in-depth) ------------------------
+#
+# A conservative, bounded, fixed denylist applied to every model-authored
+# free-text field before MarketEvidenceReport is constructed. AGENT_INSTRUCTIONS
+# already tells the model never to predict direction, state bias, recommend a
+# trade, or discuss options -- this is a deterministic, fail-closed check on
+# top of that instruction, not a replacement for it. It catches known
+# prohibited phrasing; it is not a general-purpose semantic classifier and
+# cannot prove the absence of every possible prohibited meaning (e.g. novel
+# phrasing, other languages, or heavily indirect wording may not match).
+
+_DIRECTIONAL_PREDICTION_RE = re.compile(
+    r"\b(?:will|going\s+to)\s+(?:rise|rally|surge|climb|jump|soar|fall|drop|"
+    r"plunge|decline|slide|tumble|break\s*out|reverse|correct)\b"
+    r"|\b(?:expected|likely|poised|set|primed)\s+to\s+(?:rise|rally|surge|"
+    r"climb|fall|drop|plunge|decline|slide|tumble)\b"
+    r"|\bprice\s+target\b"
+    r"|\b(?:forecast|predict)(?:s|ed|ing|ion)?\b"
+    r"|\boutlook\s+is\b",
+    re.IGNORECASE,
+)
+
+_BIAS_RE = re.compile(r"\b(?:bullish|bearish)\b", re.IGNORECASE)
+
+_TRADE_ACTION_RE = re.compile(
+    r"\b(?:buy|sell|short|long)\s+(?:this|the)\s+(?:stock|symbol|shares?|"
+    r"position|security)\b"
+    r"|\brecommend(?:s|ed|ing)?\s+(?:a\s+)?(?:buy|sell|buying|selling|shorting)\b"
+    r"|\b(?:should|consider)\s+(?:buy|sell|buying|selling|shorting)\b"
+    r"|\bgo(?:ing)?\s+(?:long|short)\b"
+    r"|\benter(?:ing)?\s+a\s+(?:trade|position)\b"
+    r"|\bexit(?:ing)?\s+(?:the|a)\s+(?:trade|position)\b"
+    r"|\bstop[\s-]?loss\b"
+    r"|\btake[\s-]?profit\b"
+    r"|\b(?:buy|sell)\s+signal\b"
+    r"|\bhold\s+(?:this|the)\s+(?:stock|position|shares?)\b"
+    r"|\btrade\s+recommendation\b",
+    re.IGNORECASE,
+)
+
+_OPTIONS_RE = re.compile(
+    r"\bstrikes?\b"
+    r"|\boptions?\b"
+    r"|\b(?:call|put)\s+options?\b"
+    r"|\bpremiums?\b",
+    re.IGNORECASE,
+)
+
+_POLICY_PATTERNS: dict[str, re.Pattern[str]] = {
+    "directional_prediction": _DIRECTIONAL_PREDICTION_RE,
+    "bullish_bearish_bias": _BIAS_RE,
+    "trade_recommendation_or_action": _TRADE_ACTION_RE,
+    "options_detail": _OPTIONS_RE,
+}
+
+
+def _find_policy_violation(text: str) -> str | None:
+    """Return the first matching violation category for ``text``, or
+    ``None``. Never returns or logs the matched text itself."""
+    for category, pattern in _POLICY_PATTERNS.items():
+        if pattern.search(text):
+            return category
+    return None
+
+
+def _enforce_output_policy(analysis: MarketEvidenceModelAnalysis) -> None:
+    """Deterministic, fail-closed post-response policy check.
+
+    Applied to every model-authored free-text field -- ``evidence_summary``,
+    every observation ``statement``, and every model-supplied
+    ``limitation`` -- before ``MarketEvidenceReport`` is constructed. Raises
+    ``MarketEvidencePolicyError`` on the first match; the rejected text is
+    never included in the error or logged anywhere, only a fixed field name
+    and category. See ``MarketEvidencePolicyError`` for the scope and limits
+    of this check.
+    """
+    fields: list[tuple[str, str]] = [("evidence_summary", analysis.evidence_summary)]
+    fields.extend(
+        (f"observations[{i}].statement", observation.statement)
+        for i, observation in enumerate(analysis.observations)
+    )
+    fields.extend(
+        (f"limitations[{i}]", limitation) for i, limitation in enumerate(analysis.limitations)
+    )
+
+    for field_name, text in fields:
+        category = _find_policy_violation(text)
+        if category is not None:
+            raise MarketEvidencePolicyError(
+                "Model-authored output failed the post-response content "
+                f"policy check (field={field_name}, category={category}). "
+                "The rejected text is never included in this error."
+            )
+
+
 class MarketEvidenceAgent:
     """Single-turn Market Evidence Agent.
 
@@ -584,7 +701,11 @@ class MarketEvidenceAgent:
         incomplete response -- neither is ever silently converted into a
         completed analysis. Raises ``MarketEvidenceCitationError`` for a
         missing, fabricated, duplicated, or excessive evidence-ID citation.
-        A sanitized ``OpenAIStructuredError`` subclass propagates unchanged
+        Raises ``MarketEvidencePolicyError`` if any model-authored free-text
+        field fails the deterministic, fail-closed post-response content
+        policy check (see ``_enforce_output_policy``) -- checked after
+        citation validation and before ``MarketEvidenceReport`` is
+        constructed. A sanitized ``OpenAIStructuredError`` subclass propagates unchanged
         for a provider/config/network failure. Any other unexpected failure
         becomes ``MarketEvidenceUnexpectedError``, with no raw exception
         type, message, or content attached.
@@ -627,6 +748,7 @@ class MarketEvidenceAgent:
         analysis = result.parsed
         known_evidence_ids = set(preflight.evidence_package["facts"].keys())
         _validate_citations(analysis, known_evidence_ids)
+        _enforce_output_policy(analysis)
 
         limitations = _merge_limitations(preflight.deterministic_limitations, analysis.limitations)
 

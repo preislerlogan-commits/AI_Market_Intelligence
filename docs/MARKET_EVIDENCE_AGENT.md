@@ -30,14 +30,24 @@ session date, it:
 4. Validates every evidence ID the model cites against the exact evidence
    package sent, and assembles a final, sanitized, schema-validated report.
 
-**This agent never predicts market direction, never recommends a trade, and
-never discusses option strikes or contracts.** The final report's
-`directional_assessment` and `trade_recommendation` fields are always the
-fixed literal string `"not_performed"` -- the model-facing schema
-(`MarketEvidenceModelAnalysis`) does not even include those fields, so the
-model has no way to set them. No tool, web search, function calling, file
-access, or Agents-SDK-style loop is used anywhere in this component; it
-makes at most one bounded provider request per call.
+The final report's `directional_assessment` and `trade_recommendation`
+fields are always the fixed literal string `"not_performed"` -- the
+model-facing schema (`MarketEvidenceModelAnalysis`) does not even include
+those fields, so the model has no way to set them; that restriction is
+absolute. The model's free-text fields (`evidence_summary`, every
+observation `statement`, every model-supplied `limitation`) are additionally
+screened by a deterministic, fail-closed post-response content policy check
+(see "Post-response validation" below) that rejects known
+directional-prediction, bullish/bearish-bias, trade-recommendation/action,
+and options-related language before `MarketEvidenceReport` is constructed.
+**This policy check is a conservative, bounded filter and defense-in-depth
+on top of the developer instructions given to the model -- it is not proof
+that every possible semantic violation of "never predicts direction, never
+recommends a trade, never discusses options" is detectable**, since it
+matches fixed known phrasing rather than performing general semantic
+understanding. No tool, web search, function calling, file access, or
+Agents-SDK-style loop is used anywhere in this component; it makes at most
+one bounded provider request per call.
 
 ## Inputs
 
@@ -204,13 +214,32 @@ Before a model response is accepted as `status="completed"`:
 - **Neither refusal nor incomplete is ever silently converted into a
   completed analysis.** `run()` raises for both rather than returning a
   `MarketEvidenceReport` claiming `status="completed"`.
+- **Post-response content policy** -- after citation validation and before
+  `MarketEvidenceReport` is constructed, every model-authored free-text
+  field (`evidence_summary`, every observation `statement`, every
+  model-supplied `limitation`) is checked against a fixed, deterministic,
+  fail-closed denylist covering four categories: directional predictions
+  (e.g. "will rally", "expected to fall", "price target"), bullish/bearish
+  bias language, trade recommendations/actions (e.g. "buy this stock",
+  "recommend selling", "stop-loss"), and options-related detail (strikes,
+  contracts, premiums, call/put options). The first match raises
+  `MarketEvidencePolicyError`. The rejected text is **never** included in
+  the raised error or logged anywhere -- only a fixed, code-authored field
+  name (e.g. `observations[2].statement`) and category name are recorded.
+  **This is a conservative, bounded filter and defense-in-depth on top of
+  `AGENT_INSTRUCTIONS` -- it matches known fixed phrasing, not general
+  semantic meaning, so it is not proof that every possible directional,
+  bias, trade-recommendation, or options-related statement is caught.**
 
-**Passing schema validation and citation validation is not the same as the
-analysis being factually correct.** A syntactically valid, correctly-cited
-`MarketEvidenceReport` only proves the model followed the citation and shape
-rules -- it is not a claim that the model's `evidence_summary` or
-`observations` correctly characterize the underlying stored data. No
-automated evaluation of analytical accuracy exists in this repository.
+**Passing schema validation, citation validation, and the post-response
+content policy check is not the same as the analysis being factually
+correct.** A syntactically valid, correctly-cited, policy-passing
+`MarketEvidenceReport` only proves the model followed the citation, shape,
+and known-phrasing rules -- it is not a claim that the model's
+`evidence_summary` or `observations` correctly characterize the underlying
+stored data, nor a claim that no prohibited content could have slipped past
+the policy check in some other form. No automated evaluation of analytical
+accuracy exists in this repository.
 
 ## Error categories
 
@@ -224,6 +253,7 @@ key, raw provider output, or raw evidence content.
 | `MarketEvidenceRefusalError` | The model refused the request |
 | `MarketEvidenceIncompleteError` | The model's response was incomplete |
 | `MarketEvidenceCitationError` | Missing, fabricated, duplicated, or excessive evidence-ID citation |
+| `MarketEvidencePolicyError` | Model-authored free text failed the post-response content policy check (directional prediction, bullish/bearish bias, trade recommendation/action, or options detail) |
 | `MarketEvidenceUnexpectedError` | Any other unexpected failure |
 
 A sanitized `OpenAIStructuredError` subclass (config missing, timeout,
@@ -299,10 +329,14 @@ either mode.
 every deterministic abstention reason (including `symbol_mismatch`),
 execution proceeding despite missing/stale news or macro data (with the
 resulting limitation), model refusal, an incomplete response, fabricated
-citations, duplicate citations, excessive/zero citations, an
-injection-shaped adversarial headline staying confined to evidence data,
-sanitized error leakage (no secret/traceback/exception-type ever printed),
-dry-run zero-provider-call behavior, and `--execute` gating. `OpenAIStructuredClient`
+citations, duplicate citations, excessive/zero citations, the post-response
+content policy check (a violation in `evidence_summary`, in an observation
+`statement`, and in a model-supplied `limitation`; that the raised error
+never echoes the rejected text; and that safe, factual finance-adjacent
+wording is accepted), an injection-shaped adversarial headline staying
+confined to evidence data, sanitized error leakage (no secret/traceback/
+exception-type ever printed), dry-run zero-provider-call behavior, and
+`--execute` gating. `OpenAIStructuredClient`
 is always injected as a fake recording calls and returning/raising canned
 `StructuredOutputResult` values (mirroring `test_openai_structured.py`) --
 no real SDK client is ever constructed and no network call is ever made.
