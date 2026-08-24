@@ -321,6 +321,39 @@ guarantee that any future request will pass validation** — the model is not
 required to follow instruction-level guidance, and no bound itself was
 changed. See `PROJECT_STATE.md` for the full, dated record.
 
+## Known structured-output validation failure (News Analyst, 2026-08-24)
+
+On 2026-08-24, the first authorized live `--execute` request made through
+`NewsAnalyst` (a caller of this module, not this module itself; symbol
+`SPY`, `limit=5`; see [docs/NEWS_ANALYST.md](NEWS_ANALYST.md)) failed with
+the same `OpenAIParseFailureError` ("OpenAI response failed
+structured-output validation.", category `response_validation_failed`)
+already documented above for the Market Evidence Agent. Offline diagnosis
+(no further live request made) reached the same structural conclusion via
+the same code path (both agents call this module's `generate()`): this
+category can only occur after a request was actually sent and a response
+was received; the real `NewsAnalystModelAnalysis` schema itself passes this
+module's own production schema preflight (`_validate_output_model`, public
+Pydantic API only) and is not structurally incompatible. Because this
+client never captures or logs raw model output, the exact response
+field/value that failed re-validation in that one attempt is unavailable
+and cannot be proven from local evidence alone. Exceeding one of the
+schema's Pydantic-only `minLength`/`maxLength`/`minItems`/`maxItems` bounds
+(e.g. `claim_summary`'s 400-character maximum, or `event_claims`' 6-item
+maximum) is one plausible, locally reproducible failure mode, reproduced
+offline in `market_intelligence/tests/test_openai_structured.py` -- **not**
+an established proven cause of that specific live attempt. No bound,
+citation check, content-basis check, or output-policy check was weakened in
+response. Conservative advisory output-length/count budgets, with margin
+below every corresponding hard Pydantic maximum, were added to
+`NewsAnalyst`'s `AGENT_INSTRUCTIONS` (see
+[docs/NEWS_ANALYST.md](NEWS_ANALYST.md)) to reduce the likelihood of a real
+model response landing close to -- or over -- one of those hard bounds,
+mirroring the mitigation already applied to the Market Evidence Agent.
+**These budgets reduce that plausible risk; they do not guarantee that any
+future request will pass validation.** See `PROJECT_STATE.md` for the full,
+dated record.
+
 ## Known limitations
 
 - **As of 2026-08-23:** no live request or connectivity check had been made
