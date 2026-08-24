@@ -1108,6 +1108,88 @@ other AI analysis or agent orchestration (in the AI-agent sense) exists yet.
   credential is reproduced in either document. No code, test, schema bound,
   or agent behavior was changed to produce or record this run.
 
+- **News Evidence Snapshot layer added (2026-08-24, code/tests/docs only;
+  read-only, no database write, no live provider request, no OpenAI/
+  Anthropic call).** A new module,
+  `market_intelligence/market_features/news_evidence.py`
+  (`NewsEvidenceBuilder`), and a companion CLI,
+  `scripts/build_news_evidence.py`, add a strictly validated, deterministic,
+  read-only builder that assembles exactly one JSON-ready snapshot dict from
+  data already stored in `news_articles` (migration `0004`) -- infrastructure
+  for a future News Analyst agent, not an AI agent or model request itself.
+  It makes no network request of any kind, opens the database only via
+  `duckdb.connect(path, read_only=True)`, never writes a row or applies a
+  migration, and imports only one small, already-reviewed read-only
+  validation helper from `data_connectors/` (`normalize_symbol`) -- no
+  connector HTTP client, storage-repository write path, or model client is
+  imported. Symbol is validated via the same `normalize_symbol` used
+  throughout this project; the result-count `limit` is strictly bounded
+  `[1, 20]` (default `10`), rejecting booleans, non-integers, and
+  out-of-range values before any DuckDB connection is opened. Articles are
+  returned newest-first by publication timestamp, tie-broken by the full
+  remaining stored identity (`provider` ascending, then
+  `provider_article_id` ascending), so two articles from different
+  providers sharing the same `created_at` (and even the same
+  `provider_article_id`, unique only per provider) still sort
+  deterministically. A latest stored `created_at` more than a fixed,
+  documented 5-minute clock-skew tolerance ahead of `as_of` sets
+  `freshness.future_timestamp_detected`/`freshness.stale` both `true`
+  without discarding or rewriting the stored timestamp; at or within the
+  tolerance it feeds the normal elapsed-time freshness calculation. Every
+  article's `headline`/`provider_summary` is preserved exactly as stored,
+  including an empty or whitespace-only summary -- this module performs no
+  HTML stripping, prompt-injection filtering, truncation, whitespace
+  normalization, or other interpretation of that text, since it is
+  explicitly treated as untrusted, third-party provider content throughout.
+  `content_scope` (`"headline_only"`/`"headline_and_provider_summary"`)
+  classifies a `None`, empty, or whitespace-only summary the same as "no
+  summary" for that purpose, without altering the stored value itself.
+  Each article carries a stable, code-generated
+  `evidence_id` (a truncated SHA-256 hash of
+  `(provider, provider_article_id)`, never derived from headline/summary
+  text), so the same stored article always produces the same ID across
+  snapshots. Article URLs are deliberately excluded from the per-article
+  evidence fields; they appear only in a separate top-level
+  `audit_provenance` field (keyed by the same `evidence_id`), which itself
+  states in the snapshot that a future model-facing consumer (e.g. a News
+  Analyst) must exclude it from any payload sent to a model. A missing
+  database file, a missing `news_articles` table, or a symbol with no stored
+  articles all produce a valid, non-crashing snapshot with
+  `freshness.missing`/`freshness.stale` both `true`, mirroring
+  `MarketContextBuilder`'s/`SessionQualityBuilder`'s established behavior.
+  The database connection is always closed on every code path, and a
+  close() failure never masks an earlier, already-sanitized read failure.
+  See [docs/NEWS_EVIDENCE_SNAPSHOT.md](docs/NEWS_EVIDENCE_SNAPSHOT.md) for
+  the full field contract and known limitations.
+
+  Covered by 41 tests (temporary DuckDB databases only; no live network
+  access; no access to the real repository database) covering: input
+  validation before any DuckDB access, missing database/table/rows,
+  populated ordering and tie-breaking (including same-`created_at`,
+  same-`provider_article_id` rows from different providers),
+  limit bounds, `content_scope` for present/absent/blank (empty and
+  whitespace-only) summaries, freshness/staleness around the fixed
+  168-hour threshold, future-publication-timestamp detection at and beyond
+  the fixed 5-minute clock-skew tolerance (including that the stored
+  timestamp and article are preserved, never discarded or rewritten),
+  exact preservation of adversarial headline/summary text, connection-close
+  success/failure behavior (including that a close failure never masks an
+  already-sanitized read failure), sanitized CLI errors, and that neither
+  module imports a network or model library.
+
+  As a read-only sanity check (no separate authorization sought, mirroring
+  the same reasoning already documented for `MarketContextBuilder`/
+  `SessionQualityBuilder` -- a read-only operation has nothing to roll
+  back), `scripts/build_news_evidence.py --symbol SPY --limit 3` was run
+  once against the real local database and returned a valid snapshot
+  reflecting the 20 already-stored SPY articles
+  (`total_stored_article_count_for_symbol=20`, matching the evidence-item
+  count already recorded for the Market Evidence Agent's dry run above) --
+  no row was written, no migration was applied, and no article content is
+  reproduced in this document. This is not a live provider request, an AI
+  analysis, or a validated news dataset -- see `DATA_CATALOG.md` for the
+  underlying news dataset's own status.
+
 ## Next Planned Work
 
 1. Data connector design — read-only Alpaca market-data, Alpaca news,
@@ -1327,6 +1409,17 @@ other AI analysis or agent orchestration (in the AI-agent sense) exists yet.
     and any decision to build further agents (e.g. a Macro Analyst agent)
     on this same pattern all remain separate, future, and not yet
     authorized.
+
+16. **News Evidence Snapshot layer** -- done, code/tests/docs only (see
+    above): `NewsEvidenceBuilder`
+    (`market_intelligence/market_features/news_evidence.py`) and
+    `scripts/build_news_evidence.py` exist, are read-only end to end, and
+    are covered by 41 tests against temporary DuckDB databases only. A
+    read-only sanity check against the real database succeeded (see
+    above). Remaining future work: any actual News Analyst agent that
+    consumes this snapshot (mirroring `MarketEvidenceAgent`'s pattern), and
+    any decision to expand this snapshot's scope, remain separate, future,
+    and not yet authorized.
 
 ## Notes
 
