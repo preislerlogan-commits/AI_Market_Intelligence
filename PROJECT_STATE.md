@@ -79,8 +79,25 @@ structured-output provider connectivity check has also since succeeded
 request" status) — this confirms only that the existing OpenAI provider
 boundary can reach OpenAI, authenticate, and receive/parse one minimal
 structured-output response; it is not an agent, prediction, recommendation,
-or market-analysis capability. No AI analysis or agent orchestration
-(in the AI-agent sense) exists yet.
+or market-analysis capability. A narrow, single-turn Market Evidence Agent
+has also since been added (2026-08-24, code/tests/docs only — see Status
+below and
+[docs/MARKET_EVIDENCE_AGENT.md](docs/MARKET_EVIDENCE_AGENT.md)): it
+summarizes and organizes already-stored evidence behind a deterministic
+preflight gate, and has not been run against the real database or made a
+live OpenAI request as part of this change. It is not integrated into
+`market_intelligence/orchestration/`. `directional_assessment`/
+`trade_recommendation` on every report it produces are always the fixed
+value `"not_performed"` — the model-facing schema does not even include
+those fields, so this restriction is absolute. Its free-text fields are
+additionally screened by a deterministic, fail-closed post-response content
+policy check (added 2026-08-24, code/tests/docs only, see
+[docs/MARKET_EVIDENCE_AGENT.md](docs/MARKET_EVIDENCE_AGENT.md)) that rejects
+known directional-prediction, bullish/bearish-bias, trade-recommendation/
+action, and options-related language — a conservative, bounded filter and
+defense-in-depth on top of its developer instructions, not proof that every
+possible semantic violation is detectable. Beyond this one narrow agent, no
+other AI analysis or agent orchestration (in the AI-agent sense) exists yet.
 
 ## Status
 
@@ -747,6 +764,87 @@ or market-analysis capability. No AI analysis or agent orchestration
   [docs/OPENAI_PROVIDER_BOUNDARY.md](docs/OPENAI_PROVIDER_BOUNDARY.md) for
   full detail.
 
+- **Market Evidence Agent added (2026-08-24, code/tests/docs only; no live
+  database access or live OpenAI request made as part of this change).** A
+  new package, `market_intelligence/agents/`, adds `MarketEvidenceAgent`
+  (`market_intelligence/agents/market_evidence_agent.py`) and a
+  dry-run-first CLI, `scripts/run_market_evidence_agent.py`. This is a
+  **single-turn, no-tools analysis component** — not an autonomous or
+  multi-agent system — built entirely on three existing, already-reviewed
+  pieces of infrastructure: `MarketContextBuilder`, `SessionQualityBuilder`,
+  and `OpenAIStructuredClient`. Given a symbol and an optional session date,
+  it builds a bounded, deterministic evidence package from the two builders
+  (every fact assigned a stable, code-generated evidence ID), evaluates a
+  fixed deterministic preflight gate, and — only if that gate passes — makes
+  **exactly one** structured-output request asking the model to summarize
+  and organize the evidence.
+
+  The preflight gate requires the requested symbol to match both builders'
+  reported symbol, and requires `bars_missing=False`, `bars_stale=False`,
+  `completeness.complete=True`, `partial_session=False`,
+  `missing_data=False`, and an empty
+  `unexpected_or_duplicate_timestamps_utc`; if any of these fail, the agent
+  returns a deterministic `status="abstained"` report with fixed reason
+  categories and makes **zero OpenAI requests** (zero model tokens spent).
+  Missing/stale news or macro data does not block execution — it is instead
+  surfaced as a deterministic limitation on the final report. Two strict
+  Pydantic models (`extra="forbid"`, every field bounded) govern the
+  contract: `MarketEvidenceModelAnalysis` (the only schema sent to OpenAI —
+  `evidence_quality`, `evidence_summary`, 1–6 `observations` each citing 1–5
+  evidence IDs, 0–6 `limitations`) and `MarketEvidenceReport` (the final
+  report, adding `status`, `symbol`, `session_date_et`, and two **fixed**
+  literal fields, `directional_assessment` and `trade_recommendation`, both
+  always `"not_performed"` — the model-facing schema does not even include
+  these fields, so the model cannot set them; that restriction is absolute).
+  The model's free-text fields (`evidence_summary`, every observation
+  `statement`, every model-supplied `limitation`) are additionally screened
+  by a deterministic, fail-closed post-response content policy check
+  (`MarketEvidencePolicyError`, added 2026-08-24) that rejects known
+  directional-prediction, bullish/bearish-bias, trade-recommendation/action,
+  and options-related (strikes/contracts/premiums) language before
+  `MarketEvidenceReport` is constructed — a conservative, bounded filter and
+  defense-in-depth on top of the model's developer instructions, not proof
+  that every possible semantic violation is detectable. The rejected text is
+  never echoed in the raised error.
+
+  Every evidence ID the model cites in its response is validated after the
+  fact against the exact evidence package sent for that request; a missing,
+  fabricated, duplicated, or excessive citation raises a sanitized
+  `MarketEvidenceCitationError` rather than being accepted. A model refusal
+  or an incomplete response is never silently converted into a completed
+  analysis — both raise a distinct, sanitized error
+  (`MarketEvidenceRefusalError`/`MarketEvidenceIncompleteError`) instead of
+  a report claiming `status="completed"`. The CLI's default mode is a dry
+  run: it builds the local evidence package and evaluates preflight only,
+  making zero OpenAI requests, and prints only eligibility, the fixed reason
+  categories, symbol, session date, an evidence-item count, and data flags —
+  never the evidence contents themselves. `--execute` is required for a
+  paid model request (and only makes one if preflight passes); execute
+  output prints the validated structured report plus sanitized model/token
+  metadata (model name and token counts only) — never the raw provider
+  response, a response ID, the full evidence payload, credentials, or a
+  database path.
+
+  Covered by 47 tests using an injected fake `OpenAIStructuredClient`
+  (mirroring `test_openai_structured.py`'s injection pattern — no real SDK
+  client is ever constructed and no network call is ever made) and fake
+  `MarketContextBuilder`/`SessionQualityBuilder` stand-ins returning fixed,
+  hand-authored dicts matching each builder's documented contract shape (so
+  these tests never open a real database either), plus a small local eval
+  fixture set (typical/missing-data/stale-data/partial-session/
+  adversarial-headline scenarios — ordinary local pytest tests, **not** the
+  OpenAI Evals API). **Passing this test suite demonstrates the
+  deterministic scaffolding around the model call is correct — it does not
+  validate the model's analytical accuracy, and no claim of validated
+  analytical accuracy is made.** As of this entry, `MarketEvidenceAgent` has
+  not been run against the real local database, and no live OpenAI request
+  has been made using it — both remain separate, future, and not yet
+  authorized. It is not integrated into
+  `market_intelligence/orchestration/`, adds no persistence or migration,
+  and adds no dashboard, alerting, or brokerage/Robinhood integration. See
+  [docs/MARKET_EVIDENCE_AGENT.md](docs/MARKET_EVIDENCE_AGENT.md) for full
+  detail.
+
 ## Next Planned Work
 
 1. Data connector design — read-only Alpaca market-data, Alpaca news,
@@ -939,6 +1037,18 @@ or market-analysis capability. No AI analysis or agent orchestration
     developer instructions and evidence, and any decision to build
     forecast/recommendation logic on top of it, all remain separate,
     future, and not yet authorized.
+
+15. **Market Evidence Agent added (2026-08-24, code/tests/docs only; no live
+    database access or live OpenAI request made as part of this change).**
+    `MarketEvidenceAgent` (`market_intelligence/agents/market_evidence_agent.py`)
+    and `scripts/run_market_evidence_agent.py` exist (see Status above and
+    [docs/MARKET_EVIDENCE_AGENT.md](docs/MARKET_EVIDENCE_AGENT.md)), covered
+    by 47 tests against fake builder/model-client stand-ins (no real
+    database or network access in tests). Remaining future work: any run
+    against the real local database, any live OpenAI request made through
+    this agent, any orchestration integration, and any decision to build
+    further agents (e.g. a Macro Analyst agent) on this same pattern all
+    remain separate, future, and not yet authorized.
 
 ## Notes
 
