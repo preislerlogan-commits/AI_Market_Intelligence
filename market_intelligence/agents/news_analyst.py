@@ -73,6 +73,9 @@ from market_intelligence.model_clients.openai_structured import (
 )
 
 # --- Bounded field limits ---------------------------------------------------
+#
+# These are the hard, enforced Pydantic Field bounds on NewsAnalystModelAnalysis
+# below -- unchanged by the advisory budgets that follow.
 
 MAX_CLAIM_SUMMARY_LENGTH = 400
 MAX_CONDITIONAL_MECHANISM_LENGTH = 300
@@ -84,6 +87,44 @@ MAX_LIMITATIONS = 6
 MIN_EVIDENCE_IDS_PER_CLAIM = 1
 MAX_EVIDENCE_IDS_PER_CLAIM = 5
 MAX_TRANSMISSION_CHANNELS_PER_CLAIM = 4
+
+# --- Advisory output budgets given to the model (added 2026-08-24) ---------
+#
+# Instruction-level guidance only -- these do NOT change any hard Pydantic
+# Field bound above, and this agent still performs zero truncation, silent
+# modification, retry, or acceptance of invalid output: a response that
+# ignores this guidance and still violates a MAX_*/MIN_* bound above still
+# fails schema validation exactly as before (surfacing as
+# OpenAIParseFailureError / CATEGORY_RESPONSE_VALIDATION_FAILED in
+# openai_structured.py, unchanged). Their purpose is to reduce the
+# likelihood of a real model response landing close to -- or over -- one of
+# those hard bounds in the first place, mirroring the same mitigation
+# already applied to MarketEvidenceAgent's AGENT_INSTRUCTIONS after its own
+# 2026-08-24 live response_validation_failed attempt. The News Analyst's own
+# one authorized 2026-08-24 live execute attempt (symbol SPY, limit=5) also
+# failed structured-output validation; the exact violated response
+# field/value from that attempt is unavailable (this client never captures
+# or logs raw model output -- see OpenAIParseFailureError's docstring).
+# Exceeding a Pydantic-only bound such as minLength/maxLength/minItems/
+# maxItems -- which OpenAI's Structured Outputs generation may not enforce
+# during generation -- is one plausible, locally reproducible failure mode
+# for that attempt, not its proven cause; see PROJECT_STATE.md for the full
+# record. These budgets reduce that plausible risk; they do NOT guarantee a
+# future request will pass validation, since the model can still ignore
+# instruction-level guidance and no bound itself is changed. Each budget
+# carries deliberate margin below its corresponding hard Pydantic maximum
+# (asserted below).
+ADVISORY_MAX_CLAIM_SUMMARY_LENGTH = 300
+ADVISORY_MAX_CONDITIONAL_MECHANISM_LENGTH = 200
+ADVISORY_MAX_LIMITATION_LENGTH = 200
+ADVISORY_PREFERRED_MIN_EVENT_CLAIMS = 1
+ADVISORY_PREFERRED_MAX_EVENT_CLAIMS = 4
+
+assert ADVISORY_MAX_CLAIM_SUMMARY_LENGTH < MAX_CLAIM_SUMMARY_LENGTH
+assert ADVISORY_MAX_CONDITIONAL_MECHANISM_LENGTH < MAX_CONDITIONAL_MECHANISM_LENGTH
+assert ADVISORY_MAX_LIMITATION_LENGTH < MAX_LIMITATION_LENGTH
+assert ADVISORY_PREFERRED_MAX_EVENT_CLAIMS < MAX_EVENT_CLAIMS
+assert ADVISORY_PREFERRED_MIN_EVENT_CLAIMS >= MIN_EVENT_CLAIMS
 
 # --- Fixed, code-authored developer instructions ---------------------------
 #
@@ -122,7 +163,15 @@ AGENT_INSTRUCTIONS = (
     "principle -- never a prediction or forecast for any specific symbol. "
     "If the evidence is thin or conflicting, say so honestly in "
     "evidence_quality and via limitations rather than fabricating detail or "
-    "false confidence. Use concise, factual wording only."
+    "false confidence. Use concise, factual wording only -- no padding, "
+    "filler, or repetition. "
+    f"Keep claim_summary to at most {ADVISORY_MAX_CLAIM_SUMMARY_LENGTH} "
+    f"characters. Keep conditional_mechanism, when given, to at most "
+    f"{ADVISORY_MAX_CONDITIONAL_MECHANISM_LENGTH} characters. Keep each "
+    f"limitation to at most {ADVISORY_MAX_LIMITATION_LENGTH} characters. "
+    f"Prefer {ADVISORY_PREFERRED_MIN_EVENT_CLAIMS} to "
+    f"{ADVISORY_PREFERRED_MAX_EVENT_CLAIMS} event claims, and only exceed "
+    "that range if genuinely necessary to cover materially distinct events."
 )
 
 _EvidenceIdStr = Annotated[str, Field(min_length=1, max_length=MAX_EVIDENCE_ID_LENGTH)]

@@ -1345,3 +1345,269 @@ def test_generate_maps_real_market_evidence_schema_bound_violation_to_response_v
 
     assert exc_info.value.category == CATEGORY_RESPONSE_VALIDATION_FAILED
     assert str(exc_info.value) == "OpenAI response failed structured-output validation."
+
+
+# ---------------------------------------------------------------------------
+# Regression coverage using the real, production NewsAnalystModelAnalysis
+# schema (market_intelligence.agents.news_analyst) -- reproduces, entirely
+# offline, the same sanitized error class/category/message
+# ("OpenAI response failed structured-output validation.",
+# response_validation_failed) observed in the one authorized live SPY,
+# limit=5 execute attempt on 2026-08-24, for one plausible failure mode (a
+# Pydantic-only bound violation) -- not proof of that attempt's exact cause,
+# which remains unrecoverable from local evidence (this client never
+# captures or logs raw model output) -- and proves the real News Analyst
+# schema is itself still structurally valid/buildable via the production
+# preflight. Mirrors the equivalent MarketEvidenceModelAnalysis regression
+# tests immediately above.
+# ---------------------------------------------------------------------------
+
+
+def test_real_news_analyst_schema_passes_the_production_schema_preflight():
+    """Regression check using only production's own schema preflight and
+    public Pydantic v2 API -- no private/underscore-prefixed OpenAI SDK
+    module (e.g. ``openai.lib._pydantic``) is imported here or by
+    production code, so this test carries no dependency on the installed
+    OpenAI SDK's internal layout or version.
+
+    Offline proof: the real ``NewsAnalystModelAnalysis`` schema passes
+    ``_validate_output_model`` (the same production preflight ``generate()``
+    runs before any request is built), so it is not fundamentally
+    unrepresentable as JSON Schema -- and its own ``model_json_schema()``
+    output confirms ``additionalProperties: false`` and the Annotated Field
+    bounds (minLength/maxLength/minItems/maxItems) this project's Pydantic
+    models enforce client-side. This does NOT prove what OpenAI's own
+    server-side strict-schema check or generation-time enforcement does with
+    these keywords -- see OpenAIParseFailureError's docstring for what
+    remains an unproven, plausible explanation only."""
+    from market_intelligence.agents.news_analyst import NewsAnalystModelAnalysis
+    from market_intelligence.model_clients.openai_structured import _validate_output_model
+
+    # Does not raise OpenAIRequestSchemaError -- passes the production preflight.
+    _validate_output_model(NewsAnalystModelAnalysis)
+
+    schema = NewsAnalystModelAnalysis.model_json_schema()
+
+    assert schema["type"] == "object"
+    assert schema["additionalProperties"] is False
+    assert schema["properties"]["event_claims"]["minItems"] == 1
+    assert schema["properties"]["event_claims"]["maxItems"] == 6
+    assert schema["properties"]["limitations"]["maxItems"] == 6
+
+    event_claim_schema = schema["$defs"]["EventClaim"]
+    assert event_claim_schema["additionalProperties"] is False
+    assert event_claim_schema["properties"]["claim_summary"]["minLength"] == 1
+    assert event_claim_schema["properties"]["claim_summary"]["maxLength"] == 400
+    assert event_claim_schema["properties"]["evidence_ids"]["minItems"] == 1
+    assert event_claim_schema["properties"]["evidence_ids"]["maxItems"] == 5
+
+
+def test_generate_completed_with_real_news_analyst_schema_and_synthetic_valid_response(
+    monkeypatch, isolated_env_file
+):
+    """Regression test: a synthetic, schema-and-bound-conformant
+    NewsAnalystModelAnalysis instance round-trips through generate()
+    unchanged, proving the real agent schema works end to end offline
+    (no network, no credentials)."""
+    from market_intelligence.agents.news_analyst import EventClaim, NewsAnalystModelAnalysis
+
+    settings = configured_settings(monkeypatch, isolated_env_file)
+    valid_analysis = NewsAnalystModelAnalysis(
+        evidence_quality="sufficient",
+        event_claims=[
+            EventClaim(
+                event_type="monetary_policy",
+                claim_summary="The provider reports the Fed held rates steady.",
+                evidence_ids=["news_aaaa1111bbbb2222"],
+                content_basis="headline_only",
+                transmission_channels=["rates"],
+            )
+        ],
+        limitations=[],
+    )
+    content = make_content(type_="output_text", parsed=valid_analysis)
+    fake = FakeSDKClient(
+        result=make_response(
+            status="completed",
+            output=[make_message(contents=[content])],
+            output_parsed=valid_analysis,
+        )
+    )
+    client = OpenAIStructuredClient(settings, sdk_client=fake)
+
+    result = client.generate(
+        instructions=VALID_INSTRUCTIONS,
+        evidence=VALID_EVIDENCE,
+        output_model=NewsAnalystModelAnalysis,
+    )
+
+    assert result.status == "completed"
+    assert result.parsed == valid_analysis
+    assert fake.responses.calls[0]["text_format"] is NewsAnalystModelAnalysis
+
+
+def test_generate_maps_real_news_analyst_schema_bound_violation_to_response_validation_failed(
+    monkeypatch, isolated_env_file
+):
+    """Regression test for one plausible explanation of the diagnosed
+    2026-08-24 News Analyst live failure class (symbol SPY, limit=5) -- not
+    proof of that attempt's exact cause (see OpenAIParseFailureError's
+    docstring: the exact response field/value from that live attempt is
+    unavailable and unrecoverable).
+
+    IF a response were to satisfy OpenAI's own server-side strict-schema
+    check (correct types/enum/required/additionalProperties) yet still
+    violate one of NewsAnalystModelAnalysis's Pydantic-only length bounds --
+    a scenario this project cannot confirm OpenAI's documentation rules out
+    for the non-fine-tuned ``gpt-5-mini`` model used here (see
+    test_real_news_analyst_schema_passes_the_production_schema_preflight)
+    -- the installed OpenAI SDK's own ``responses.parse()`` re-validates the
+    response against ``output_model`` client-side, and that re-validation is
+    what would raise ``pydantic.ValidationError`` -- the same exception this
+    module's ``except pydantic.ValidationError`` clause catches. This test
+    proves, entirely offline, that such a violation with the *real*
+    production schema maps to the same
+    ``OpenAIParseFailureError``/``response_validation_failed`` category and
+    the same sanitized message this client raises for that category in
+    general -- a plausible, locally reproducible failure signature
+    consistent with the one authorized live execute attempt on 2026-08-24,
+    not proof that this was what actually happened in that attempt."""
+    from market_intelligence.agents.news_analyst import NewsAnalystModelAnalysis
+
+    settings = configured_settings(monkeypatch, isolated_env_file)
+
+    # Shaped correctly (right keys/types/enum) but claim_summary exceeds the
+    # schema's maxLength=400 bound -- this client's own Pydantic
+    # re-validation enforces this bound client-side regardless of whether
+    # OpenAI's generation-time check enforces it too.
+    oversized_claim_summary_payload = {
+        "evidence_quality": "sufficient",
+        "event_claims": [
+            {
+                "event_type": "monetary_policy",
+                "claim_summary": "x" * 401,
+                "evidence_ids": ["news_aaaa1111bbbb2222"],
+                "content_basis": "headline_only",
+                "transmission_channels": [],
+            }
+        ],
+        "limitations": [],
+    }
+    try:
+        NewsAnalystModelAnalysis.model_validate(oversized_claim_summary_payload)
+    except pydantic.ValidationError as captured:
+        validation_error = captured
+    else:  # pragma: no cover - defensive; payload must violate maxLength
+        raise AssertionError("expected a ValidationError from the oversized claim_summary")
+
+    fake = FakeSDKClient(exception=validation_error)
+    client = OpenAIStructuredClient(settings, sdk_client=fake)
+
+    with pytest.raises(OpenAIParseFailureError) as exc_info:
+        client.generate(
+            instructions=VALID_INSTRUCTIONS,
+            evidence=VALID_EVIDENCE,
+            output_model=NewsAnalystModelAnalysis,
+        )
+
+    assert exc_info.value.category == CATEGORY_RESPONSE_VALIDATION_FAILED
+    assert str(exc_info.value) == "OpenAI response failed structured-output validation."
+
+
+def test_generate_maps_real_news_analyst_schema_excessive_event_claims_to_response_validation_failed(  # noqa: E501
+    monkeypatch, isolated_env_file
+):
+    """A second, distinct representative oversized-response scenario for the
+    same real News Analyst schema: seven event claims exceeds
+    ``max_length=6`` on ``event_claims`` (``MAX_EVENT_CLAIMS``). Proves the
+    same sanitized ``response_validation_failed`` category/message is
+    reproduced for a *count*-bound violation, not only a *length*-bound
+    violation -- entirely offline, no network, no credentials."""
+    from market_intelligence.agents.news_analyst import NewsAnalystModelAnalysis
+
+    settings = configured_settings(monkeypatch, isolated_env_file)
+
+    one_claim = {
+        "event_type": "monetary_policy",
+        "claim_summary": "The provider reports the Fed held rates steady.",
+        "evidence_ids": ["news_aaaa1111bbbb2222"],
+        "content_basis": "headline_only",
+        "transmission_channels": [],
+    }
+    excessive_event_claims_payload = {
+        "evidence_quality": "sufficient",
+        "event_claims": [one_claim] * 7,
+        "limitations": [],
+    }
+    try:
+        NewsAnalystModelAnalysis.model_validate(excessive_event_claims_payload)
+    except pydantic.ValidationError as captured:
+        validation_error = captured
+    else:  # pragma: no cover - defensive; payload must violate max_length
+        raise AssertionError("expected a ValidationError from the excessive event_claims")
+
+    fake = FakeSDKClient(exception=validation_error)
+    client = OpenAIStructuredClient(settings, sdk_client=fake)
+
+    with pytest.raises(OpenAIParseFailureError) as exc_info:
+        client.generate(
+            instructions=VALID_INSTRUCTIONS,
+            evidence=VALID_EVIDENCE,
+            output_model=NewsAnalystModelAnalysis,
+        )
+
+    assert exc_info.value.category == CATEGORY_RESPONSE_VALIDATION_FAILED
+    assert str(exc_info.value) == "OpenAI response failed structured-output validation."
+
+
+# ---------------------------------------------------------------------------
+# Zero-automatic-retry behavior (max_retries=0 on the constructed SDK
+# client, and no application-level retry loop in generate() itself) --
+# explicit regression coverage for a requirement this project already
+# enforces, so it stays enforced even if the client-construction code moves.
+# ---------------------------------------------------------------------------
+
+
+def test_build_sdk_client_sets_max_retries_zero(monkeypatch, isolated_env_file):
+    """No automatic retry: the constructed SDK client is always built with
+    ``max_retries=0``, so a request either completes within the configured
+    timeout or fails once -- there is no SDK-level retry loop. Constructing
+    an ``openai.OpenAI`` client makes no network call, so this is safe to
+    call directly with a fake API key."""
+    settings = configured_settings(monkeypatch, isolated_env_file)
+    client = OpenAIStructuredClient(settings)
+
+    sdk_client = client._build_sdk_client()
+
+    assert sdk_client.max_retries == 0
+
+
+def test_generate_calls_sdk_parse_exactly_once_on_failure_no_retry(
+    monkeypatch, isolated_env_file
+):
+    """No application-level retry loop: a failing SDK call is made exactly
+    once by ``generate()``, whatever the failure category -- confirmed here
+    for the same ``response_validation_failed`` category diagnosed for the
+    live News Analyst failure."""
+    from market_intelligence.agents.news_analyst import NewsAnalystModelAnalysis
+
+    settings = configured_settings(monkeypatch, isolated_env_file)
+
+    try:
+        NewsAnalystModelAnalysis.model_validate({"evidence_quality": "sufficient"})
+    except pydantic.ValidationError as captured:
+        validation_error = captured
+    else:  # pragma: no cover - defensive; payload is missing event_claims
+        raise AssertionError("expected a ValidationError from the missing event_claims")
+
+    fake = FakeSDKClient(exception=validation_error)
+    client = OpenAIStructuredClient(settings, sdk_client=fake)
+
+    with pytest.raises(OpenAIParseFailureError):
+        client.generate(
+            instructions=VALID_INSTRUCTIONS,
+            evidence=VALID_EVIDENCE,
+            output_model=NewsAnalystModelAnalysis,
+        )
+
+    assert len(fake.responses.calls) == 1

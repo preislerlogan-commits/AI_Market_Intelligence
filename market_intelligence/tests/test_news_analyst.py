@@ -15,7 +15,16 @@ import pytest
 from pydantic import ValidationError
 
 from market_intelligence.agents.news_analyst import (
+    ADVISORY_MAX_CLAIM_SUMMARY_LENGTH,
+    ADVISORY_MAX_CONDITIONAL_MECHANISM_LENGTH,
+    ADVISORY_MAX_LIMITATION_LENGTH,
+    ADVISORY_PREFERRED_MAX_EVENT_CLAIMS,
+    ADVISORY_PREFERRED_MIN_EVENT_CLAIMS,
     AGENT_INSTRUCTIONS,
+    MAX_CLAIM_SUMMARY_LENGTH,
+    MAX_CONDITIONAL_MECHANISM_LENGTH,
+    MAX_EVENT_CLAIMS,
+    MAX_LIMITATION_LENGTH,
     MAX_LIMITATIONS,
     PREFLIGHT_REASON_FUTURE_TIMESTAMP_DETECTED,
     PREFLIGHT_REASON_NEWS_MISSING,
@@ -463,6 +472,43 @@ def test_run_raises_on_model_incomplete_response():
     assert "max_output_tokens" in str(exc_info.value)
 
 
+def test_run_propagates_response_validation_failed_without_leaking():
+    """The News Analyst's one authorized 2026-08-24 live execute attempt
+    (symbol SPY, limit=5) failed with ``OpenAIParseFailureError``
+    (category ``response_validation_failed``) raised inside
+    ``OpenAIStructuredClient.generate()`` -- this can only occur after a
+    request was sent and a response was received (see
+    ``OpenAIParseFailureError``'s docstring); it is distinct from a
+    request-schema construction failure (``OpenAIRequestSchemaError``,
+    raised before any request) and from a refusal/incomplete response
+    (reported via ``StructuredOutputResult.status``, never an exception).
+    ``NewsAnalyst.run()`` re-raises a sanitized ``OpenAIStructuredError``
+    subclass unchanged (see ``except OpenAIStructuredError: raise`` in
+    ``run()``) -- this proves that propagation carries the fixed, sanitized
+    message and category only, never raw evidence/headline text."""
+    from market_intelligence.model_clients.openai_structured import (
+        CATEGORY_RESPONSE_VALIDATION_FAILED,
+        OpenAIParseFailureError,
+        OpenAIStructuredError,
+    )
+
+    secret_headline = "unit-test-should-never-leak-headline-marker-4d8e21"
+    agent, *_ = make_agent(
+        snapshot=make_snapshot(articles=[make_article(headline=secret_headline)]),
+        model_exception=OpenAIParseFailureError(
+            "OpenAI response failed structured-output validation."
+        ),
+    )
+
+    with pytest.raises(OpenAIStructuredError) as exc_info:
+        agent.run("SPY")
+
+    assert isinstance(exc_info.value, OpenAIParseFailureError)
+    assert exc_info.value.category == CATEGORY_RESPONSE_VALIDATION_FAILED
+    assert str(exc_info.value) == "OpenAI response failed structured-output validation."
+    assert secret_headline not in str(exc_info.value)
+
+
 # ---------------------------------------------------------------------------
 # run(): citation validation
 # ---------------------------------------------------------------------------
@@ -787,3 +833,54 @@ def test_event_claim_rejects_invalid_event_type():
 def test_event_claim_rejects_invalid_content_basis():
     with pytest.raises(ValidationError):
         valid_claim(content_basis="fully_verified_fact")
+
+
+# ---------------------------------------------------------------------------
+# Advisory output budgets (added 2026-08-24, recurrence-reduction hardening
+# after the one authorized live SPY/limit=5 execute attempt failed
+# structured-output validation). Instruction-level guidance only -- must
+# carry margin below the corresponding hard Pydantic maximum (the diagnosed
+# plausible proximate cause of that failure; see PROJECT_STATE.md). These
+# budgets do not change any Pydantic Field bound, and the agent still
+# performs zero truncation, silent modification, retry, or acceptance of
+# invalid output -- see test_model_analysis_schema_forbids_extra_fields and
+# the citation/policy/schema tests elsewhere in this file for those
+# still-unchanged hard guarantees.
+# ---------------------------------------------------------------------------
+
+
+def test_advisory_budgets_are_strictly_below_the_enforced_schema_maxima():
+    """The whole point of an advisory budget is margin below the hard
+    Pydantic maximum it corresponds to -- prove that offline, numerically,
+    rather than only informally in a comment."""
+    assert ADVISORY_MAX_CLAIM_SUMMARY_LENGTH < MAX_CLAIM_SUMMARY_LENGTH
+    assert ADVISORY_MAX_CONDITIONAL_MECHANISM_LENGTH < MAX_CONDITIONAL_MECHANISM_LENGTH
+    assert ADVISORY_MAX_LIMITATION_LENGTH < MAX_LIMITATION_LENGTH
+    assert ADVISORY_PREFERRED_MAX_EVENT_CLAIMS < MAX_EVENT_CLAIMS
+    assert ADVISORY_PREFERRED_MIN_EVENT_CLAIMS >= 1
+
+
+def test_agent_instructions_state_the_claim_summary_budget():
+    assert f"at most {ADVISORY_MAX_CLAIM_SUMMARY_LENGTH} " in AGENT_INSTRUCTIONS
+    assert "claim_summary" in AGENT_INSTRUCTIONS
+
+
+def test_agent_instructions_state_the_conditional_mechanism_budget():
+    assert f"at most {ADVISORY_MAX_CONDITIONAL_MECHANISM_LENGTH} " in AGENT_INSTRUCTIONS
+    assert "conditional_mechanism" in AGENT_INSTRUCTIONS
+
+
+def test_agent_instructions_state_the_limitation_budget():
+    assert f"at most {ADVISORY_MAX_LIMITATION_LENGTH} " in AGENT_INSTRUCTIONS
+    assert "limitation" in AGENT_INSTRUCTIONS
+
+
+def test_agent_instructions_state_the_preferred_event_claim_count_range():
+    assert (
+        f"Prefer {ADVISORY_PREFERRED_MIN_EVENT_CLAIMS} to "
+        f"{ADVISORY_PREFERRED_MAX_EVENT_CLAIMS} event claims" in AGENT_INSTRUCTIONS
+    )
+
+
+def test_agent_instructions_ask_for_concise_factual_wording():
+    assert "concise, factual wording" in AGENT_INSTRUCTIONS

@@ -166,14 +166,37 @@ Two strict Pydantic models (`extra="forbid"`, every field bounded):
   `event_claims` (1-6 `EventClaim`), `limitations` (0-6 bounded strings).
 - **`EventClaim`**:
   - `event_type` -- `"monetary_policy"|"economic_data"|"corporate"|"regulatory"|"geopolitical"|"market_structure"|"other"`.
-  - `claim_summary` -- concise, bounded string, expected (by instruction) to
-    be explicitly framed as provider-reported.
+  - `claim_summary` -- concise, bounded string (hard max 400 characters),
+    expected (by instruction) to be explicitly framed as provider-reported.
   - `evidence_ids` -- 1-5 bounded strings.
   - `content_basis` -- `"headline_only"|"headline_and_provider_summary"`.
   - `transmission_channels` -- 0-4 values from `"rates"|"inflation"|"growth"|"earnings"|"liquidity"|"risk_appetite"|"regulation"|"supply_chain"|"other"`.
-  - `conditional_mechanism` -- nullable, bounded string describing only a
-    general, non-predictive transmission channel -- never a prediction for
-    any specific symbol.
+  - `conditional_mechanism` -- nullable, bounded string (hard max 300
+    characters) describing only a general, non-predictive transmission
+    channel -- never a prediction for any specific symbol.
+
+  `limitations` is a list of 0-6 bounded strings (hard max 300 characters
+  each).
+
+  **Advisory output budgets (added 2026-08-24, recurrence-reduction
+  hardening -- see "Known structured-output validation failure" below).**
+  `AGENT_INSTRUCTIONS` includes explicit, conservative advisory output
+  budgets, each with deliberate margin below its corresponding hard
+  Pydantic maximum above: `claim_summary` at most `ADVISORY_MAX_CLAIM_SUMMARY_LENGTH`
+  (300, hard max 400) characters, `conditional_mechanism` at most
+  `ADVISORY_MAX_CONDITIONAL_MECHANISM_LENGTH` (200, hard max 300)
+  characters, each `limitation` at most `ADVISORY_MAX_LIMITATION_LENGTH`
+  (200, hard max 300) characters, and `ADVISORY_PREFERRED_MIN_EVENT_CLAIMS`
+  to `ADVISORY_PREFERRED_MAX_EVENT_CLAIMS` (1 to 4, hard max 6) event claims
+  preferred, only exceeded if genuinely necessary. **This is
+  instruction-level guidance only: no hard Pydantic bound was changed, and
+  the agent still performs zero truncation, silent modification, retry, or
+  acceptance of invalid output** -- a response that ignores this guidance
+  and still violates a hard bound still fails schema validation exactly as
+  before (`NewsAnalystUnexpectedError`/`OpenAIParseFailureError` propagate
+  unchanged). These budgets reduce the likelihood of a real response landing
+  close to -- or over -- a hard bound; they do not guarantee any future
+  request will pass validation.
 - **`NewsAnalystReport`** -- the final report returned by `run()` for both a
   completed and an abstained run:
 
@@ -287,6 +310,77 @@ including its own `category` attribute. A sanitized `NewsEvidenceError` from
 the underlying snapshot builder (e.g. a storage read failure) also
 propagates unchanged.
 
+## Known structured-output validation failure (2026-08-24)
+
+On 2026-08-24, the first authorized live `--execute` attempt through
+`NewsAnalyst` (symbol `SPY`, `limit=5`) failed with a sanitized
+`{"error": "agent_error", "detail": "OpenAI response failed
+structured-output validation.", "category": "response_validation_failed"}`
+-- `OpenAIParseFailureError`, raised inside `OpenAIStructuredClient.generate()`
+and propagated unchanged through `NewsAnalyst.run()` (`except
+OpenAIStructuredError: raise`, see `news_analyst.py`). **No analysis was
+accepted, and no retry or second live request was made.**
+
+**Offline diagnosis (2026-08-24, no live request made to investigate).**
+`NewsAnalyst` calls the exact same `OpenAIStructuredClient.generate()` used
+by the Market Evidence Agent, whose own 2026-08-24
+`response_validation_failed` failure was already diagnosed in detail (see
+[docs/OPENAI_PROVIDER_BOUNDARY.md](OPENAI_PROVIDER_BOUNDARY.md)'s "Known
+structured-output validation failure" section and `PROJECT_STATE.md`).
+Reading `OpenAIStructuredClient.generate()`'s exception-mapping code
+(`market_intelligence/model_clients/openai_structured.py`) proves the same
+three-way distinction holds for this attempt:
+
+- **Not a request-schema construction failure.** `output_model`
+  (`NewsAnalystModelAnalysis`) is validated by `_validate_output_model()`
+  *before* any SDK client is built or request sent; an unrepresentable
+  schema raises `OpenAIRequestSchemaError` (category
+  `request_schema_invalid`), not `pydantic.ValidationError`. Regenerating
+  the real schema locally (`test_real_news_analyst_schema_passes_the_production_schema_preflight`
+  in `market_intelligence/tests/test_openai_structured.py`) confirms
+  `NewsAnalystModelAnalysis` passes this preflight -- it is structurally
+  valid and buildable, `additionalProperties: false` throughout, every
+  property required, enums/nested arrays/`$defs`/`$ref` all resolve. No
+  schema restructuring was needed or made.
+- **Not a refusal or an incomplete response.** Both are reported via
+  `StructuredOutputResult.status` (`"refusal"`/`"incomplete"`), never via a
+  raised exception -- `NewsAnalyst.run()` maps those to
+  `NewsAnalystRefusalError`/`NewsAnalystIncompleteError` explicitly, neither
+  of which was the error observed.
+- **Is a received-response content validation failure.** Inside
+  `generate()`, `pydantic.ValidationError` can only be raised by the
+  installed OpenAI SDK's own client-side re-validation of an *actually
+  received* response's text against `output_model`
+  (`parse_text()` -> `model_validate_json()`) -- this structurally proves a
+  request was sent and a response was received (tokens were spent; no exact
+  count was recorded, since this client never captures token/response
+  metadata for a failed request) before validation failed.
+
+**Because this client never captures or logs raw model output (by design),
+the exact field/value that violated a bound in this one live attempt is
+unavailable and cannot be proven from local evidence alone.** Exceeding one
+of `NewsAnalystModelAnalysis`'s Pydantic-only `minLength`/`maxLength`/
+`minItems`/`maxItems` bounds (e.g. `claim_summary`'s 400-character maximum,
+or `event_claims`' 6-item maximum) is one plausible, locally reproducible
+failure mode for a response that was otherwise type/enum/shape-conformant --
+reproduced offline in
+`test_generate_maps_real_news_analyst_schema_bound_violation_to_response_validation_failed`
+and
+`test_generate_maps_real_news_analyst_schema_excessive_event_claims_to_response_validation_failed`
+(`market_intelligence/tests/test_openai_structured.py`) -- it is **not**
+established as the proven cause of this specific live attempt. OpenAI has
+not published official documentation establishing that its Structured
+Outputs generation leaves these bound keywords unenforced specifically for
+the non-fine-tuned `gpt-5-mini` model this project uses.
+
+No strict structured output, citation validation, content-basis validation,
+output-policy validation, or field bound was removed or weakened to
+diagnose or respond to this failure. The mitigation applied instead is the
+advisory output budgets described above under "Structured output" -- they
+reduce the likelihood of a real response landing close to -- or over -- a
+hard bound; they do not guarantee any future request will pass validation.
+See `PROJECT_STATE.md` for the full, dated record.
+
 ## Command-line usage
 
 ```
@@ -377,6 +471,28 @@ small fake builder returning a fixed, hand-authored snapshot dict matching
 the documented contract shape, so these tests never open a real database
 either.
 
+**Advisory-budget and structured-output regression coverage (added
+2026-08-24).** `test_news_analyst.py` gained tests proving every advisory
+budget is present in `AGENT_INSTRUCTIONS` and is numerically strictly below
+its corresponding hard Pydantic maximum, and that
+`OpenAIParseFailureError`/`response_validation_failed` propagates unchanged
+through `NewsAnalyst.run()` without leaking evidence text. Separately,
+`market_intelligence/tests/test_openai_structured.py` gained regression
+tests using the real, production `NewsAnalystModelAnalysis` schema (not only
+that file's pre-existing generic toy models): one proves the schema passes
+production's own schema preflight (`_validate_output_model`, public
+Pydantic API only); one proves a synthetic, schema-and-bound-conformant
+response round-trips through `generate()` unchanged; two prove distinct
+representative oversized/invalid responses (an oversized `claim_summary`,
+and an excessive `event_claims` count) each reproduce the same sanitized
+`OpenAIParseFailureError`/`response_validation_failed` category and message
+this client raises in general -- a plausible, locally reproducible failure
+signature, not proof of the live attempt's exact cause. Two further tests
+prove no automatic retry occurs: the constructed SDK client is always built
+with `max_retries=0`, and a failing SDK call is made exactly once by
+`generate()`. All of this runs entirely offline -- no network, no
+credentials.
+
 `test_news_analyst_eval_fixtures.py` is a small, local, deterministic table
 of representative scenarios (typical mixed news / headline-only / stale /
 future-timestamp / adversarial-headline) asserting the agent's deterministic
@@ -393,9 +509,15 @@ this repository** (see [CLAUDE.md](../CLAUDE.md)/[AGENTS.md](../AGENTS.md)'s
 
 ## Known limitations
 
-- As of this change (code/tests/docs only), `NewsAnalyst` has not been run
-  against the real local database, and no live OpenAI request has been made
-  using it -- both remain separate, future, and not yet authorized.
+- **As of this change (2026-08-24):** `NewsAnalyst` has been run once,
+  live, against the real local database with `--execute` (symbol `SPY`,
+  `limit=5`). The deterministic preflight passed and exactly one live
+  OpenAI request was sent, but that request failed structured-output
+  validation (`response_validation_failed`) -- **no analysis was accepted,
+  and no retry was made**. See "Known structured-output validation failure
+  (2026-08-24)" above for the full diagnosis, and `PROJECT_STATE.md` for the
+  dated record. No other live database access or live OpenAI request has
+  been made using this agent.
 - Single symbol per call -- no batch, no multi-symbol comparison, no
   multi-turn conversation.
 - No tools, no web search, no file access by the model, no persistence, no
