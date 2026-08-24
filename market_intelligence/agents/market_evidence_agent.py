@@ -46,13 +46,15 @@ surfaced as a deterministic limitation on the final report instead (see
 
 from __future__ import annotations
 
-import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from market_intelligence.agents.non_directional_output_policy import (
+    find_prohibited_content_category,
+)
 from market_intelligence.config.settings import Settings
 from market_intelligence.data_connectors.alpaca_market_data import (
     AlpacaInvalidSymbolError,
@@ -623,60 +625,10 @@ def _validate_citations(
 # top of that instruction, not a replacement for it. It catches known
 # prohibited phrasing; it is not a general-purpose semantic classifier and
 # cannot prove the absence of every possible prohibited meaning (e.g. novel
-# phrasing, other languages, or heavily indirect wording may not match).
-
-_DIRECTIONAL_PREDICTION_RE = re.compile(
-    r"\b(?:will|going\s+to)\s+(?:rise|rally|surge|climb|jump|soar|fall|drop|"
-    r"plunge|decline|slide|tumble|break\s*out|reverse|correct)\b"
-    r"|\b(?:expected|likely|poised|set|primed)\s+to\s+(?:rise|rally|surge|"
-    r"climb|fall|drop|plunge|decline|slide|tumble)\b"
-    r"|\bprice\s+target\b"
-    r"|\b(?:forecast|predict)(?:s|ed|ing|ion)?\b"
-    r"|\boutlook\s+is\b",
-    re.IGNORECASE,
-)
-
-_BIAS_RE = re.compile(r"\b(?:bullish|bearish)\b", re.IGNORECASE)
-
-_TRADE_ACTION_RE = re.compile(
-    r"\b(?:buy|sell|short|long)\s+(?:this|the)\s+(?:stock|symbol|shares?|"
-    r"position|security)\b"
-    r"|\brecommend(?:s|ed|ing)?\s+(?:a\s+)?(?:buy|sell|buying|selling|shorting)\b"
-    r"|\b(?:should|consider)\s+(?:buy|sell|buying|selling|shorting)\b"
-    r"|\bgo(?:ing)?\s+(?:long|short)\b"
-    r"|\benter(?:ing)?\s+a\s+(?:trade|position)\b"
-    r"|\bexit(?:ing)?\s+(?:the|a)\s+(?:trade|position)\b"
-    r"|\bstop[\s-]?loss\b"
-    r"|\btake[\s-]?profit\b"
-    r"|\b(?:buy|sell)\s+signal\b"
-    r"|\bhold\s+(?:this|the)\s+(?:stock|position|shares?)\b"
-    r"|\btrade\s+recommendation\b",
-    re.IGNORECASE,
-)
-
-_OPTIONS_RE = re.compile(
-    r"\bstrikes?\b"
-    r"|\boptions?\b"
-    r"|\b(?:call|put)\s+options?\b"
-    r"|\bpremiums?\b",
-    re.IGNORECASE,
-)
-
-_POLICY_PATTERNS: dict[str, re.Pattern[str]] = {
-    "directional_prediction": _DIRECTIONAL_PREDICTION_RE,
-    "bullish_bearish_bias": _BIAS_RE,
-    "trade_recommendation_or_action": _TRADE_ACTION_RE,
-    "options_detail": _OPTIONS_RE,
-}
-
-
-def _find_policy_violation(text: str) -> str | None:
-    """Return the first matching violation category for ``text``, or
-    ``None``. Never returns or logs the matched text itself."""
-    for category, pattern in _POLICY_PATTERNS.items():
-        if pattern.search(text):
-            return category
-    return None
+# phrasing, other languages, or heavily indirect wording may not match). The
+# actual pattern matching is shared with any other agent needing the same
+# non-directional guarantee -- see
+# ``market_intelligence/agents/non_directional_output_policy.py``.
 
 
 def _enforce_output_policy(analysis: MarketEvidenceModelAnalysis) -> None:
@@ -700,7 +652,7 @@ def _enforce_output_policy(analysis: MarketEvidenceModelAnalysis) -> None:
     )
 
     for field_name, text in fields:
-        category = _find_policy_violation(text)
+        category = find_prohibited_content_category(text)
         if category is not None:
             raise MarketEvidencePolicyError(
                 "Model-authored output failed the post-response content "
