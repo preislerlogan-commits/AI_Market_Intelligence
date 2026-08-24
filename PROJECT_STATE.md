@@ -88,8 +88,15 @@ preflight gate. **A first authorized live run has since been made (also
 2026-08-24, see Status below): a dry run against the real database
 succeeded (eligible, 20 evidence items), and one authorized live
 `--execute` attempt failed structured-output validation
-(`OpenAIParseFailureError`) — no analysis has yet been accepted from a live
-run.** It is not integrated into
+(`OpenAIParseFailureError`) — no analysis was accepted from that attempt.**
+**A separately authorized follow-up `--execute` attempt, made the same day
+after the PR #20 structured-output hardening described below, then
+succeeded: one live analysis was accepted end to end (see the "First
+completed live Market Evidence Agent run" Status entry below and
+[docs/MARKET_EVIDENCE_EVALUATIONS.md](docs/MARKET_EVIDENCE_EVALUATIONS.md)
+for the sanitized record and a manual quality read of that one output —
+that manual read is one example, not a validated evaluation methodology or
+a claim of factual accuracy).** It is not integrated into
 `market_intelligence/orchestration/`. `directional_assessment`/
 `trade_recommendation` on every report it produces are always the fixed
 value `"not_performed"` — the model-facing schema does not even include
@@ -1066,6 +1073,41 @@ other AI analysis or agent orchestration (in the AI-agent sense) exists yet.
   one test was replaced, not added or removed). `ruff check .` and
   `git diff --check` both pass.
 
+- **First completed live Market Evidence Agent run (2026-08-24, same day,
+  after the PR #20 hardening above).** A separately authorized follow-up
+  `--execute` attempt was made against the real database (symbol `SPY`,
+  `session_date_et=2026-08-21`; preflight `eligible=true`,
+  `evidence_item_count=20`, matching the earlier dry run). This attempt
+  completed: **one live model response was accepted end to end** — schema
+  validation, evidence-ID citation validation, and the post-response content
+  policy check all passed — the first time this agent has produced an
+  accepted `status="completed"` `MarketEvidenceReport` from a live run.
+  `evidence_quality="sufficient"`, 5 observations were returned,
+  `directional_assessment`/`trade_recommendation` were both the fixed
+  `"not_performed"` value as always, model `gpt-5-mini`,
+  `input_tokens=1648`, `output_tokens=1535`, `total_tokens=3183`. No
+  persistence and no automatic retry occurred — this remains a single-turn,
+  no-tools, no-storage component exactly as documented above.
+
+  A sanitized record of this run, plus a manual (human) quality read of the
+  one accepted report, is kept in
+  [docs/MARKET_EVIDENCE_EVALUATIONS.md](docs/MARKET_EVIDENCE_EVALUATIONS.md)
+  as evaluation example #1: structured output, citations, and the output
+  policy all passed; the latest stored close and the regular-session close
+  were kept distinct in the model's summary; the stated five-bar return was
+  internally consistent with its own stated endpoints; news/macro/
+  session-scope limitations were correctly surfaced; and one minor citation-
+  relevance issue was observed (the data-quality observation cited
+  `session_same_date_bars` without actually discussing its premarket/
+  after-hours counts — a valid evidence ID, but not clearly necessary to the
+  statement it supported). **This is one manually read example, not an
+  automated evaluation, not a validated evaluation methodology, and not
+  proof of factual accuracy, prediction quality, analytical reliability, or
+  trading usefulness** — see `docs/MARKET_EVIDENCE_EVALUATIONS.md` for the
+  full caveats. No raw model output, response ID, full evidence payload, or
+  credential is reproduced in either document. No code, test, schema bound,
+  or agent behavior was changed to produce or record this run.
+
 ## Next Planned Work
 
 1. Data connector design — read-only Alpaca market-data, Alpaca news,
@@ -1275,11 +1317,16 @@ other AI analysis or agent orchestration (in the AI-agent sense) exists yet.
     sanitized failure-classification hardening (`category` on every
     `OpenAIStructuredError`/`MarketEvidenceAgentError`, a new
     `OpenAIRequestSchemaError`) and new regression tests added against the
-    real `MarketEvidenceModelAnalysis` schema. Remaining future work: a
-    successful live end-to-end completed run (still not yet achieved), any
-    orchestration integration, and any decision to build further agents
-    (e.g. a Macro Analyst agent) on this same pattern all remain separate,
-    future, and not yet authorized.
+    real `MarketEvidenceModelAnalysis` schema. **A successful live
+    end-to-end completed run has since been achieved — see the "First
+    completed live Market Evidence Agent run" Status entry above and
+    [docs/MARKET_EVIDENCE_EVALUATIONS.md](docs/MARKET_EVIDENCE_EVALUATIONS.md)
+    — that entry is one accepted example, not repeated or statistically
+    characterized reliability.** Remaining future work: any orchestration
+    integration, any repeated/broader evaluation of this agent's outputs,
+    and any decision to build further agents (e.g. a Macro Analyst agent)
+    on this same pattern all remain separate, future, and not yet
+    authorized.
 
 ## Notes
 
