@@ -104,6 +104,13 @@ this agent's entire subject matter, so a stale or missing news snapshot
 abstains outright rather than proceeding with a deterministic limitation
 appended.
 
+**A second, distinct kind of abstention (added 2026-08-24) can occur *after*
+this preflight passes and a model response is received** -- see
+"All-irrelevant evidence path" below. That outcome uses its own fixed
+reason, `"no_sufficiently_relevant_articles"`, which is never one of the
+`PREFLIGHT_REASON_*` values above and, unlike every reason in this table,
+is reached only after a real (token-spending) OpenAI request was made.
+
 ## Evidence package and evidence-ID contract
 
 `_build_model_evidence()` builds one bounded dict from the snapshot's
@@ -163,7 +170,9 @@ Two strict Pydantic models (`extra="forbid"`, every field bounded):
   `directional_assessment`, and `trade_recommendation` -- those are
   agent-authored/fixed, so the model has no opportunity to set them.
   Fields: `evidence_quality` (`"sufficient"|"limited"|"insufficient"`),
-  `event_claims` (1-6 `EventClaim`), `limitations` (0-6 bounded strings).
+  `event_claims` (**0**-6 `EventClaim` -- `MIN_EVENT_CLAIMS` was lowered from
+  1 to 0, see "All-irrelevant evidence path" below), `limitations` (0-6
+  bounded strings).
 - **`EventClaim`**:
   - `event_type` -- `"monetary_policy"|"economic_data"|"corporate"|"regulatory"|"geopolitical"|"market_structure"|"other"`.
   - `claim_summary` -- concise, bounded string (hard max 400 characters),
@@ -171,6 +180,16 @@ Two strict Pydantic models (`extra="forbid"`, every field bounded):
   - `evidence_ids` -- 1-5 bounded strings.
   - `content_basis` -- `"headline_only"|"headline_and_provider_summary"`.
   - `transmission_channels` -- 0-4 values from `"rates"|"inflation"|"growth"|"earnings"|"liquidity"|"risk_appetite"|"regulation"|"supply_chain"|"other"`.
+  - `relevance` -- **added 2026-08-24, market-relevance hardening** --
+    `"direct"|"broad_market"|"sector_or_industry"`. Deliberately no
+    `"unknown"` value: a claim whose connection to the requested symbol
+    cannot be classified into one of these three categories must not be
+    produced at all -- the underlying article should be omitted instead
+    (see "Relevance classification and article omission" below).
+  - `relevance_rationale` -- **added 2026-08-24** -- required, bounded
+    string (hard max 300 characters), explaining -- using the cited
+    evidence and a recognized transmission channel -- how the article
+    connects to the requested symbol. Never nullable and never blank.
   - `conditional_mechanism` -- nullable, bounded string (hard max 300
     characters) describing only a general, non-predictive transmission
     channel -- never a prediction for any specific symbol.
@@ -185,7 +204,9 @@ Two strict Pydantic models (`extra="forbid"`, every field bounded):
   Pydantic maximum above: `claim_summary` at most `ADVISORY_MAX_CLAIM_SUMMARY_LENGTH`
   (300, hard max 400) characters, `conditional_mechanism` at most
   `ADVISORY_MAX_CONDITIONAL_MECHANISM_LENGTH` (200, hard max 300)
-  characters, each `limitation` at most `ADVISORY_MAX_LIMITATION_LENGTH`
+  characters, `relevance_rationale` at most
+  `ADVISORY_MAX_RELEVANCE_RATIONALE_LENGTH` (200, hard max 300) characters,
+  each `limitation` at most `ADVISORY_MAX_LIMITATION_LENGTH`
   (200, hard max 300) characters, and `ADVISORY_PREFERRED_MIN_EVENT_CLAIMS`
   to `ADVISORY_PREFERRED_MAX_EVENT_CLAIMS` (1 to 4, hard max 6) event claims
   preferred, only exceeded if genuinely necessary. **This is
@@ -206,12 +227,23 @@ Two strict Pydantic models (`extra="forbid"`, every field bounded):
   "symbol": "SPY",
   "snapshot_created_at_utc": "2026-08-24T12:00:00Z",
   "source_article_count": 3,
+  # "insufficient" here, on a status="abstained" report, means the
+  # all-irrelevant-evidence outcome specifically -- a model response was
+  # received but retained zero event claims (see "All-irrelevant evidence
+  # path" below); it is None only for a *preflight*-abstained report, where
+  # no model call was ever made.
   "evidence_quality": "sufficient" | "limited" | "insufficient" | None,
-  "event_claims": [...],       # [] when abstained
-  "limitations": [...],        # [] when abstained
+  "event_claims": [...],       # [] when abstained (either kind)
+  "limitations": [...],        # still populated when abstained via the
+                                # all-irrelevant-evidence path (e.g. a
+                                # truthful uncited-articles note); [] for a
+                                # preflight abstention
   "directional_assessment": "not_performed",   # always fixed
   "trade_recommendation": "not_performed",     # always fixed
-  "abstained_reasons": [...]    # [] when completed
+  "abstained_reasons": [...]    # [] when completed; a PREFLIGHT_REASON_*
+                                 # value for a preflight abstention, or
+                                 # ["no_sufficiently_relevant_articles"] for
+                                 # the all-irrelevant-evidence outcome
 }
 ```
 
@@ -242,8 +274,43 @@ Before a model response is accepted as `status="completed"`:
   already-sanitized fixed reason category.
 - **Neither refusal nor incomplete is ever silently converted into a
   completed analysis.**
-- **Post-response content policy** -- after citation and content-basis
-  validation and before `NewsAnalystReport` is constructed, every
+- **Claims/quality consistency (added 2026-08-24,
+  `_validate_claims_quality_consistency`, raises
+  `NewsAnalystRelevanceError`)** -- runs *before* citation/content-basis/
+  relevance validation, since it decides whether the response is the
+  all-irrelevant-evidence abstention outcome at all (see "All-irrelevant
+  evidence path" below). Enforces a strict biconditional: `event_claims` is
+  empty if and only if `evidence_quality == "insufficient"`. Rejects empty
+  `event_claims` paired with `"sufficient"`/`"limited"`, and rejects
+  nonempty `event_claims` paired with `"insufficient"` (an incompatible
+  abstention state -- this also prevents a low-effort claim from being used
+  as a fabricated placeholder while still flagging the evidence as
+  insufficient).
+- **Relevance validation (added 2026-08-24, `_validate_relevance`, raises
+  `NewsAnalystRelevanceError`)** -- runs after citation and content-basis
+  validation (and, transitively, after the claims/quality check above,
+  which is a no-op for an empty `event_claims` list). Rejects:
+  - a blank or whitespace-only `relevance_rationale` (checked explicitly,
+    since a whitespace-only string still satisfies the schema's
+    `min_length=1`);
+  - an oversized `relevance_rationale` (defense-in-depth alongside the hard
+    Pydantic `max_length` bound);
+  - a `relevance_rationale` matching a fixed, deterministic denylist for a
+    bare, unspecific mechanism (e.g. "this could affect markets" with no
+    named channel) -- a conservative pattern match, not general semantic
+    understanding, so it is not proof that every unsupported rationale is
+    caught; a rationale that names its mechanism immediately after the
+    verb phrase (e.g. "...could affect markets **through** higher
+    borrowing costs...") is not flagged by this pattern;
+  - a claim asserting `relevance="broad_market"` or
+    `relevance="sector_or_industry"` with zero `transmission_channels` --
+    internally incompatible, since those two relevance values are only
+    meaningful when at least one transmission channel actually supports
+    the connection (`relevance="direct"` carries no such requirement,
+    since it describes the article being about the requested symbol
+    itself).
+- **Post-response content policy** -- after citation, content-basis, and
+  relevance validation and before `NewsAnalystReport` is constructed, every
   model-authored free-text field (every event claim's
   `claim_summary`/`conditional_mechanism` when not `None`, every
   model-supplied `limitation`) is checked against the same fixed,
@@ -256,14 +323,121 @@ Before a model response is accepted as `status="completed"`:
   field name and category name are recorded.
 
 **Passing schema validation, citation validation, content-basis validation,
-and the post-response content policy check is not the same as an extracted
-claim being factually correct.** A syntactically valid, correctly-cited,
-policy-passing `NewsAnalystReport` only proves the model followed the
-citation, shape, content-basis, and known-phrasing rules -- it is not a
-claim that any `claim_summary` accurately reflects the underlying article,
-nor that the underlying provider-reported claim itself is true. No
-automated evaluation of analytical or factual accuracy exists in this
-repository.
+relevance validation, and the post-response content policy check is not the
+same as an extracted claim being factually correct.** A syntactically valid,
+correctly-cited, policy-passing `NewsAnalystReport` only proves the model
+followed the citation, shape, content-basis, relevance, and known-phrasing
+rules -- it is not a claim that any `claim_summary` accurately reflects the
+underlying article, nor that the underlying provider-reported claim itself
+is true. No automated evaluation of analytical or factual accuracy exists in
+this repository.
+
+## Relevance classification and article omission
+
+**Added 2026-08-24, market-relevance hardening (corrected the same day per
+review -- see the two callouts below).** Manual review of the News Analyst's
+first completed live run (see "Live run sequence and manual quality review"
+below) found that an article about the expected resignation of the U.S. Army
+Secretary had been converted into a weak, speculative SPY event claim built
+around a generic defense-procurement mechanism -- a connection that should
+generally not have been turned into a claim at all. This section describes
+the resulting hardening.
+
+Every retained event claim now carries a strict `relevance` classification
+(`"direct"`/`"broad_market"`/`"sector_or_industry"`, deliberately no
+`"unknown"` escape hatch that could permit an unsupported claim) and a
+`relevance_rationale` explaining the connection using cited evidence and a
+named transmission channel -- see "Structured output" above for the field
+shapes and "Post-response validation" above for what is rejected.
+
+`AGENT_INSTRUCTIONS` directs the model to **omit an article entirely --
+write no event claim about it at all** -- whenever:
+
+- its connection to the requested symbol would require inventing facts not
+  stated in the evidence;
+- only a generic "could affect markets" mechanism can be given, with no
+  specific channel to name; or
+- no recognized growth, inflation, rates, earnings, liquidity,
+  risk-appetite, supply-chain, regulatory, or sector channel actually
+  applies.
+
+It is explicitly valid, and often correct, for the model to produce event
+claims for fewer articles than were supplied -- `AGENT_INSTRUCTIONS` states
+this directly, and this change does **not** require one claim per article
+(`MAX_EVENT_CLAIMS` and the 1-4 preferred advisory range are unchanged).
+
+**This is instruction-level guidance plus the deterministic post-response
+checks above -- it cannot prove the model always chooses correctly which
+article to leave uncited, only that a claim it does produce carries a
+non-blank, non-generic, channel-consistent relevance rationale.** Whether a
+specific retained claim's relevance judgment is itself correct is not
+something this module can verify automatically; it remains a matter for
+manual review, as for every other free-text field this agent produces.
+
+**Truthful uncited-articles limitation (wording corrected per review --
+the original wording attributed a reason the code cannot prove).** If,
+after validation passes, at least one supplied article's evidence ID was
+not cited by any event claim, `_build_report_limitations` -- agent-authored,
+never model-authored -- prepends one fixed-format limitation to the final
+report, e.g. `"1 of 2 supplied articles were not included in retained
+claims."` **This code cannot know *why* the model left an article uncited**
+(relevance is only one possible reason among others -- e.g. the model
+choosing to group multiple articles under fewer claims) -- so the wording
+deliberately states only the observable fact (a count), never a claimed
+reason such as "insufficiently relevant". It never names the uncited
+article, its headline, or its audit URL. The combined limitations list is
+truncated to `MAX_LIMITATIONS` (6), the same hard bound
+`NewsAnalystReport.limitations` enforces, so this deterministic addition can
+never push the final report over that bound (displacing the
+least-preferred model-supplied limitation if the list was already full).
+
+## All-irrelevant evidence path
+
+**Added 2026-08-24, per review finding: the prior hard minimum of one event
+claim (`MIN_EVENT_CLAIMS == 1`) could force the model to construct a claim
+even when every supplied article was irrelevant.** `MIN_EVENT_CLAIMS` was
+lowered to **0** -- `event_claims` may now be structurally empty -- but this
+relaxation is tightly gated so it cannot be used to smuggle through a
+fabricated placeholder claim or an unexplained empty response:
+
+- **A structurally empty `event_claims` is only accepted when
+  `evidence_quality == "insufficient"`.** `_validate_claims_quality_consistency`
+  (see "Post-response validation" above) enforces a strict biconditional:
+  empty `event_claims` paired with `"sufficient"`/`"limited"` is rejected
+  (self-contradictory -- claiming usable evidence while retaining zero
+  claims), and nonempty `event_claims` paired with `"insufficient"` is also
+  rejected, as an incompatible abstention state. The reverse direction
+  matters as much as the forward one: it prevents a model from padding a
+  response with one low-effort, barely-grounded claim while still flagging
+  the overall evidence as insufficient -- if the model wants to keep a
+  genuinely thin-but-real claim, it must use `"limited"`, not
+  `"insufficient"`, to describe it.
+- **When `event_claims` is empty this way, `NewsAnalyst.run()` builds a
+  code-controlled `status="abstained"` report** -- the model never sets
+  `status` itself. The fixed reason
+  `ABSTAIN_REASON_NO_SUFFICIENTLY_RELEVANT_ARTICLES` =
+  `"no_sufficiently_relevant_articles"` is used, distinct from every
+  `PREFLIGHT_REASON_*` value (those describe why no OpenAI request was made
+  at all; this reason describes a request that *was* made and answered, but
+  retained nothing). `evidence_quality` is still recorded on the report
+  (`"insufficient"`), and `model_metadata` is still populated -- a real
+  model response was received and tokens were spent, unlike a
+  preflight-abstained report (`model_metadata=None`).
+- **The truthful uncited-articles limitation above still applies.** When
+  every supplied article goes uncited (the all-irrelevant case),
+  `_build_report_limitations` reports that correctly, e.g. `"2 of 2 supplied
+  articles were not included in retained claims."`
+- Every genuinely retained (nonempty) response must still separately pass
+  the unchanged citation, content-basis, relevance, and output-policy
+  checks -- this relaxation only governs whether zero claims can be
+  accepted at all, never whether an individual retained claim is
+  well-formed.
+
+**No hard schema bound other than this deliberate, gated `MIN_EVENT_CLAIMS`
+relaxation was changed**; `MAX_EVENT_CLAIMS` (6) and the 1-4 preferred
+advisory range are unchanged, and citation/content-basis/relevance/
+output-policy validation are all unchanged and still fully enforced for any
+nonempty response.
 
 ## Shared non-directional output policy
 
@@ -301,6 +475,7 @@ text; `scripts/run_news_analyst.py` includes it in its sanitized
 | `NewsAnalystIncompleteError` | `incomplete` | The model's response was incomplete |
 | `NewsAnalystCitationError` | `citation_invalid` | Missing, fabricated, duplicated, or excessive evidence-ID citation |
 | `NewsAnalystContentBasisError` | `content_basis_invalid` | A claim's `content_basis` overstated the cited evidence |
+| `NewsAnalystRelevanceError` | `relevance_invalid` | A claim's relevance rationale was blank/oversized/generic, its `relevance` classification was internally incompatible with its `transmission_channels`, or `event_claims` being empty/nonempty was incompatible with `evidence_quality` |
 | `NewsAnalystPolicyError` | `policy_violation` | Model-authored free text failed the post-response content policy check |
 | `NewsAnalystUnexpectedError` | `unexpected_error` | Any other unexpected failure |
 
@@ -380,6 +555,78 @@ advisory output budgets described above under "Structured output" -- they
 reduce the likelihood of a real response landing close to -- or over -- a
 hard bound; they do not guarantee any future request will pass validation.
 See `PROJECT_STATE.md` for the full, dated record.
+
+## Live run sequence and manual quality review (2026-08-24)
+
+This section documents, truthfully and in full, every authorized live
+`--execute` attempt made against the real local database for symbol `SPY`
+while diagnosing and hardening the News Analyst, plus the manual quality
+finding that motivated the relevance hardening described above. **No
+automatic retries occurred at any point** -- each attempt below was a
+separately authorized, single, manual invocation.
+
+1. **First attempt (symbol `SPY`, `limit=5`).** Failed with
+   `response_validation_failed` (`OpenAIParseFailureError`) -- a request was
+   sent and a response was received, but its content failed this client's
+   Pydantic re-validation against `NewsAnalystModelAnalysis`. See "Known
+   structured-output validation failure" above for the full offline
+   diagnosis. No analysis was accepted.
+2. **Second attempt, after the advisory-budget hardening above
+   (`OPENAI_MAX_OUTPUT_TOKENS` left at its then-default of 2048).** The
+   model's response was incomplete: `StructuredOutputResult.status ==
+   "incomplete"`, `incomplete_reason == "max_output_tokens"`, raising
+   `NewsAnalystIncompleteError`. No analysis was accepted.
+3. **Third attempt, after raising `OPENAI_MAX_OUTPUT_TOKENS` to 4096
+   locally (`OPENAI_REQUEST_TIMEOUT_SECONDS` left at its then-default of
+   30).** The request exceeded the configured 30-second timeout locally
+   (`OpenAITimeoutError`) before OpenAI returned a response. No analysis was
+   accepted.
+4. **Fourth attempt, with `OPENAI_MAX_OUTPUT_TOKENS=4096` and
+   `OPENAI_REQUEST_TIMEOUT_SECONDS=120` both set locally.** This attempt
+   **completed**: `input_tokens=1575`, `output_tokens=2474`,
+   `total_tokens=4049`, model `gpt-5-mini`. Schema validation, citation
+   validation, and content-basis validation all passed; the report contained
+   4 cited event claims, `directional_assessment`/`trade_recommendation`
+   fixed at `"not_performed"` as always, and appropriate limitations. This
+   is the run whose configuration (`OPENAI_MAX_OUTPUT_TOKENS=4096`,
+   `OPENAI_REQUEST_TIMEOUT_SECONDS=120`) `.env.example` documents and
+   `Settings`' own built-in defaults were subsequently corrected to match
+   (see "Settings" in
+   [docs/OPENAI_PROVIDER_BOUNDARY.md](OPENAI_PROVIDER_BOUNDARY.md)).
+
+**One completed example is not validation.** Passing schema/citation/
+content-basis validation on this one run proves the deterministic scaffolding
+worked for this one response -- it is not a claim of analytical accuracy, and
+no automated evaluation methodology exists for it (see "Post-response
+validation" above and [CLAUDE.md](../CLAUDE.md)/[AGENTS.md](../AGENTS.md)'s
+"Evidence and Claims" section).
+
+**Manual quality finding (this run, reviewed before the relevance hardening
+in this document was added).** A manual (human) read of the 4 accepted event
+claims found:
+
+1. An article about the expected resignation of the U.S. Army Secretary had
+   been converted into a weak, speculative SPY-relevance mechanism involving
+   defense procurement. This connection generally should not have been
+   turned into a claim at all -- this is the finding that directly motivated
+   the relevance classification, rationale, article-omission, and
+   all-irrelevant-evidence hardening described in "Relevance classification
+   and article omission" and "All-irrelevant evidence path" above.
+2. A Baker Hughes rig-count headline was classified as `economic_data` with
+   `supply_chain`/`growth` transmission channels. This is defensible, but
+   the review noted that energy/commodity relevance should not be overstated
+   beyond what the supplied headline actually reported.
+3. The other PMI and investor-flow claims were reasonably grounded in their
+   cited headline/summary evidence.
+
+This is one manually read example from one live run, not an automated
+evaluation, not a validated evaluation methodology, and not proof of factual
+accuracy, extraction quality, or reliability across other symbols/articles.
+The relevance hardening in this document reduces the likelihood of a
+recurrence of finding #1 specifically (a weak, speculative,
+invented-mechanism claim); it does not prove such a claim can never occur
+again, since the post-response checks are pattern-based, not general
+semantic understanding (see "Post-response validation" above).
 
 ## Command-line usage
 
@@ -507,17 +754,71 @@ accuracy, and no claim of validated analytical accuracy is made anywhere in
 this repository** (see [CLAUDE.md](../CLAUDE.md)/[AGENTS.md](../AGENTS.md)'s
 "Evidence and Claims" section).
 
+**Relevance classification coverage (added 2026-08-24, market-relevance
+hardening; wording and test names corrected the same day per review).**
+`test_news_analyst.py` gained tests covering: `relevance`/
+`relevance_rationale` required at the schema level and `relevance` rejecting
+an unrecognized value; `"direct"`/`"broad_market"`/`"sector_or_industry"`
+each accepted when grounded (a non-empty rationale, and a supporting
+transmission channel for the latter two); a `"broad_market"`/
+`"sector_or_industry"` claim rejected when asserted with zero transmission
+channels; a blank or whitespace-only rationale rejected; an oversized
+rationale rejected (defense-in-depth alongside the hard schema bound); a
+generic, mechanism-free rationale rejected, and a specific, channel-naming
+rationale accepted; an irrelevant, government-personnel-style headline
+(mirroring the Army Secretary finding above) left uncited by a valid
+synthetic model response, producing the deterministic, truthful
+uncited-articles limitation (`"N of M supplied articles were not included in
+retained claims"` -- never a claimed reason) without ever naming the uncited
+headline or its URL; that limitation absent when every article is cited;
+that the limitation is truncated (never exceeding `MAX_LIMITATIONS`) when
+the model already supplied a full limitations list; that an adversarial,
+self-asserting-relevance headline cannot force a generic rationale past
+validation; and that a `NewsAnalystRelevanceError` never echoes the rejected
+rationale text. `test_openai_structured.py`'s existing real-schema
+regression tests were updated to include the now-required `relevance`/
+`relevance_rationale` fields (so they continue to isolate exactly the bound
+violation each one targets) and the schema's new `event_claims`
+`minItems=0`. The Market Evidence Agent's own test suite was re-run
+unchanged and still passes -- this hardening touches only
+`market_intelligence/agents/news_analyst.py`,
+`market_intelligence/config/settings.py`, and their own tests.
+
+**All-irrelevant-evidence path coverage (added 2026-08-24, same day, per
+review).** Further tests cover: `NewsAnalystModelAnalysis` accepting a
+structurally empty `event_claims`; a code-controlled `status="abstained"`
+report built with the fixed reason
+`"no_sufficiently_relevant_articles"`, `evidence_quality="insufficient"`
+recorded, and `directional_assessment`/`trade_recommendation` still fixed at
+`"not_performed"`, when the model returns zero claims; that this outcome
+still populates `model_metadata` (tokens were spent, unlike a
+preflight-abstained report); that the truthful uncited-articles limitation
+correctly reports "M of M" when every article is uncited this way; that
+empty `event_claims` paired with `evidence_quality="sufficient"` or
+`"limited"` is rejected (parametrized over both values); and that nonempty
+`event_claims` paired with `evidence_quality="insufficient"` is rejected as
+an incompatible abstention state. `test_settings.py`'s default-values test
+was updated to assert the corrected `120.0`/`4096` defaults.
+
 ## Known limitations
 
-- **As of this change (2026-08-24):** `NewsAnalyst` has been run once,
+- **As of this change (2026-08-24):** `NewsAnalyst` has been run four times,
   live, against the real local database with `--execute` (symbol `SPY`,
-  `limit=5`). The deterministic preflight passed and exactly one live
-  OpenAI request was sent, but that request failed structured-output
-  validation (`response_validation_failed`) -- **no analysis was accepted,
-  and no retry was made**. See "Known structured-output validation failure
-  (2026-08-24)" above for the full diagnosis, and `PROJECT_STATE.md` for the
-  dated record. No other live database access or live OpenAI request has
-  been made using this agent.
+  `limit=5`) -- see "Live run sequence and manual quality review (2026-08-24)"
+  above for the full, truthful sequence: a `response_validation_failed`
+  failure, then an incomplete response at `max_output_tokens=2048`, then a
+  local timeout at the then-default 30-second timeout, then a completed run
+  with `max_output_tokens=4096`/`timeout=120s` (`input_tokens=1575`,
+  `output_tokens=2474`, `total_tokens=4049`, 4 event claims). **No automatic
+  retries occurred at any point.** A manual quality review of that one
+  completed run's 4 event claims found one weak, speculative claim (built
+  from an article about the expected resignation of the U.S. Army Secretary)
+  that motivated the relevance classification/rationale/article-omission and
+  all-irrelevant-evidence hardening in this document -- see "Relevance
+  classification and article omission" and "All-irrelevant evidence path"
+  above. **One completed example is not validation** -- see the live-run
+  section above and `PROJECT_STATE.md` for the dated record. No other live
+  database access or live OpenAI request has been made using this agent.
 - Single symbol per call -- no batch, no multi-symbol comparison, no
   multi-turn conversation.
 - No tools, no web search, no file access by the model, no persistence, no
@@ -526,7 +827,9 @@ this repository** (see [CLAUDE.md](../CLAUDE.md)/[AGENTS.md](../AGENTS.md)'s
 - The post-response content policy check matches known fixed phrasing, not
   general semantic meaning, so it is not proof that every possible
   directional, bias, trade-recommendation, or options-related statement (or
-  every possible way a claim could misrepresent its source) is caught.
+  every possible way a claim could misrepresent its source) is caught. The
+  same limitation applies to the relevance-rationale generic-phrase denylist
+  added in this change (see "Post-response validation" above).
 - This agent never assesses whether a provider-reported claim is itself
   true -- it only organizes what the provider reported, with citations back
   to the exact stored article. See

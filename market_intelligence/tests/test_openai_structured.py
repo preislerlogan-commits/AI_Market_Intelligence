@@ -1390,7 +1390,12 @@ def test_real_news_analyst_schema_passes_the_production_schema_preflight():
 
     assert schema["type"] == "object"
     assert schema["additionalProperties"] is False
-    assert schema["properties"]["event_claims"]["minItems"] == 1
+    # minItems == 0: event_claims may be structurally empty -- the
+    # all-irrelevant-evidence outcome (see
+    # _validate_claims_quality_consistency in news_analyst.py), never
+    # accepted on its own, only when paired with
+    # evidence_quality == "insufficient".
+    assert schema["properties"]["event_claims"]["minItems"] == 0
     assert schema["properties"]["event_claims"]["maxItems"] == 6
     assert schema["properties"]["limitations"]["maxItems"] == 6
 
@@ -1421,6 +1426,11 @@ def test_generate_completed_with_real_news_analyst_schema_and_synthetic_valid_re
                 evidence_ids=["news_aaaa1111bbbb2222"],
                 content_basis="headline_only",
                 transmission_channels=["rates"],
+                relevance="broad_market",
+                relevance_rationale=(
+                    "The cited article reports a Fed policy-rate decision, affecting "
+                    "broad equity markets through the rates channel."
+                ),
             )
         ],
         limitations=[],
@@ -1489,6 +1499,8 @@ def test_generate_maps_real_news_analyst_schema_bound_violation_to_response_vali
                 "evidence_ids": ["news_aaaa1111bbbb2222"],
                 "content_basis": "headline_only",
                 "transmission_channels": [],
+                "relevance": "direct",
+                "relevance_rationale": "Directly about the requested symbol.",
             }
         ],
         "limitations": [],
@@ -1533,6 +1545,8 @@ def test_generate_maps_real_news_analyst_schema_excessive_event_claims_to_respon
         "evidence_ids": ["news_aaaa1111bbbb2222"],
         "content_basis": "headline_only",
         "transmission_channels": [],
+        "relevance": "direct",
+        "relevance_rationale": "Directly about the requested symbol.",
     }
     excessive_event_claims_payload = {
         "evidence_quality": "sufficient",

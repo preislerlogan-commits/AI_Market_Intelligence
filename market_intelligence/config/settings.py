@@ -52,9 +52,20 @@ class Settings(BaseSettings):
     # Non-secret OpenAI request configuration. The API key is configured
     # exclusively via ``openai_api_key`` above (SecretStr) — never via these
     # fields, and never accepted per-request from a caller.
+    #
+    # Defaults below (120s / 4096 tokens) reflect the News Analyst's live
+    # run sequence (2026-08-24, symbol SPY, limit=5): 2048 tokens produced an
+    # incomplete response (max_output_tokens), and a 30-second timeout was
+    # then exceeded once tokens were raised to 4096; only 4096 tokens with a
+    # 120-second timeout together produced a completed response
+    # (input_tokens=1575, output_tokens=2474, total_tokens=4049). See
+    # docs/NEWS_ANALYST.md's "Live run sequence and manual quality review"
+    # section and PROJECT_STATE.md for the full, dated record. The upper
+    # bounds below (le=120, le=16000) are unchanged, and both remain
+    # overridable via `.env`/the environment.
     openai_model: str = DEFAULT_OPENAI_MODEL
-    openai_request_timeout_seconds: float = Field(default=30.0, gt=0, le=120)
-    openai_max_output_tokens: int = Field(default=2048, ge=1, le=16000)
+    openai_request_timeout_seconds: float = Field(default=120.0, gt=0, le=120)
+    openai_max_output_tokens: int = Field(default=4096, ge=1, le=16000)
 
     @field_validator("openai_model")
     @classmethod

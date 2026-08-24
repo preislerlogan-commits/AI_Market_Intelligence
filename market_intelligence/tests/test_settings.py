@@ -161,11 +161,16 @@ def test_provider_status_treats_whitespace_only_credential_as_not_configured(
 
 
 def test_openai_settings_defaults(isolated_settings_env):
+    """Defaults reflect the News Analyst's live run sequence (2026-08-24,
+    symbol SPY, limit=5): 2048 tokens produced an incomplete response, and a
+    30-second timeout was then exceeded once tokens were raised to 4096;
+    only 4096 tokens with a 120-second timeout together completed. See
+    docs/NEWS_ANALYST.md and PROJECT_STATE.md for the full record."""
     settings = make_settings(isolated_settings_env)
 
     assert settings.openai_model == "gpt-5-mini"
-    assert settings.openai_request_timeout_seconds == 30.0
-    assert settings.openai_max_output_tokens == 2048
+    assert settings.openai_request_timeout_seconds == 120.0
+    assert settings.openai_max_output_tokens == 4096
 
 
 def test_openai_model_rejects_blank_value(monkeypatch, isolated_settings_env):

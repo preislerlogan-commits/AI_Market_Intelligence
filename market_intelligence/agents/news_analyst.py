@@ -15,6 +15,37 @@ one bounded evidence package out, at most one model request, no tools, no
 loop, no persistence, no orchestration integration. See
 ``docs/NEWS_ANALYST.md`` for the full contract.
 
+Every event claim must also carry a strict, model-authored ``relevance``
+classification (``"direct"``, ``"broad_market"``, or ``"sector_or_industry"``
+-- deliberately no ``"unknown"`` value that could permit an unsupported
+claim) and a concise ``relevance_rationale`` explaining, using the cited
+evidence and a recognized transmission channel, how the article connects to
+the requested symbol. Post-response validation (``_validate_relevance``)
+rejects a blank/oversized rationale, and rejects a claim whose ``relevance``
+and ``transmission_channels`` are internally incompatible (a
+``"broad_market"``/``"sector_or_industry"`` claim asserted with zero
+transmission channels) -- see "Relevance classification" below. The model is
+instructed to omit an article entirely, rather than writing a weak or
+generic event claim about it, whenever its connection to the requested
+symbol would require inventing unstated facts, only a generic "could affect
+markets" mechanism can be given, or no recognized transmission channel
+applies; it is valid to produce claims for fewer articles than were
+supplied -- **including zero**: ``event_claims`` may be structurally empty
+(``MIN_EVENT_CLAIMS == 0``), but only when paired with
+``evidence_quality == "insufficient"``
+(``_validate_claims_quality_consistency`` enforces this pairing in both
+directions, so a nonempty response can never be marked ``"insufficient"``
+either -- closing off a fabricated placeholder claim as a way to satisfy a
+since-removed nonzero minimum). When ``event_claims`` is empty this way, the
+agent constructs a code-controlled ``status="abstained"`` report with the
+fixed reason ``ABSTAIN_REASON_NO_SUFFICIENTLY_RELEVANT_ARTICLES`` -- the
+model never sets ``status`` itself. Whenever at least one supplied article's
+evidence ID was not cited by any event claim (in either outcome), the agent
+itself (never the model) appends one fixed, deterministic limitation noting
+only how many articles were not cited -- without ever naming them, their
+headlines, or their audit URLs, and without claiming a reason (e.g.
+"irrelevant") this code cannot prove.
+
 ``NewsAnalyst`` never predicts SPY (or any symbol's) direction, never states
 or implies a bullish/bearish bias, never recommends a trade or any action,
 and never discusses options. ``directional_assessment`` and
@@ -47,6 +78,7 @@ missing or stale news data.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
@@ -81,7 +113,18 @@ MAX_CLAIM_SUMMARY_LENGTH = 400
 MAX_CONDITIONAL_MECHANISM_LENGTH = 300
 MAX_LIMITATION_LENGTH = 300
 MAX_EVIDENCE_ID_LENGTH = 64
-MIN_EVENT_CLAIMS = 1
+MAX_RELEVANCE_RATIONALE_LENGTH = 300
+# Zero is a valid, hard-schema-permitted event_claims count -- it is the
+# only way for the model to truthfully report that none of the supplied
+# articles could be supported by a concrete, evidence-grounded transmission
+# channel (see "All-irrelevant evidence path" hardening, added 2026-08-24,
+# below). A structurally empty event_claims list is not itself sufficient
+# to be accepted, though: _validate_claims_quality_consistency requires it
+# to be paired with evidence_quality="insufficient", and every nonempty
+# response must still pass the unchanged per-claim citation/content-basis/
+# relevance checks -- so this relaxation cannot be used to smuggle through
+# a fabricated placeholder claim or an unexplained empty response.
+MIN_EVENT_CLAIMS = 0
 MAX_EVENT_CLAIMS = 6
 MAX_LIMITATIONS = 6
 MIN_EVIDENCE_IDS_PER_CLAIM = 1
@@ -117,12 +160,14 @@ MAX_TRANSMISSION_CHANNELS_PER_CLAIM = 4
 ADVISORY_MAX_CLAIM_SUMMARY_LENGTH = 300
 ADVISORY_MAX_CONDITIONAL_MECHANISM_LENGTH = 200
 ADVISORY_MAX_LIMITATION_LENGTH = 200
+ADVISORY_MAX_RELEVANCE_RATIONALE_LENGTH = 200
 ADVISORY_PREFERRED_MIN_EVENT_CLAIMS = 1
 ADVISORY_PREFERRED_MAX_EVENT_CLAIMS = 4
 
 assert ADVISORY_MAX_CLAIM_SUMMARY_LENGTH < MAX_CLAIM_SUMMARY_LENGTH
 assert ADVISORY_MAX_CONDITIONAL_MECHANISM_LENGTH < MAX_CONDITIONAL_MECHANISM_LENGTH
 assert ADVISORY_MAX_LIMITATION_LENGTH < MAX_LIMITATION_LENGTH
+assert ADVISORY_MAX_RELEVANCE_RATIONALE_LENGTH < MAX_RELEVANCE_RATIONALE_LENGTH
 assert ADVISORY_PREFERRED_MAX_EVENT_CLAIMS < MAX_EVENT_CLAIMS
 assert ADVISORY_PREFERRED_MIN_EVENT_CLAIMS >= MIN_EVENT_CLAIMS
 
@@ -161,14 +206,48 @@ AGENT_INSTRUCTIONS = (
     "one, must describe only a general, non-predictive transmission "
     "channel -- how this type of event could generally affect markets in "
     "principle -- never a prediction or forecast for any specific symbol. "
-    "If the evidence is thin or conflicting, say so honestly in "
-    "evidence_quality and via limitations rather than fabricating detail or "
-    "false confidence. Use concise, factual wording only -- no padding, "
-    "filler, or repetition. "
+    "Every event claim must also include a relevance classification: "
+    "'direct' if the article is directly about the requested symbol itself; "
+    "'broad_market' if the article concerns a broad, market-wide event that "
+    "plausibly affects the requested symbol through a specific transmission "
+    "channel; or 'sector_or_industry' if the article concerns the "
+    "requested symbol's own sector or industry rather than the symbol "
+    "directly, again through a specific transmission channel. For every "
+    "'broad_market' or 'sector_or_industry' claim you must select at least "
+    "one transmission_channels value that actually supports the "
+    "connection -- never leave transmission_channels empty for either of "
+    "those two relevance values. You must also give a concise "
+    "relevance_rationale for every claim, grounded in the cited evidence "
+    "and naming the specific transmission channel involved -- never a bare, "
+    "generic statement like 'this could affect markets' with no named "
+    "mechanism. Omit an article entirely -- write no event claim about it "
+    "at all -- whenever: its connection to the requested symbol would "
+    "require inventing facts not stated in the evidence; only a generic "
+    "'could affect markets' mechanism can be given, with no specific "
+    "channel to name; or no recognized growth, inflation, rates, earnings, "
+    "liquidity, risk-appetite, supply-chain, regulatory, or sector channel "
+    "actually applies. It is valid, and often correct, to produce event "
+    "claims for fewer articles than were supplied in the evidence -- never "
+    "invent a weak or speculative connection just to cover every article. "
+    "If none of the supplied articles can be supported this way, it is "
+    "valid and correct to return an empty event_claims list -- never "
+    "fabricate a placeholder claim just to have something to report. If, "
+    "and only if, you return an empty event_claims list, you must set "
+    "evidence_quality to 'insufficient'; conversely, if you set "
+    "evidence_quality to 'insufficient', event_claims must be empty -- "
+    "never pair 'insufficient' with a retained claim. If you are instead "
+    "keeping one or more genuinely thin-but-real claims, use 'limited' (not "
+    "'insufficient') to describe them. "
+    "If the evidence is thin or conflicting but you are still retaining at "
+    "least one claim, say so honestly in evidence_quality and via "
+    "limitations rather than fabricating detail or false confidence. Use "
+    "concise, factual wording only -- no padding, filler, or repetition. "
     f"Keep claim_summary to at most {ADVISORY_MAX_CLAIM_SUMMARY_LENGTH} "
     f"characters. Keep conditional_mechanism, when given, to at most "
-    f"{ADVISORY_MAX_CONDITIONAL_MECHANISM_LENGTH} characters. Keep each "
-    f"limitation to at most {ADVISORY_MAX_LIMITATION_LENGTH} characters. "
+    f"{ADVISORY_MAX_CONDITIONAL_MECHANISM_LENGTH} characters. Keep "
+    f"relevance_rationale to at most {ADVISORY_MAX_RELEVANCE_RATIONALE_LENGTH} "
+    f"characters. Keep each limitation to at most "
+    f"{ADVISORY_MAX_LIMITATION_LENGTH} characters. "
     f"Prefer {ADVISORY_PREFERRED_MIN_EVENT_CLAIMS} to "
     f"{ADVISORY_PREFERRED_MAX_EVENT_CLAIMS} event claims, and only exceed "
     "that range if genuinely necessary to cover materially distinct events."
@@ -187,6 +266,10 @@ EventType = Literal[
     "other",
 ]
 ContentBasis = Literal["headline_only", "headline_and_provider_summary"]
+# Deliberately no "unknown" value -- an unsupported connection to the
+# requested symbol must be omitted entirely (see AGENT_INSTRUCTIONS), never
+# expressed as a vague relevance classification.
+Relevance = Literal["direct", "broad_market", "sector_or_industry"]
 TransmissionChannel = Literal[
     "rates",
     "inflation",
@@ -199,6 +282,11 @@ TransmissionChannel = Literal[
     "other",
 ]
 EvidenceQuality = Literal["sufficient", "limited", "insufficient"]
+# The one EvidenceQuality value that pairs with a structurally empty
+# event_claims list -- see _validate_claims_quality_consistency. "limited"
+# is reserved for a thin-but-nonempty set of retained claims; "insufficient"
+# now means, precisely, "no article could be supported" (zero claims).
+EVIDENCE_QUALITY_INSUFFICIENT = "insufficient"
 
 # --- Fixed, deterministic preflight-abstention reason categories -----------
 
@@ -208,6 +296,14 @@ PREFLIGHT_REASON_NEWS_STALE = "news_stale"
 PREFLIGHT_REASON_FUTURE_TIMESTAMP_DETECTED = "future_timestamp_detected"
 PREFLIGHT_REASON_NO_ARTICLES_RETURNED = "no_articles_returned"
 
+# --- Fixed, deterministic post-model-call abstention reason ----------------
+#
+# Distinct from the PREFLIGHT_REASON_* constants above: those gate whether
+# any OpenAI request is made at all (zero tokens spent); this reason instead
+# describes a model response that *was* received (tokens were spent) but
+# retained zero event claims -- see run()'s all-irrelevant-evidence path.
+ABSTAIN_REASON_NO_SUFFICIENTLY_RELEVANT_ARTICLES = "no_sufficiently_relevant_articles"
+
 # Fixed, sanitized failure-category strings for NewsAnalystAgentError
 # subclasses, mirroring the ``category`` convention already used by
 # ``OpenAIStructuredError``/``MarketEvidenceAgentError``.
@@ -216,6 +312,7 @@ AGENT_CATEGORY_REFUSAL = "refusal"
 AGENT_CATEGORY_INCOMPLETE = "incomplete"
 AGENT_CATEGORY_CITATION_INVALID = "citation_invalid"
 AGENT_CATEGORY_CONTENT_BASIS_INVALID = "content_basis_invalid"
+AGENT_CATEGORY_RELEVANCE_INVALID = "relevance_invalid"
 AGENT_CATEGORY_POLICY_VIOLATION = "policy_violation"
 AGENT_CATEGORY_UNEXPECTED = "unexpected_error"
 
@@ -275,6 +372,25 @@ class NewsAnalystContentBasisError(NewsAnalystAgentError):
     category = AGENT_CATEGORY_CONTENT_BASIS_INVALID
 
 
+class NewsAnalystRelevanceError(NewsAnalystAgentError):
+    """Raised when an event claim's relevance classification fails
+    post-response validation (see ``_validate_relevance``): a blank or
+    whitespace-only ``relevance_rationale``, an oversized
+    ``relevance_rationale`` (defense-in-depth alongside the hard Pydantic
+    bound), a generic/non-specific rationale matching the fixed
+    ``_GENERIC_RELEVANCE_RE`` denylist, or a ``relevance`` classification
+    that is internally incompatible with ``transmission_channels`` (a
+    ``"broad_market"``/``"sector_or_industry"`` claim asserted with zero
+    transmission channels). Also raised by
+    ``_validate_claims_quality_consistency`` when ``event_claims`` being
+    empty/nonempty is incompatible with the response's ``evidence_quality``
+    (see that function's docstring). The rejected rationale text itself is
+    never included in this error or logged anywhere.
+    """
+
+    category = AGENT_CATEGORY_RELEVANCE_INVALID
+
+
 class NewsAnalystPolicyError(NewsAnalystAgentError):
     """Raised when model-authored free text fails the fixed, deterministic
     post-response content policy check (see ``_enforce_output_policy``).
@@ -322,13 +438,28 @@ class EventClaim(BaseModel):
         list[TransmissionChannel],
         Field(default_factory=list, max_length=MAX_TRANSMISSION_CHANNELS_PER_CLAIM),
     ]
+    relevance: Relevance
+    relevance_rationale: Annotated[
+        str, Field(min_length=1, max_length=MAX_RELEVANCE_RATIONALE_LENGTH)
+    ]
     conditional_mechanism: Annotated[
         str | None, Field(default=None, max_length=MAX_CONDITIONAL_MECHANISM_LENGTH)
     ] = None
 
 
 class NewsAnalystModelAnalysis(BaseModel):
-    """The bounded structured-output shape requested from OpenAI."""
+    """The bounded structured-output shape requested from OpenAI.
+
+    ``event_claims`` may be structurally empty (``MIN_EVENT_CLAIMS == 0``) --
+    the only way for the model to truthfully report that none of the
+    supplied articles could be supported. An empty list by itself is not
+    sufficient to be *accepted*, though:
+    ``_validate_claims_quality_consistency`` (called from
+    ``NewsAnalyst.run()``) additionally requires it to be paired with
+    ``evidence_quality == EVIDENCE_QUALITY_INSUFFICIENT``, and rejects the
+    reverse combination (nonempty claims with ``evidence_quality ==
+    "insufficient"``) as an incompatible abstention state.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -534,6 +665,139 @@ def _validate_content_basis(
             )
 
 
+# A fixed, deterministic, fail-closed denylist for a bare, unspecific
+# relevance mechanism -- e.g. "this could affect markets" with no named
+# transmission channel. The negative lookahead excludes a rationale that
+# immediately names its mechanism right after the verb phrase (e.g. "...could
+# affect markets through higher borrowing costs..."), so a genuinely
+# concrete, evidence-grounded rationale is not caught by this filter. This is
+# a conservative, bounded pattern match, not general semantic understanding
+# -- it is not proof that every possible generic/unsupported rationale is
+# caught (mirrors the scope/limits already documented for
+# ``non_directional_output_policy.find_prohibited_content_category``).
+_GENERIC_RELEVANCE_RE = re.compile(
+    r"\b(?:could|may|might|can)\s+(?:generally\s+|broadly\s+|potentially\s+)?"
+    r"(?:affect|impact|influence|move)\s+(?:the\s+)?(?:market|markets|stocks|equities)\b"
+    r"(?!\s+(?:through|via|by|because|due\s+to))",
+    re.IGNORECASE,
+)
+
+
+def _validate_claims_quality_consistency(analysis: NewsAnalystModelAnalysis) -> None:
+    """Enforce the biconditional: ``event_claims`` is empty if and only if
+    ``evidence_quality == EVIDENCE_QUALITY_INSUFFICIENT``.
+
+    Runs before citation/content-basis/relevance validation, since it
+    decides whether this response is the all-irrelevant-evidence abstention
+    outcome at all.
+
+    - Empty ``event_claims`` paired with ``evidence_quality`` other than
+      ``"insufficient"`` (i.e. ``"sufficient"`` or ``"limited"``) is
+      rejected: claiming usable evidence while retaining zero claims is
+      self-contradictory.
+    - Nonempty ``event_claims`` paired with
+      ``evidence_quality == "insufficient"`` is also rejected:
+      ``"insufficient"`` is this schema's fixed abstention signal (see
+      ``MIN_EVENT_CLAIMS``), so pairing it with retained claims is an
+      incompatible abstention state -- and, not incidentally, closes off
+      using a low-effort claim as a fabricated placeholder while still
+      flagging the evidence as insufficient. A model that has one
+      genuinely thin-but-real claim to keep must use ``"limited"``, not
+      ``"insufficient"``, to describe it.
+
+    Every genuinely retained (nonempty) claim must still separately pass
+    the unchanged citation, content-basis, and relevance checks below --
+    this function only governs the empty-vs-nonempty/quality pairing
+    itself, never whether an individual retained claim is well-formed.
+    """
+    is_empty = len(analysis.event_claims) == 0
+    is_insufficient = analysis.evidence_quality == EVIDENCE_QUALITY_INSUFFICIENT
+    if is_empty and not is_insufficient:
+        raise NewsAnalystRelevanceError(
+            "Model output gave zero event claims without evidence_quality=insufficient."
+        )
+    if not is_empty and is_insufficient:
+        raise NewsAnalystRelevanceError(
+            "Model output gave one or more event claims together with "
+            "evidence_quality=insufficient, an incompatible abstention state."
+        )
+
+
+def _validate_relevance(analysis: NewsAnalystModelAnalysis) -> None:
+    """Reject a blank/oversized/generic relevance rationale, or a relevance
+    classification internally incompatible with its transmission channels.
+
+    Runs after citation and content-basis validation. Checked explicitly
+    here as defense-in-depth alongside the hard Pydantic bounds on
+    ``EventClaim.relevance_rationale`` (``min_length=1``,
+    ``max_length=MAX_RELEVANCE_RATIONALE_LENGTH``): a whitespace-only string
+    still satisfies ``min_length=1``, and a caller constructing ``EventClaim``
+    via ``model_construct`` (as this module's own tests do for citation
+    checks) bypasses Pydantic validation entirely, so this function
+    re-checks blankness/length explicitly rather than relying on the schema
+    alone. A ``"broad_market"``/``"sector_or_industry"`` claim asserted with
+    zero ``transmission_channels`` is rejected as internally incompatible:
+    those two relevance values are only meaningful when at least one
+    transmission channel actually supports the connection -- a ``"direct"``
+    claim (about the requested symbol itself) carries no such requirement.
+    """
+    for claim in analysis.event_claims:
+        rationale = claim.relevance_rationale
+        if not isinstance(rationale, str) or rationale.strip() == "":
+            raise NewsAnalystRelevanceError(
+                "Model output gave a blank relevance rationale for one event claim."
+            )
+        if len(rationale) > MAX_RELEVANCE_RATIONALE_LENGTH:
+            raise NewsAnalystRelevanceError(
+                "Model output gave an oversized relevance rationale for one event claim."
+            )
+        if _GENERIC_RELEVANCE_RE.search(rationale):
+            raise NewsAnalystRelevanceError(
+                "Model output gave a generic, non-specific relevance rationale rather than "
+                "a concrete transmission-channel connection."
+            )
+        if claim.relevance != "direct" and len(claim.transmission_channels) == 0:
+            raise NewsAnalystRelevanceError(
+                "Model output classified an event claim's relevance without citing any "
+                "supported transmission channel."
+            )
+
+
+def _build_report_limitations(
+    analysis: NewsAnalystModelAnalysis, evidence_package: dict[str, Any]
+) -> list[str]:
+    """Build the final report's ``limitations`` list.
+
+    Starts from the model-supplied ``limitations``, and -- if at least one
+    supplied article's evidence ID was not cited by any event claim --
+    prepends one fixed, deterministic, agent-authored limitation stating
+    only how many of how many supplied articles were not cited. This code
+    cannot know *why* the model left an article uncited (relevance is only
+    one possible reason among others, e.g. the model choosing to group
+    multiple articles under fewer claims) -- so the wording deliberately
+    states only the observable fact (a count), never a reason this function
+    cannot prove. It never names an uncited article, its headline, or its
+    audit URL. The combined list is truncated to ``MAX_LIMITATIONS`` (the
+    same hard bound ``NewsAnalystReport.limitations`` enforces) so this
+    deterministic addition can never push the final report over that bound.
+    """
+    all_evidence_ids = set(evidence_package["articles"].keys())
+    cited_evidence_ids: set[str] = set()
+    for claim in analysis.event_claims:
+        cited_evidence_ids.update(claim.evidence_ids)
+
+    limitations = list(analysis.limitations)
+    uncited_count = len(all_evidence_ids - cited_evidence_ids)
+    if uncited_count > 0:
+        note = (
+            f"{uncited_count} of {len(all_evidence_ids)} supplied articles were not "
+            "included in retained claims."
+        )
+        limitations = [note] + limitations
+
+    return limitations[:MAX_LIMITATIONS]
+
+
 def _enforce_output_policy(analysis: NewsAnalystModelAnalysis) -> None:
     """Deterministic, fail-closed post-response policy check.
 
@@ -627,21 +891,38 @@ class NewsAnalyst:
     def run(self, symbol: str, *, limit: int = DEFAULT_LIMIT) -> NewsAnalystRunResult:
         """Run the full agent: preflight, then (only if eligible) one model request.
 
-        Returns a validated ``NewsAnalystReport`` for both a completed and an
-        abstained run. Raises ``NewsAnalystRefusalError``/
+        Returns a validated ``NewsAnalystReport`` for a completed run, an
+        all-irrelevant-evidence abstained run (a model response *was*
+        received, but retained zero event claims), or a preflight-abstained
+        run (zero model tokens spent). Raises ``NewsAnalystRefusalError``/
         ``NewsAnalystIncompleteError`` for a truthful model refusal or
         incomplete response -- neither is ever silently converted into a
-        completed analysis. Raises ``NewsAnalystCitationError`` for a
-        missing, fabricated, duplicated, or excessive evidence-ID citation,
-        and ``NewsAnalystContentBasisError`` if a claim's ``content_basis``
-        overstates the cited evidence. Raises ``NewsAnalystPolicyError`` if
-        any model-authored free-text field fails the deterministic,
-        fail-closed post-response content policy check -- checked after
-        citation/content-basis validation and before ``NewsAnalystReport``
-        is constructed. A sanitized ``OpenAIStructuredError`` subclass
-        propagates unchanged for a provider/config/network failure. Any
-        other unexpected failure becomes ``NewsAnalystUnexpectedError``, with
-        no raw exception type, message, or content attached.
+        completed analysis. Raises ``NewsAnalystRelevanceError`` (via
+        ``_validate_claims_quality_consistency``, checked first) if
+        ``event_claims`` being empty/nonempty is incompatible with
+        ``evidence_quality`` -- see that function's docstring; this decides
+        whether the response is the all-irrelevant-evidence abstention
+        outcome at all. For a nonempty response, also raises
+        ``NewsAnalystCitationError`` for a missing, fabricated, duplicated,
+        or excessive evidence-ID citation; ``NewsAnalystContentBasisError``
+        if a claim's ``content_basis`` overstates the cited evidence; and
+        (from ``_validate_relevance``) ``NewsAnalystRelevanceError`` again if
+        any claim's relevance rationale is blank/oversized/generic, or if its
+        ``relevance`` classification is internally incompatible with its
+        ``transmission_channels``. Raises ``NewsAnalystPolicyError`` if any
+        model-authored free-text field (in either outcome) fails the
+        deterministic, fail-closed post-response content policy check --
+        checked before ``NewsAnalystReport`` is constructed. If at least one
+        supplied article's evidence ID was not cited by any event claim (in
+        either outcome, including every article when ``event_claims`` is
+        empty), the final report's ``limitations`` gains one fixed,
+        deterministic, agent-authored note stating only how many articles
+        were not cited -- never their headlines or URLs, and never a
+        claimed reason this code cannot prove (see
+        ``_build_report_limitations``). A sanitized ``OpenAIStructuredError``
+        subclass propagates unchanged for a provider/config/network failure.
+        Any other unexpected failure becomes ``NewsAnalystUnexpectedError``,
+        with no raw exception type, message, or content attached.
         """
         preflight = self.build_preflight(symbol, limit=limit)
 
@@ -682,20 +963,41 @@ class NewsAnalyst:
             )
 
         analysis = result.parsed
+        _validate_claims_quality_consistency(analysis)
         known_evidence_ids = set(preflight.evidence_package["articles"].keys())
         _validate_citations(analysis, known_evidence_ids)
         _validate_content_basis(analysis, preflight.evidence_package)
+        _validate_relevance(analysis)
         _enforce_output_policy(analysis)
 
-        report = NewsAnalystReport(
-            status="completed",
-            symbol=preflight.symbol,
-            snapshot_created_at_utc=preflight.snapshot_created_at_utc,
-            source_article_count=preflight.source_article_count,
-            evidence_quality=analysis.evidence_quality,
-            event_claims=analysis.event_claims,
-            limitations=list(analysis.limitations),
-        )
+        limitations = _build_report_limitations(analysis, preflight.evidence_package)
+
+        if len(analysis.event_claims) == 0:
+            # All-irrelevant-evidence outcome: _validate_claims_quality_consistency
+            # already proved evidence_quality == "insufficient" for this case.
+            # This is a code-controlled abstention, not a model-authored
+            # status -- the model never sets NewsAnalystReport.status.
+            report = NewsAnalystReport(
+                status="abstained",
+                symbol=preflight.symbol,
+                snapshot_created_at_utc=preflight.snapshot_created_at_utc,
+                source_article_count=preflight.source_article_count,
+                evidence_quality=analysis.evidence_quality,
+                event_claims=[],
+                limitations=limitations,
+                abstained_reasons=[ABSTAIN_REASON_NO_SUFFICIENTLY_RELEVANT_ARTICLES],
+            )
+        else:
+            report = NewsAnalystReport(
+                status="completed",
+                symbol=preflight.symbol,
+                snapshot_created_at_utc=preflight.snapshot_created_at_utc,
+                source_article_count=preflight.source_article_count,
+                evidence_quality=analysis.evidence_quality,
+                event_claims=analysis.event_claims,
+                limitations=limitations,
+            )
+
         metadata = NewsAnalystModelMetadata(
             model=result.model,
             response_id=result.response_id,

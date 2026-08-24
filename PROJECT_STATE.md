@@ -133,8 +133,24 @@ attempt" Status entry below and
 [docs/NEWS_ANALYST.md](docs/NEWS_ANALYST.md)/[docs/OPENAI_PROVIDER_BOUNDARY.md](docs/OPENAI_PROVIDER_BOUNDARY.md)
 for full detail. No hard schema bound, citation validation, content-basis
 validation, output-policy validation, or the zero-retry behavior was
-weakened. Beyond these two narrow agents, no other AI analysis or agent
-orchestration (in the AI-agent sense) exists yet.
+weakened. **This one-failed-attempt status has since been superseded: three
+further separately authorized live attempts completed the sequence
+(incomplete at `max_output_tokens=2048`, a local timeout at the then-default
+30-second timeout, then a completed run with `max_output_tokens=4096`/
+`timeout=120s`) — see the "News Analyst live run sequence completed" Status
+entry below. A manual quality read of that completed run's event claims
+found one weak, speculative claim built from an article that should not
+have been turned into a claim at all, which motivated a market-relevance
+hardening change (a required `relevance` classification/rationale per event
+claim, new post-response relevance validation, a truthful — reason-free —
+deterministic limitation noting how many supplied articles were not
+included in retained claims, a safe code-controlled abstained outcome for
+when no supplied article is sufficiently relevant, and `Settings`' own
+`openai_max_output_tokens`/`openai_request_timeout_seconds` defaults
+corrected to 4096/120) — see the same Status entry and
+[docs/NEWS_ANALYST.md](docs/NEWS_ANALYST.md).** Beyond these two narrow
+agents, no other AI analysis or agent orchestration (in the AI-agent sense)
+exists yet.
 
 ## Status
 
@@ -753,9 +769,12 @@ orchestration (in the AI-agent sense) exists yet.
   includes the API key, request body, evidence, headline, raw model
   output, raw SDK exception message, URL, or header. Two new non-secret
   `Settings`
-  fields (`openai_request_timeout_seconds`, default 30s, bounded to
-  `(0, 120]`; `openai_max_output_tokens`, default 2048, bounded to
-  `[1, 16000]`) plus `openai_model` are documented in `.env.example`
+  fields (`openai_request_timeout_seconds`, default 30s at the time this was
+  added, bounded to `(0, 120]`; `openai_max_output_tokens`, default 2048 at
+  the time this was added, bounded to `[1, 16000]` — **both defaults were
+  later raised to 120s/4096 tokens, see the "Settings defaults corrected to
+  match the News Analyst's live run sequence" Status entry below; the bounds
+  themselves are unchanged**) plus `openai_model` are documented in `.env.example`
   (`.env` itself was not touched). The SDK client is injectable
   (`sdk_client=`) so tests never construct a real `openai.OpenAI` client or
   make a network call. See
@@ -1387,6 +1406,155 @@ orchestration (in the AI-agent sense) exists yet.
   Full test suite: 1541 passed (up from 1528). `ruff check .` and
   `git diff --check` both pass.
 
+- **News Analyst live run sequence completed; market-relevance hardening
+  applied and then corrected per review (2026-08-24, same day).** The News
+  Analyst's live SPY/`limit=5` execute attempt was retried three more times
+  under separate authorization, completing the full, truthful sequence
+  documented in [docs/NEWS_ANALYST.md](docs/NEWS_ANALYST.md)'s "Live run
+  sequence and manual quality review" section: (1) `response_validation_failed`
+  (already recorded above); (2) the model's response incomplete at
+  `max_output_tokens=2048` (`NewsAnalystIncompleteError`,
+  `incomplete_reason="max_output_tokens"`); (3) a local request timeout at
+  the then-default 30-second timeout after `OPENAI_MAX_OUTPUT_TOKENS` was
+  raised to 4096 locally; (4) a **completed** run with
+  `OPENAI_MAX_OUTPUT_TOKENS=4096` and `OPENAI_REQUEST_TIMEOUT_SECONDS=120`
+  both set locally -- model `gpt-5-mini`, `input_tokens=1575`,
+  `output_tokens=2474`, `total_tokens=4049`, 4 cited event claims,
+  `directional_assessment`/`trade_recommendation` fixed at
+  `"not_performed"` as always. **No automatic retries occurred at any
+  point** -- each of the four attempts was a separate, manually authorized
+  invocation.
+
+  A manual (human) quality read of the 4 accepted event claims found: (1) an
+  article about the expected resignation of the U.S. Army Secretary had been
+  converted into a weak, speculative SPY-relevance mechanism involving
+  defense procurement -- a connection that should generally not have been
+  turned into a claim at all; (2) a Baker Hughes rig-count headline was
+  classified `economic_data` with `supply_chain`/`growth` channels --
+  defensible, but energy/commodity relevance should not be overstated beyond
+  the supplied headline; (3) the remaining PMI and investor-flow claims were
+  reasonably grounded in their cited evidence. **This is one manually read
+  example from one live run, not an automated evaluation, not a validated
+  evaluation methodology, and not proof of extraction quality or reliability
+  across other symbols/articles.**
+
+  Finding (1) directly motivated a hardening change (code/tests/docs only --
+  no further live OpenAI request or DuckDB access was made to apply it),
+  which a same-day review then found two remaining gaps in and one further
+  correction for -- all three are described together here, reflecting only
+  the final, corrected state (code/tests/docs only throughout; no live
+  request or DuckDB access at any point in this process):
+
+  1. **Relevance classification and rationale.** Every event claim
+     (`EventClaim`, `market_intelligence/agents/news_analyst.py`) now
+     requires a strict, model-authored `relevance` classification
+     (`"direct"|"broad_market"|"sector_or_industry"` -- deliberately no
+     `"unknown"` value that could permit an unsupported claim) and a
+     required, bounded `relevance_rationale` (hard max 300 characters,
+     advisory budget 200). A post-response validation step,
+     `_validate_relevance` (raising `NewsAnalystRelevanceError`, category
+     `relevance_invalid`), rejects a blank/whitespace-only rationale, an
+     oversized rationale (defense-in-depth alongside the hard Pydantic
+     bound), a rationale matching a fixed, deterministic denylist for a bare
+     "could affect markets"-style mechanism with no named channel, and a
+     `"broad_market"`/`"sector_or_industry"` claim asserted with zero
+     `transmission_channels` (internally incompatible, since those two
+     relevance values are only meaningful with at least one supporting
+     channel; `"direct"` carries no such requirement). `AGENT_INSTRUCTIONS`
+     directs the model to omit an article entirely -- write no event claim
+     about it -- whenever its connection to the requested symbol would
+     require inventing unstated facts, only a generic mechanism can be
+     given, or no recognized transmission channel applies, and states
+     explicitly that producing claims for fewer articles than supplied is
+     valid and often correct.
+
+  2. **Truthful omission wording (review finding: the deterministic code
+     cannot know *why* the model left an article uncited).** When at least
+     one supplied article's evidence ID was not cited by any event claim,
+     the agent itself (never the model) prepends one fixed, deterministic
+     limitation to the final report's `limitations` -- but its wording now
+     states only the observable fact, e.g. `"1 of 2 supplied articles were
+     not included in retained claims."`, never a claimed reason (e.g.
+     "insufficiently relevant") this code cannot prove
+     (`_build_report_limitations`). It never names the uncited article, its
+     headline, or its audit URL, and truncates the combined limitations list
+     to the existing `MAX_LIMITATIONS` bound (6) if necessary. (The original
+     version of this change used the wording `"...were omitted as
+     insufficiently relevant..."`, which attributed a reason the code cannot
+     actually verify -- corrected here before commit.)
+
+  3. **All-irrelevant-evidence path (review finding: a hard minimum of one
+     event claim could force the model to fabricate a claim even when
+     nothing supplied was relevant).** `MIN_EVENT_CLAIMS` was changed from 1
+     to **0**: `event_claims` may now be structurally empty.
+     `MAX_EVENT_CLAIMS` (6) and the 1-4 preferred advisory range are
+     unchanged -- one claim per article was never required and still is not.
+     A new post-response check, `_validate_claims_quality_consistency`
+     (also raising `NewsAnalystRelevanceError`), enforces a strict
+     biconditional: `event_claims` is empty **if and only if**
+     `evidence_quality == "insufficient"`. Empty claims paired with
+     `"sufficient"`/`"limited"` are rejected (self-contradictory); nonempty
+     claims paired with `"insufficient"` are also rejected as an
+     incompatible abstention state -- which additionally closes off using a
+     low-effort claim as a fabricated placeholder while still flagging the
+     evidence as insufficient. When `event_claims` is empty this way,
+     `NewsAnalyst.run()` builds a **code-controlled** `status="abstained"`
+     report (the model never sets `status` itself) with the new fixed reason
+     `ABSTAIN_REASON_NO_SUFFICIENTLY_RELEVANT_ARTICLES` =
+     `"no_sufficiently_relevant_articles"`; `evidence_quality` is still
+     recorded (`"insufficient"`) and `model_metadata` is still populated
+     (tokens were spent, unlike a preflight abstention). The truthful
+     omission limitation from (2) applies here too, correctly reporting that
+     all supplied articles were not included in retained claims.
+
+  4. **Settings defaults corrected to match the live run
+     (`market_intelligence/config/settings.py`).** `openai_max_output_tokens`'
+     default was raised from 2048 to **4096**, and
+     `openai_request_timeout_seconds`'s default was raised from 30.0 to
+     **120.0** -- the exact values live evidence showed were required for a
+     completed run (see the four-attempt sequence above). Both fields' upper
+     bounds (`le=16000`/`le=120`) are unchanged, and both remain overridable
+     via `.env`/the environment. `.env.example` documents the same values
+     explicitly for visibility (unchanged from the prior entry, since the
+     values themselves were already correct there -- only the code default
+     was previously left at its old, now-insufficient value).
+
+  No existing hard schema bound (other than the deliberate `MIN_EVENT_CLAIMS`
+  relaxation in (3), which is itself gated by the new consistency check),
+  citation validation, content-basis validation, output-policy validation,
+  or zero-automatic-retry behavior was weakened.
+
+  Test coverage: `market_intelligence/tests/test_news_analyst.py` covers the
+  full relevance contract (all three relevance values accepted when
+  grounded; a `"broad_market"`/`"sector_or_industry"` claim rejected with
+  zero transmission channels; blank/whitespace-only/oversized/generic
+  rationales rejected; a specific, channel-naming rationale accepted; an
+  adversarial, self-asserting-relevance headline unable to force a generic
+  rationale past validation; `NewsAnalystRelevanceError` never echoing
+  rejected text), the truthful uncited-articles limitation (present with the
+  correct wording, absent when every article is cited, never leaking a
+  headline/URL, correctly truncated at capacity), and the all-irrelevant-
+  evidence path (the schema permitting a structurally empty `event_claims`;
+  a code-controlled abstained report with the fixed reason and populated
+  token metadata when evidence is genuinely insufficient; the biconditional
+  rejecting empty claims paired with `"sufficient"`/`"limited"` evidence
+  quality, and rejecting nonempty claims paired with `"insufficient"`).
+  `market_intelligence/tests/test_openai_structured.py`'s real-schema
+  regression tests were updated for the now-required `relevance`/
+  `relevance_rationale` fields and the schema's new `minItems=0` on
+  `event_claims`. `market_intelligence/tests/test_run_news_analyst.py`'s CLI
+  fixture was updated the same way. `market_intelligence/tests/test_settings.py`
+  now asserts the corrected 120.0/4096 defaults. The Market Evidence Agent's
+  own test suite was re-run unchanged and still passes -- this change
+  touches only `market_intelligence/agents/news_analyst.py`,
+  `market_intelligence/config/settings.py`, and their own tests.
+  `docs/NEWS_ANALYST.md`, `docs/OPENAI_PROVIDER_BOUNDARY.md`, and
+  `.env.example` were updated to match. Full test suite: 1567 passed (up
+  from 1541 before this change; up from 1560 after the three review
+  corrections above). `ruff check .` and `git diff --check` both pass. No
+  live OpenAI request, DuckDB access/modification, commit, or push was made
+  as part of this change.
+
 ## Next Planned Work
 
 1. Data connector design — read-only Alpaca market-data, Alpaca news,
@@ -1624,11 +1792,20 @@ orchestration (in the AI-agent sense) exists yet.
     `scripts/run_news_analyst.py` exist (see Status above and
     [docs/NEWS_ANALYST.md](docs/NEWS_ANALYST.md)), covered by 75 tests
     against fake evidence-builder/model-client stand-ins (no real database
-    or network access in tests). Not yet run against the real database, and
-    no live OpenAI request has been made using it. Remaining future work:
-    any live dry run or authorized `--execute` run against the real
-    database, any orchestration integration, any repeated/broader
-    evaluation of this agent's outputs (mirroring
+    or network access in tests). **This "not yet run live" status has since
+    been superseded — see the "News Analyst live run sequence completed"
+    Status entry above:** the SPY/`limit=5` live sequence completed (one
+    `response_validation_failed` failure, one incomplete response, one local
+    timeout, then one accepted `status="completed"` report), and a manual
+    quality read of that accepted report's event claims motivated a
+    market-relevance hardening change (required `relevance` classification/
+    rationale per claim, new post-response relevance validation, a
+    truthful/reason-free deterministic limitation for uncited articles, a
+    safe code-controlled abstained outcome when no article is sufficiently
+    relevant, and corrected `Settings` defaults of 4096 tokens/120s) — see
+    the same Status entry.
+    Remaining future work: any orchestration integration, any repeated/
+    broader evaluation of this agent's outputs (mirroring
     `docs/MARKET_EVIDENCE_EVALUATIONS.md`), and any decision to build
     further agents on this same pattern all remain separate, future, and
     not yet authorized.
