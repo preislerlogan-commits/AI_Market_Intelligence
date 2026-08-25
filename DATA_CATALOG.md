@@ -98,6 +98,28 @@ The following tickers are the known initial universe of interest:
   for the corresponding macro-observations storage capability and that
   run's sanitized counts/coverage.** This is one bounded ingestion run for
   one series/date-range, not a validated or cataloged dataset.
+  `get_series_metadata()` (2026-08-24, code/tests only, not yet run live):
+  the same client now also exposes a strictly validated fetch of FRED's
+  series-level metadata (title, units, frequency, seasonal adjustment,
+  popularity, notes, observation date range, last-updated timestamp) for a
+  single series via FRED's official series endpoint
+  (`https://api.stlouisfed.org/fred/series`) -- distinct from
+  `get_observations()`, which fetches a series' *values*. This exists so a
+  future Macro Analyst never interprets an unlabeled number. The response
+  must contain exactly one matching series (matched by FRED's own reported
+  `id` against the requested, normalized series ID); every required string
+  field must be nonblank; `observation_start`/`observation_end` must be
+  strict `YYYY-MM-DD` dates; `last_updated` must be a strict,
+  timezone-aware timestamp (FRED's documented
+  `"YYYY-MM-DD HH:MM:SS+/-HH[:MM]"` shape) and is normalized to UTC;
+  `popularity` must be a plain nonnegative integer (booleans rejected); and
+  `notes` is preserved exactly as FRED reported it (or `null` when FRED
+  reports none) -- never interpreted or summarized. Any malformed or
+  mismatched payload fails the whole request rather than returning a
+  partial object. Errors and sanitized status output never include the API
+  key, request URL/query parameters, raw response body, or the
+  provider-reported `title`/`notes` text. This has not been exercised
+  against the live API.
 - **Alpaca News** — news provider. A read-only connector,
   `AlpacaNewsClient` in `market_intelligence/data_connectors/alpaca_news.py`,
   exists and talks only to Alpaca's read-only data host
@@ -447,6 +469,45 @@ here — no headline, URL, summary, OHLCV, or observation value from this
 run is reproduced in this catalog. See
 [docs/INGESTION_ORCHESTRATION.md](docs/INGESTION_ORCHESTRATION.md) for
 full detail.
+
+**Macro series metadata: code/tests only, not yet run live (2026-08-24).** A
+narrow, reviewed data contract now also exists for FRED series-level
+*metadata* (title, units, frequency, seasonal adjustment, popularity, notes,
+observation date range, last-updated timestamp) -- distinct from
+`macro_observations`, which stores a series' *values*. Migration `0008`
+(`market_intelligence/storage/migrations/0008_create_macro_series_metadata.sql`)
+defines a `macro_series_metadata` table, and
+`market_intelligence/storage/macro_series_metadata_repository.py`
+(`MacroSeriesMetadataRepository`) accepts an already-normalized
+`FredSeriesMetadata` object from
+`FredMacroDataClient.get_series_metadata()` and writes it transactionally; a
+manual ingestion script, `scripts/ingest_fred_series_metadata.py`, also now
+exists. The table stores only FRED's own reviewed series-metadata fields
+plus provenance (`provider` fixed `"fred"`, `series_id`, `title`,
+`observation_start`, `observation_end`, `frequency`, `frequency_short`,
+`units`, `units_short`, `seasonal_adjustment`, `seasonal_adjustment_short`,
+`last_updated`, `popularity`, `notes` (nullable), `retrieved_at_utc`,
+`first_ingested_at`, `last_seen_at`, `ingestion_run_id`) -- no prediction,
+direction, sentiment, impact, recommendation, option-contract, order, or
+execution field exists. Idempotency is enforced via a
+`(provider, series_id)` primary key; unlike `macro_observations`, series
+metadata has no revision/vintage window of its own, so a repeat ingestion of
+an already-known series always refreshes every mutable metadata/provenance
+column in place -- it is never treated as a conflict, since a series'
+title, units, popularity, or notes may legitimately change over time from
+FRED's own perspective. `MacroEvidenceBuilder`
+(`market_intelligence/market_features/macro_evidence.py`) now also reads
+this table (read-only) and adds `metadata_available` plus `title`,
+`frequency`, `units`, `seasonal_adjustment` to each series entry in its
+snapshot, plus an aggregate `missing_metadata_series` flag -- so a future
+Macro Analyst never interprets an unlabeled number. **As of this entry, this
+capability exists in code and tests only** (temporary DuckDB files, mocked
+HTTP transports -- no live FRED request, no write to the real database).
+Migration `0008` has not been applied to the real local database, which
+remains at migration `0007` and unchanged. See
+[docs/STORAGE_ARCHITECTURE.md](docs/STORAGE_ARCHITECTURE.md) and
+[docs/MACRO_EVIDENCE_SNAPSHOT.md](docs/MACRO_EVIDENCE_SNAPSHOT.md) for full
+detail.
 
 No forecast or trade table has been created — each requires its own
 reviewed data contract and a corresponding versioned migration before it

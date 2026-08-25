@@ -38,6 +38,12 @@ It is read-only end to end:
   calculation -- every value is exactly what FRED reported and this
   project already stored, plus this module's own
   provenance/coverage/staleness bookkeeping about it.
+- It also reads locally stored series-*metadata* (migration `0008`,
+  `macro_series_metadata` table -- see
+  [docs/STORAGE_ARCHITECTURE.md](STORAGE_ARCHITECTURE.md)), when present,
+  and reports it verbatim alongside each series' observation data -- never
+  inferred from the series ID itself. This exists so a future Macro Analyst
+  never interprets an unlabeled number.
 
 ## Command-line usage
 
@@ -119,13 +125,19 @@ injected clock in tests).
         "stale": false,
         "future_date_detected": false,
         "stale_after_days": 90
-      }
+      },
+      "metadata_available": true,
+      "title": "Federal Funds Effective Rate",
+      "frequency": "Monthly",
+      "units": "Percent",
+      "seasonal_adjustment": "Not Seasonally Adjusted"
     }
   ],
   "flags": {
     "missing_series": [],
     "stale_series": [],
-    "future_dated_series": []
+    "future_dated_series": [],
+    "missing_metadata_series": []
   }
 }
 ```
@@ -217,17 +229,44 @@ These thresholds are fixed, documented constants, not a FRED-release-
 calendar-aware system that knows any individual series' actual publication
 schedule.
 
+### Series metadata
+
+- **`metadata_available`** -- `true` only if a row exists in
+  `macro_series_metadata` (migration `0008`, see
+  [docs/STORAGE_ARCHITECTURE.md](STORAGE_ARCHITECTURE.md)) for this
+  `(provider, series_id)`. Read independently of the observation data --
+  a series can have `has_stored_observation: true` with
+  `metadata_available: false` (or the reverse), since the two tables are
+  populated by separate, independently authorized ingestion runs.
+- **`title`**, **`frequency`**, **`units`**, **`seasonal_adjustment`** --
+  read exactly as stored in `macro_series_metadata`, verbatim, when
+  `metadata_available` is `true`; otherwise `null`. These are **never
+  inferred from the series ID itself** -- a well-known series ID (e.g.
+  `FEDFUNDS`) with no stored metadata row always reports `null` for all
+  four fields, never a guessed or hard-coded label.
+- **`flags.missing_metadata_series`** -- the requested series IDs (in
+  request order) for which `metadata_available` is `false`.
+
+This metadata is read-only bookkeeping about what has already been
+ingested and stored by the separate, reviewed FRED series-metadata pipeline
+(`FredMacroDataClient.get_series_metadata()`,
+`MacroSeriesMetadataRepository`, `scripts/ingest_fred_series_metadata.py`)
+-- it is never interpreted, summarized, or used to derive any economic
+judgment by this module.
+
 ## Behavior with no stored data
 
 A missing database file, an existing-but-empty database, a database that
-has not yet had migration `0006` applied, or a requested series with no
-stored observation at all are all treated as **valid, non-error** input:
-`build_snapshot()`/the CLI still return/print a complete snapshot, with
-that series' entry reporting `has_stored_observation: false` and
-`freshness.missing`/`freshness.stale` both `true`. This mirrors
-`MarketContextBuilder`'s and `NewsEvidenceBuilder`'s established behavior:
-this snapshot layer must also work correctly before any macro-observation
-ingestion has ever run.
+has not yet had migration `0006`/`0008` applied, or a requested series with
+no stored observation and/or no stored metadata at all are all treated as
+**valid, non-error** input: `build_snapshot()`/the CLI still return/print a
+complete snapshot, with that series' entry reporting
+`has_stored_observation: false` and/or `metadata_available: false` as
+appropriate (`freshness.missing`/`freshness.stale` both `true` in the
+observation case). This mirrors `MarketContextBuilder`'s and
+`NewsEvidenceBuilder`'s established behavior: this snapshot layer must also
+work correctly before any macro-observation or series-metadata ingestion
+has ever run.
 
 ## Errors and sanitization
 
@@ -245,10 +284,14 @@ sanitized error is what the caller sees. The connection opened by
 ## Known limitations
 
 - This snapshot only ever reflects whatever has already been ingested and
-  stored by the existing, separately reviewed FRED observations pipeline
+  stored by the existing, separately reviewed FRED observations and
+  series-metadata pipelines
   (see [DATA_CATALOG.md](../DATA_CATALOG.md)/[PROJECT_STATE.md](../PROJECT_STATE.md)).
   It cannot backfill gaps, and a snapshot immediately after a single
-  bounded ingestion run only ever covers that run's bounded window.
+  bounded ingestion run only ever covers that run's bounded window. As of
+  this writing, the series-metadata pipeline (migration `0008`) exists in
+  code and tests only and has never been run live, so every series entry's
+  `metadata_available` currently reports `false` against the real database.
 - The freshness/future-date thresholds are simple, fixed, documented
   heuristics for data bookkeeping -- they are not trading signals, are not
   validated forecasts, and must not be treated as such (see
