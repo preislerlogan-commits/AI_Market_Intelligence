@@ -258,7 +258,7 @@ subsequent read-only verification confirmed the real local database
 healthy at schema version `0008` (8 migrations applied) with 1 stored
 `GS10` metadata row and 13 stored `GS10` observation rows covering
 2025-07-01 through 2026-07-01 (0 missing) -- see item 25 below for the
-full record.****
+full record.**
 
 ## Status
 
