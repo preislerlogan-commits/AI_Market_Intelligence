@@ -215,7 +215,19 @@ frequency-aware wording, a gated two-observation comparison, and
 per-channel addressing validation added to `MacroAnalyst`). **One completed
 run and one manual review is not a validated evaluation methodology.** See
 item 21 below for the full sanitized record of both the live run and this
-hardening change.
+hardening change. **A second live `--execute` run made after that hardening
+(FEDFUNDS, `recent_observations_limit=6`) then failed differently: the
+deterministic preflight passed and exactly one OpenAI request was sent, but
+the response was rejected by the post-response content-scope check at
+`limitations[0]` -- no report was accepted and no retry was made.** Offline
+analysis found that this check's fixed denylist could reject a
+model-authored limitation merely for using words like "trend"/"regime"/
+"correlation"/"causation" even when clearly negated (e.g. "insufficient to
+establish a trend"), which are desirable, honest limitations rather than
+prohibited claims; a narrow, fail-closed negation allowance for
+`limitations` only (never `claim_summary`/`conditional_mechanism`) was then
+added to address this false-positive class. See item 22 below for the full
+sanitized record of both this second live failure and the fix.
 
 ## Status
 
@@ -2245,6 +2257,117 @@ hardening change.
     database access or live OpenAI request was made as part of this change.
     See [docs/MACRO_EVIDENCE_SNAPSHOT.md](docs/MACRO_EVIDENCE_SNAPSHOT.md)
     and [docs/MACRO_ANALYST.md](docs/MACRO_ANALYST.md) for full detail.
+
+22. **Second live Macro Analyst run failed on content-scope validation
+    (2026-08-24, after the item 21 hardening merged as PR #29), and a
+    scope-boundary fix that followed it.**
+
+    A separately authorized live `--execute` run was made against the real
+    local database and the real OpenAI API, requesting `FEDFUNDS` with
+    `recent_observations_limit=6`. The deterministic preflight passed and
+    exactly one OpenAI request was sent. The response was **not** accepted:
+    it failed the post-response content-scope check
+    (`MacroAnalystContentScopeError`, `category=content_scope_invalid`) at
+    `field=limitations[0]`, sanitized as:
+
+    ```json
+    {"error": "agent_error", "detail": "Model-authored output described a
+    trend, change, comparison, correlation, causation, policy change, or
+    market regime not supported by a single-snapshot observation
+    (field=limitations[0]). The rejected text is never included in this
+    error.", "category": "content_scope_invalid"}
+    ```
+
+    **No report was accepted from this attempt, and no retry was made** --
+    this agent has always made at most one OpenAI request per `run()` call,
+    and a rejected response is never retried, truncated, or silently
+    modified. Per this agent's own sanitization contract, the model-authored
+    text that triggered the rejection is never recorded anywhere, including
+    in this document, so **the exact live wording that tripped the check is
+    not available and is not reproduced here or claimed to be known.**
+
+    Offline root-cause analysis (no live/network/database access) found a
+    plausible, locally reproducible false-positive class in the fixed
+    content-scope denylist that existed at the time of this run: the
+    denylist matched the bare presence of words like "trend", "regime",
+    "correlation", or "causation" in any model-authored free-text field,
+    including a `limitation` where those words are used to **negate** an
+    unsupported claim -- e.g. "Six observations are insufficient to
+    establish a trend," "No regime conclusion can be drawn from this
+    bounded excerpt," or "The supplied evidence does not establish
+    causation" are desirable, honest limitations, not prohibited claims,
+    but the denylist rejected them identically to an affirmative unsupported
+    claim. **This is offline analysis of a plausible failure class
+    reproduced with locally authored test fixtures, not a claim to know the
+    exact live-rejected wording, and not the only possible explanation for
+    the observed rejection.**
+
+    A bounded, deterministic fix (code/tests/docs only, not yet exercised
+    live as part of this change) was then made to
+    `market_intelligence/agents/macro_analyst.py`'s `_validate_content_scope`:
+
+    - `claim_summary` and `conditional_mechanism` are **unchanged and still
+      strictly denylisted with no exemption of any kind** -- any prohibited
+      trend/change/comparison/correlation/causation/policy-change/regime
+      language in either field is still rejected outright, exactly as
+      before.
+    - For model-supplied `limitations` **only**, a new, narrow, fail-closed
+      allowance (`_limitation_content_scope_violation`) permits a
+      prohibited-term match when it is immediately adjacent (within a small,
+      bounded word gap, in the same clause) to one of a fixed set of
+      negation/insufficiency cues: `no`/`not`, `cannot`/`can't`,
+      `insufficient to`, `does not`/`do not`, `unavailable`,
+      `limited evidence for`, and `cannot be inferred/established/
+      determined/assessed`. Text is first split into clauses (on sentence
+      terminators and on a comma before a coordinating conjunction) so a
+      negated disclaimer clause never shields a separate, unnegated
+      affirmative claim elsewhere in the same limitation (e.g.
+      "insufficient data to draw conclusions, but the rate is clearly
+      following an accelerating trend" is still rejected, for the second
+      clause). Every prohibited match in a limitation must be individually
+      negated; a single unnegated match anywhere still rejects the whole
+      limitation.
+    - The shared non-directional output policy check
+      (`_enforce_output_policy`), the comparison-claim validator, the
+      frequency-wording validator, the transmission-channel validator, all
+      citation/series/quality-consistency checks, the one-OpenAI-request
+      maximum, and the dry-run default were all preserved unchanged and
+      still run on `limitations` exactly as before -- a limitation that
+      passes the new negation allowance is still screened by every other
+      existing check.
+    - The content-scope error message's stale wording ("not supported by a
+      single-snapshot observation") was corrected to "not supported by the
+      bounded stored evidence," since the evidence package has, since item
+      21, included a bounded `recent_observations` history excerpt, not
+      only a single snapshot value. The error remains fully sanitized: it
+      never includes the rejected text, only a fixed field name.
+
+    14 new focused tests were added to
+    `market_intelligence/tests/test_macro_analyst.py` covering: an accepted
+    negated-trend limitation, an accepted no-regime limitation, an accepted
+    no-causation/no-correlation limitation, an accepted insufficient-history
+    limitation, an accepted limitation with multiple independently negated
+    clauses, that an accepted negated limitation still makes exactly one
+    model call, a parametrized sweep of affirmative (unnegated)
+    trend/regime/causation limitations still rejected, a disclaimer-then-
+    affirmative-claim limitation still rejected (with a check that no retry
+    followed the rejection), that the rejection error never echoes the
+    rejected text, that the identical negated wording is still rejected
+    outright in `claim_summary` and in `conditional_mechanism` (no
+    exemption), and that the shared non-directional output policy still
+    fires on a limitation whose negated scope language separately passes
+    the new content-scope allowance. `python -m pytest` (1941 passed),
+    `python -m ruff check .`, and `git diff --check` were all run and pass.
+
+    **This fix addresses a locally reproducible false-positive class in the
+    content-scope denylist. It is not proof of the exact wording that was
+    rejected in the live run above, and it does not weaken the comparison
+    citation checks, frequency-wording validation, transmission-channel
+    validation, any schema bound, the zero-retry behavior, or any other
+    safety boundary** -- all of those were re-run unchanged and still pass.
+    As of this item, this fix has **not** been exercised against a live
+    OpenAI response; no live database access or live OpenAI request was made
+    as part of this change.
 
 ## Notes
 
