@@ -662,11 +662,11 @@ def make_full_basket_claims(
     ]
 
 
-def test_max_macro_claims_is_tied_to_evidence_builder_max_series_ids():
-    """The hard macro_claims bound must equal MacroEvidenceBuilder's existing
-    maximum requested-series count, not an independent, conflicting bound --
-    otherwise a full-basket request could never structurally retain one
-    claim per requested series."""
+def test_max_macro_claims_is_tied_to_evidence_layer_max_series_ids():
+    """The hard macro_claims bound must equal the evidence layer's existing
+    module-level maximum requested-series count, not an independent,
+    conflicting bound -- otherwise a full-basket request could never
+    structurally retain one claim per requested series."""
     assert MAX_MACRO_CLAIMS == MAX_SERIES_IDS
 
 

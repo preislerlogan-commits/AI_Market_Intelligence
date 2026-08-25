@@ -303,8 +303,9 @@ Two strict Pydantic models (`extra="forbid"`, every field bounded):
   `evidence_quality` (`"sufficient"|"limited"|"insufficient"`),
   `macro_claims` (**0**-`MAX_MACRO_CLAIMS` `MacroClaimDraft`), `limitations`
   (0-6 bounded strings). `MAX_MACRO_CLAIMS` is fixed to
-  `MacroEvidenceBuilder.MAX_SERIES_IDS` (`10`) -- the existing, already-
-  reviewed bound on how many series may be requested in one call at all --
+  `macro_evidence.MAX_SERIES_IDS` (`10`) -- the existing, already-
+  reviewed module-level evidence-layer bound on how many series may be
+  requested in one call at all --
   deliberately reused rather than an independent literal, so a
   `"sufficient"`/`"limited"` response can always structurally fit one claim
   per requested series, however many were requested (see "Full-basket
@@ -438,7 +439,7 @@ zero-claims outcome for the *entire* response, never a silent, code-
 uncontrolled partial omission.
 
 `MAX_MACRO_CLAIMS` (see "Structured output" above) is fixed to
-`MacroEvidenceBuilder.MAX_SERIES_IDS` (`10`) specifically so that this
+`macro_evidence.MAX_SERIES_IDS` (`10`) specifically so that this
 coverage requirement can always be structurally satisfied, however many
 series (up to that existing cap) are requested in one call -- including the
 seven-series Core Macro Basket (see
@@ -696,7 +697,7 @@ genuinely excessive 3-ID case since the hard bound is `2`); a series ID not
 among those requested; evidence cited from the wrong series in a two-series
 scenario; a valid two-series completed response; **full-basket coverage
 (`_validate_coverage`/`MacroAnalystCoverageError`)**: `MAX_MACRO_CLAIMS`
-proven equal to `MacroEvidenceBuilder.MAX_SERIES_IDS`; a full seven-series
+proven equal to `macro_evidence.MAX_SERIES_IDS`; a full seven-series
 Core-Macro-Basket-shaped response (`FEDFUNDS`, `GS10`, `CPIAUCSL`, `PCEPI`,
 `UNRATE`, `INDPRO`, `GDPC1`) accepted with exactly one claim per series and
 no duplicate series among the retained claims; the identical seven-series
@@ -823,7 +824,7 @@ touches only `market_intelligence/agents/macro_analyst.py`,
 
   This dry-run pass exposed a contract mismatch that had not been reachable
   before: `MacroAnalyst` accepted up to ten requested series (via
-  `MacroEvidenceBuilder.MAX_SERIES_IDS`), but `MacroAnalystModelAnalysis`'s
+  `macro_evidence.MAX_SERIES_IDS`), but `MacroAnalystModelAnalysis`'s
   `macro_claims` was hard-bounded to a **separate**, smaller literal (`6`,
   `MAX_MACRO_CLAIMS`) -- so a fully eligible seven-series request could never
   have structurally retained one claim per series in a `"sufficient"`/
@@ -832,7 +833,7 @@ touches only `market_intelligence/agents/macro_analyst.py`,
   outright.
 
   The fix, in this same change: `MAX_MACRO_CLAIMS` is now fixed to
-  `MacroEvidenceBuilder.MAX_SERIES_IDS` directly (no longer an independent
+  `macro_evidence.MAX_SERIES_IDS` directly (no longer an independent
   literal that could silently drift out of sync again), and a new
   deterministic check, `_validate_coverage`/`MacroAnalystCoverageError`, now
   requires a `"sufficient"`/`"limited"` response to cover every requested

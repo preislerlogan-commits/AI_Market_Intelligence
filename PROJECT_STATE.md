@@ -2698,7 +2698,7 @@ full record.**
 
     This dry-run pass exposed a contract mismatch that had not previously
     been reachable: `MacroAnalyst` already accepted up to ten requested
-    series (`MacroEvidenceBuilder.MAX_SERIES_IDS`), but its model-facing
+    series (`macro_evidence.MAX_SERIES_IDS`), but its model-facing
     schema (`MacroAnalystModelAnalysis.macro_claims`) was hard-bounded by a
     **separate**, independent literal (`MAX_MACRO_CLAIMS = 6`) -- so a fully
     eligible seven-series request could never have structurally retained one
@@ -2711,8 +2711,8 @@ full record.**
     The fix, made entirely in
     `market_intelligence/agents/macro_analyst.py` and its tests/docs:
 
-    - `MAX_MACRO_CLAIMS` is now fixed directly to
-      `MacroEvidenceBuilder.MAX_SERIES_IDS` (imported, not duplicated) --
+    - `MAX_MACRO_CLAIMS` is now fixed directly to the module-level
+      `macro_evidence.MAX_SERIES_IDS` (imported, not duplicated) --
       the two bounds can no longer silently drift apart and reintroduce this
       same gap for a future, larger requested series list (up to the
       existing 10-series cap).
@@ -2763,7 +2763,7 @@ full record.**
     violation making zero retry model calls; that the coverage error never
     echoes model-authored claim text; that the coverage error carries the
     `coverage_invalid` category; that `MAX_MACRO_CLAIMS` equals
-    `MacroEvidenceBuilder.MAX_SERIES_IDS`; and a dedicated test that builds
+    `macro_evidence.MAX_SERIES_IDS`; and a dedicated test that builds
     the **real** production `MacroAnalystModelAnalysis`/`MacroClaimDraft`
     schema (not the fake stand-ins used elsewhere in that test file) with a
     valid seven-series response and round-trips it through the real

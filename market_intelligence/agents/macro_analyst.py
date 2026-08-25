@@ -109,8 +109,8 @@ paired with ``evidence_quality="insufficient"`` (see
 bound to exactly one ``series_id`` -- this coverage requirement is
 implemented entirely by requiring the right *count and set* of single-series
 claims, never by redesigning the schema into a grouped or cross-series
-claim shape. ``MAX_MACRO_CLAIMS`` is fixed to
-``MacroEvidenceBuilder.MAX_SERIES_IDS`` (the existing bound on how many
+claim shape. ``MAX_MACRO_CLAIMS`` is fixed to the module-level evidence-layer
+``macro_evidence.MAX_SERIES_IDS`` (the existing bound on how many
 series may be requested in one call at all), so a full-basket response can
 always structurally fit one claim per requested series, however many were
 requested.
@@ -166,9 +166,9 @@ MIN_MACRO_CLAIMS = 0
 # covering every requested series needs exactly one claim per requested
 # series (see _validate_coverage). The hard upper bound on macro_claims must
 # therefore be at least as large as the largest basket this agent could ever
-# be asked to cover in one call -- which is exactly
-# MacroEvidenceBuilder.MAX_SERIES_IDS, the existing, already-reviewed bound
-# on how many series may be requested at all (see
+# be asked to cover in one call -- which is exactly the module-level
+# evidence-layer macro_evidence.MAX_SERIES_IDS, the existing, already-reviewed
+# bound on how many series may be requested at all (see
 # market_intelligence/market_features/macro_evidence.py). Deliberately tied
 # to that constant, rather than an independent literal, so the two bounds
 # can never silently drift apart and reintroduce this same full-basket
@@ -613,8 +613,9 @@ class MacroAnalystModelAnalysis(BaseModel):
     state. Conversely, for a nonempty ("sufficient"/"limited") response,
     ``_validate_coverage`` requires exactly one claim per requested series --
     no omission, no duplicate series, no unrequested series. ``max_length``
-    is fixed to ``MAX_MACRO_CLAIMS`` (== ``MacroEvidenceBuilder.MAX_SERIES_IDS``,
-    the existing bound on how many series may be requested at all), so a
+    is fixed to ``MAX_MACRO_CLAIMS`` (== ``macro_evidence.MAX_SERIES_IDS``,
+    the module-level evidence-layer bound on how many series may be
+    requested at all), so a
     full-basket "sufficient"/"limited" response can always structurally fit
     one claim per requested series, however many were requested.
     """
