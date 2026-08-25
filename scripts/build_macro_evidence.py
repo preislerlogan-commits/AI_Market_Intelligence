@@ -22,6 +22,7 @@ import argparse
 import json
 
 from market_intelligence.market_features.macro_evidence import (
+    DEFAULT_RECENT_OBSERVATIONS_LIMIT,
     DEFAULT_SERIES_IDS,
     MacroEvidenceBuilder,
     MacroEvidenceError,
@@ -43,6 +44,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "FEDFUNDS if omitted."
         ),
     )
+    parser.add_argument(
+        "--recent-observations-limit",
+        type=int,
+        default=DEFAULT_RECENT_OBSERVATIONS_LIMIT,
+        dest="recent_observations_limit",
+        help=(
+            "Number of most recent stored observations to include per "
+            f"series (2-24). Defaults to {DEFAULT_RECENT_OBSERVATIONS_LIMIT} "
+            "if omitted."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -53,7 +65,7 @@ def main(argv: list[str] | None = None, *, builder: MacroEvidenceBuilder | None 
 
     try:
         evidence_builder = builder or MacroEvidenceBuilder()
-        snapshot = evidence_builder.build_snapshot(series_ids)
+        snapshot = evidence_builder.build_snapshot(series_ids, args.recent_observations_limit)
     except MacroEvidenceValidationError as exc:
         print(json.dumps({"error": "invalid_input", "detail": str(exc)}))
         return 2

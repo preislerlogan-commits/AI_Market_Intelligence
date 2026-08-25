@@ -22,12 +22,20 @@ from market_intelligence.config.settings import Settings
 from market_intelligence.data_connectors.fred_macro_data import FredObservation, FredSeriesMetadata
 from market_intelligence.market_features import macro_evidence
 from market_intelligence.market_features.macro_evidence import (
+    CHANGE_UNAVAILABLE_INCOMPARABLE_VINTAGE,
+    CHANGE_UNAVAILABLE_INSUFFICIENT_HISTORY,
+    CHANGE_UNAVAILABLE_LATEST_MISSING,
+    CHANGE_UNAVAILABLE_PREVIOUS_MISSING,
+    DEFAULT_RECENT_OBSERVATIONS_LIMIT,
     DEFAULT_SERIES_IDS,
+    MAX_RECENT_OBSERVATIONS_LIMIT,
     MAX_SERIES_IDS,
+    MIN_RECENT_OBSERVATIONS_LIMIT,
     STALE_AFTER_DAYS,
     MacroEvidenceBuilder,
     MacroEvidenceError,
     MacroEvidenceValidationError,
+    normalize_recent_observations_limit,
     normalize_series_ids,
 )
 from market_intelligence.storage.database import DuckDBManager, default_database_path
@@ -105,6 +113,7 @@ def make_metadata(
     series_id: str = "FEDFUNDS",
     title: str = "Federal Funds Effective Rate",
     frequency: str = "Monthly",
+    frequency_short: str = "M",
     units: str = "Percent",
     seasonal_adjustment: str = "Not Seasonally Adjusted",
 ) -> FredSeriesMetadata:
@@ -115,7 +124,7 @@ def make_metadata(
         observation_start="1954-07-01",
         observation_end="2026-08-01",
         frequency=frequency,
-        frequency_short="M",
+        frequency_short=frequency_short,
         units=units,
         units_short="%",
         seasonal_adjustment=seasonal_adjustment,
@@ -520,6 +529,7 @@ def test_build_snapshot_metadata_available_with_stored_metadata(tmp_path, isolat
     assert entry["metadata_available"] is True
     assert entry["title"] == "Federal Funds Effective Rate"
     assert entry["frequency"] == "Monthly"
+    assert entry["frequency_short"] == "M"
     assert entry["units"] == "Percent"
     assert entry["seasonal_adjustment"] == "Not Seasonally Adjusted"
     assert snapshot["flags"]["missing_metadata_series"] == []
@@ -536,6 +546,7 @@ def test_build_snapshot_metadata_unavailable_when_never_stored(tmp_path, isolate
     assert entry["metadata_available"] is False
     assert entry["title"] is None
     assert entry["frequency"] is None
+    assert entry["frequency_short"] is None
     assert entry["units"] is None
     assert entry["seasonal_adjustment"] is None
     assert snapshot["flags"]["missing_metadata_series"] == ["FEDFUNDS"]
@@ -646,6 +657,7 @@ def test_build_snapshot_does_not_infer_metadata_from_series_id(tmp_path, isolate
     assert entry["metadata_available"] is False
     assert entry["title"] is None
     assert entry["frequency"] is None
+    assert entry["frequency_short"] is None
     assert entry["units"] is None
     assert entry["seasonal_adjustment"] is None
 
@@ -756,6 +768,418 @@ def test_build_snapshot_open_failure_reports_sanitized_error(
     assert message == "Failed to open local storage for reading."
     assert open_failure_marker not in message
     assert "secret" not in message
+
+
+# --- recent_observations_limit validation (before any DuckDB access) -------------------
+
+
+def test_normalize_recent_observations_limit_rejects_non_int():
+    with pytest.raises(MacroEvidenceValidationError):
+        normalize_recent_observations_limit("6")
+
+
+def test_normalize_recent_observations_limit_rejects_bool():
+    with pytest.raises(MacroEvidenceValidationError):
+        normalize_recent_observations_limit(True)
+
+
+def test_normalize_recent_observations_limit_rejects_below_min():
+    with pytest.raises(MacroEvidenceValidationError):
+        normalize_recent_observations_limit(MIN_RECENT_OBSERVATIONS_LIMIT - 1)
+
+
+def test_normalize_recent_observations_limit_rejects_above_max():
+    with pytest.raises(MacroEvidenceValidationError):
+        normalize_recent_observations_limit(MAX_RECENT_OBSERVATIONS_LIMIT + 1)
+
+
+def test_normalize_recent_observations_limit_accepts_bounds():
+    assert normalize_recent_observations_limit(MIN_RECENT_OBSERVATIONS_LIMIT) == (
+        MIN_RECENT_OBSERVATIONS_LIMIT
+    )
+    assert normalize_recent_observations_limit(MAX_RECENT_OBSERVATIONS_LIMIT) == (
+        MAX_RECENT_OBSERVATIONS_LIMIT
+    )
+
+
+def test_default_recent_observations_limit_is_six():
+    assert DEFAULT_RECENT_OBSERVATIONS_LIMIT == 6
+
+
+def test_build_snapshot_recent_limit_validation_error_does_not_create_database_file(
+    tmp_path, isolated_env_file
+):
+    settings = isolated_settings(tmp_path, isolated_env_file)
+    builder = MacroEvidenceBuilder(settings=settings, clock=fixed_clock(DEFAULT_AS_OF))
+    with pytest.raises(MacroEvidenceValidationError):
+        builder.build_snapshot(["FEDFUNDS"], recent_observations_limit=1)
+    assert not default_database_path(settings).exists()
+
+
+def test_build_snapshot_echoes_recent_observations_limit_in_request(tmp_path, isolated_env_file):
+    _, builder = initialized_builder(tmp_path, isolated_env_file)
+    snapshot = builder.build_snapshot(["FEDFUNDS"], recent_observations_limit=4)
+    assert snapshot["request"]["recent_observations_limit"] == 4
+
+
+# --- recent_observations: vintage selection, ordering, and bounding --------------------
+
+
+def test_build_snapshot_recent_observations_ordered_newest_first(tmp_path, isolated_env_file):
+    settings, builder = initialized_builder(tmp_path, isolated_env_file)
+    repo = MacroObservationRepository(settings=settings)
+    repo.store_observations(
+        [
+            make_observation(observation_date="2026-05-01", value=Decimal("5.000000")),
+            make_observation(observation_date="2026-06-01", value=Decimal("5.100000")),
+            make_observation(observation_date="2026-07-01", value=Decimal("5.200000")),
+        ]
+    )
+
+    snapshot = builder.build_snapshot(["FEDFUNDS"], recent_observations_limit=6)
+
+    dates = [item["observation_date"] for item in snapshot["series"][0]["recent_observations"]]
+    assert dates == ["2026-07-01", "2026-06-01", "2026-05-01"]
+
+
+def test_build_snapshot_recent_observations_respects_limit(tmp_path, isolated_env_file):
+    settings, builder = initialized_builder(tmp_path, isolated_env_file)
+    repo = MacroObservationRepository(settings=settings)
+    repo.store_observations(
+        [
+            make_observation(observation_date=f"2026-0{i}-01", value=Decimal("5.000000"))
+            for i in range(1, 6)
+        ]
+    )
+
+    snapshot = builder.build_snapshot(["FEDFUNDS"], recent_observations_limit=2)
+
+    assert len(snapshot["series"][0]["recent_observations"]) == 2
+
+
+def test_build_snapshot_recent_observations_one_vintage_per_date_deterministic(
+    tmp_path, isolated_env_file
+):
+    """Two vintages of the same date must collapse to exactly one chosen row."""
+    settings, builder = initialized_builder(tmp_path, isolated_env_file)
+    repo = MacroObservationRepository(settings=settings)
+    repo.store_observations(
+        [
+            make_observation(
+                observation_date="2026-07-01",
+                value=Decimal("5.000000"),
+                realtime_start="2026-07-02",
+                realtime_end="2026-07-31",
+            ),
+            make_observation(
+                observation_date="2026-07-01",
+                value=Decimal("5.050000"),
+                realtime_start="2026-08-01",
+                realtime_end="9999-12-31",
+            ),
+        ]
+    )
+
+    snapshot = builder.build_snapshot(["FEDFUNDS"], recent_observations_limit=6)
+
+    recent = snapshot["series"][0]["recent_observations"]
+    assert len(recent) == 1
+    assert recent[0]["value"] == "5.050000"
+    assert recent[0]["realtime_start"] == "2026-08-01"
+
+
+def test_build_snapshot_recent_observations_never_combines_fields_across_vintages(
+    tmp_path, isolated_env_file
+):
+    settings, builder = initialized_builder(tmp_path, isolated_env_file)
+    repo = MacroObservationRepository(settings=settings)
+    repo.store_observations(
+        [
+            make_observation(
+                observation_date="2026-06-01",
+                value=Decimal("4.000000"),
+                realtime_start="1776-07-04",
+                realtime_end="9999-12-31",
+            ),
+            make_observation(
+                observation_date="2026-07-01",
+                value=Decimal("5.000000"),
+                realtime_start="2026-07-02",
+                realtime_end="2026-07-31",
+            ),
+            make_observation(
+                observation_date="2026-07-01",
+                value=Decimal("5.050000"),
+                realtime_start="2026-08-01",
+                realtime_end="9999-12-31",
+            ),
+        ]
+    )
+
+    snapshot = builder.build_snapshot(["FEDFUNDS"], recent_observations_limit=6)
+
+    recent = snapshot["series"][0]["recent_observations"]
+    latest_item = next(item for item in recent if item["observation_date"] == "2026-07-01")
+    assert latest_item["value"] == "5.050000"
+    assert latest_item["realtime_start"] == "2026-08-01"
+    assert latest_item["realtime_end"] == "9999-12-31"
+
+
+def test_build_snapshot_recent_observations_no_interpolation_or_forward_fill(
+    tmp_path, isolated_env_file
+):
+    """A gap between stored dates must never be filled in with a synthetic entry."""
+    settings, builder = initialized_builder(tmp_path, isolated_env_file)
+    repo = MacroObservationRepository(settings=settings)
+    repo.store_observations(
+        [
+            make_observation(observation_date="2026-05-01", value=Decimal("5.000000")),
+            make_observation(observation_date="2026-07-01", value=Decimal("5.200000")),
+        ]
+    )
+
+    snapshot = builder.build_snapshot(["FEDFUNDS"], recent_observations_limit=6)
+
+    dates = [item["observation_date"] for item in snapshot["series"][0]["recent_observations"]]
+    assert dates == ["2026-07-01", "2026-05-01"]
+    assert "2026-06-01" not in dates
+
+
+def test_build_snapshot_recent_observations_evidence_id_matches_top_level_latest(
+    tmp_path, isolated_env_file
+):
+    settings, builder = initialized_builder(tmp_path, isolated_env_file)
+    repo = MacroObservationRepository(settings=settings)
+    repo.store_observations([make_observation(observation_date="2026-07-01")])
+
+    snapshot = builder.build_snapshot(["FEDFUNDS"], recent_observations_limit=6)
+
+    entry = snapshot["series"][0]
+    assert entry["recent_observations"][0]["evidence_id"] == entry["evidence_id"]
+
+
+def test_build_snapshot_recent_observations_empty_when_no_observations(
+    tmp_path, isolated_env_file
+):
+    _, builder = initialized_builder(tmp_path, isolated_env_file)
+    snapshot = builder.build_snapshot(["FEDFUNDS"])
+    assert snapshot["series"][0]["recent_observations"] == []
+
+
+def test_build_snapshot_coverage_separate_from_bounded_recent_excerpt(
+    tmp_path, isolated_env_file
+):
+    settings, builder = initialized_builder(tmp_path, isolated_env_file)
+    repo = MacroObservationRepository(settings=settings)
+    repo.store_observations(
+        [
+            make_observation(observation_date=f"2026-{i:02d}-01", value=Decimal("5.000000"))
+            for i in range(1, 6)
+        ]
+    )
+
+    snapshot = builder.build_snapshot(["FEDFUNDS"], recent_observations_limit=2)
+
+    entry = snapshot["series"][0]
+    assert len(entry["recent_observations"]) == 2
+    assert entry["coverage"]["row_count"] == 5
+
+
+# --- latest_change_from_previous ---------------------------------------------------------
+
+
+def test_build_snapshot_latest_change_available_increased(tmp_path, isolated_env_file):
+    settings, builder = initialized_builder(tmp_path, isolated_env_file)
+    repo = MacroObservationRepository(settings=settings)
+    repo.store_observations(
+        [
+            make_observation(observation_date="2026-06-01", value=Decimal("5.000000")),
+            make_observation(observation_date="2026-07-01", value=Decimal("5.330000")),
+        ]
+    )
+
+    snapshot = builder.build_snapshot(["FEDFUNDS"])
+
+    change = snapshot["series"][0]["latest_change_from_previous"]
+    assert change["available"] is True
+    assert change["unavailable_reason"] is None
+    assert change["latest_observation_date"] == "2026-07-01"
+    assert change["latest_value"] == "5.330000"
+    assert change["previous_observation_date"] == "2026-06-01"
+    assert change["previous_value"] == "5.000000"
+    assert change["direction"] == "increased"
+    assert change["absolute_change_native_units"] == "0.330000"
+    assert change["latest_evidence_id"] == snapshot["series"][0]["evidence_id"]
+    assert change["previous_evidence_id"] != change["latest_evidence_id"]
+
+
+def test_build_snapshot_latest_change_available_decreased(tmp_path, isolated_env_file):
+    settings, builder = initialized_builder(tmp_path, isolated_env_file)
+    repo = MacroObservationRepository(settings=settings)
+    repo.store_observations(
+        [
+            make_observation(observation_date="2026-06-01", value=Decimal("5.330000")),
+            make_observation(observation_date="2026-07-01", value=Decimal("5.000000")),
+        ]
+    )
+
+    snapshot = builder.build_snapshot(["FEDFUNDS"])
+
+    change = snapshot["series"][0]["latest_change_from_previous"]
+    assert change["direction"] == "decreased"
+    assert change["absolute_change_native_units"] == "0.330000"
+
+
+def test_build_snapshot_latest_change_available_unchanged(tmp_path, isolated_env_file):
+    settings, builder = initialized_builder(tmp_path, isolated_env_file)
+    repo = MacroObservationRepository(settings=settings)
+    repo.store_observations(
+        [
+            make_observation(observation_date="2026-06-01", value=Decimal("5.330000")),
+            make_observation(observation_date="2026-07-01", value=Decimal("5.330000")),
+        ]
+    )
+
+    snapshot = builder.build_snapshot(["FEDFUNDS"])
+
+    change = snapshot["series"][0]["latest_change_from_previous"]
+    assert change["direction"] == "unchanged"
+    assert change["absolute_change_native_units"] == "0.000000"
+
+
+def test_build_snapshot_latest_change_exact_decimal_subtraction(tmp_path, isolated_env_file):
+    """The change must be an exact Decimal subtraction, never a rounded/float result."""
+    settings, builder = initialized_builder(tmp_path, isolated_env_file)
+    repo = MacroObservationRepository(settings=settings)
+    repo.store_observations(
+        [
+            make_observation(observation_date="2026-06-01", value=Decimal("0.100000")),
+            make_observation(observation_date="2026-07-01", value=Decimal("0.300000")),
+        ]
+    )
+
+    snapshot = builder.build_snapshot(["FEDFUNDS"])
+
+    change = snapshot["series"][0]["latest_change_from_previous"]
+    # Decimal("0.300000") - Decimal("0.100000") is exactly Decimal("0.200000");
+    # the equivalent float subtraction (0.3 - 0.1) is not exactly 0.2.
+    assert change["absolute_change_native_units"] == "0.200000"
+
+
+def test_build_snapshot_latest_change_never_computes_percentage_or_extra_fields(
+    tmp_path, isolated_env_file
+):
+    settings, builder = initialized_builder(tmp_path, isolated_env_file)
+    repo = MacroObservationRepository(settings=settings)
+    repo.store_observations(
+        [
+            make_observation(observation_date="2026-06-01", value=Decimal("5.000000")),
+            make_observation(observation_date="2026-07-01", value=Decimal("5.330000")),
+        ]
+    )
+
+    snapshot = builder.build_snapshot(["FEDFUNDS"])
+
+    change = snapshot["series"][0]["latest_change_from_previous"]
+    assert set(change.keys()) == {
+        "available",
+        "unavailable_reason",
+        "latest_observation_date",
+        "latest_value",
+        "latest_evidence_id",
+        "previous_observation_date",
+        "previous_value",
+        "previous_evidence_id",
+        "absolute_change_native_units",
+        "direction",
+    }
+
+
+def test_build_snapshot_latest_change_unavailable_insufficient_history(
+    tmp_path, isolated_env_file
+):
+    settings, builder = initialized_builder(tmp_path, isolated_env_file)
+    repo = MacroObservationRepository(settings=settings)
+    repo.store_observations([make_observation(observation_date="2026-07-01")])
+
+    snapshot = builder.build_snapshot(["FEDFUNDS"])
+
+    change = snapshot["series"][0]["latest_change_from_previous"]
+    assert change["available"] is False
+    assert change["unavailable_reason"] == CHANGE_UNAVAILABLE_INSUFFICIENT_HISTORY
+    assert change["latest_value"] is None
+    assert change["direction"] is None
+
+
+def test_build_snapshot_latest_change_unavailable_no_stored_observation_at_all(
+    tmp_path, isolated_env_file
+):
+    _, builder = initialized_builder(tmp_path, isolated_env_file)
+    snapshot = builder.build_snapshot(["FEDFUNDS"])
+    change = snapshot["series"][0]["latest_change_from_previous"]
+    assert change["available"] is False
+    assert change["unavailable_reason"] == CHANGE_UNAVAILABLE_INSUFFICIENT_HISTORY
+
+
+def test_build_snapshot_latest_change_unavailable_latest_missing(tmp_path, isolated_env_file):
+    settings, builder = initialized_builder(tmp_path, isolated_env_file)
+    repo = MacroObservationRepository(settings=settings)
+    repo.store_observations(
+        [
+            make_observation(observation_date="2026-06-01", value=Decimal("5.000000")),
+            make_observation(observation_date="2026-07-01", value=None, is_missing=True),
+        ]
+    )
+
+    snapshot = builder.build_snapshot(["FEDFUNDS"])
+
+    change = snapshot["series"][0]["latest_change_from_previous"]
+    assert change["available"] is False
+    assert change["unavailable_reason"] == CHANGE_UNAVAILABLE_LATEST_MISSING
+
+
+def test_build_snapshot_latest_change_unavailable_previous_missing(tmp_path, isolated_env_file):
+    settings, builder = initialized_builder(tmp_path, isolated_env_file)
+    repo = MacroObservationRepository(settings=settings)
+    repo.store_observations(
+        [
+            make_observation(observation_date="2026-06-01", value=None, is_missing=True),
+            make_observation(observation_date="2026-07-01", value=Decimal("5.330000")),
+        ]
+    )
+
+    snapshot = builder.build_snapshot(["FEDFUNDS"])
+
+    change = snapshot["series"][0]["latest_change_from_previous"]
+    assert change["available"] is False
+    assert change["unavailable_reason"] == CHANGE_UNAVAILABLE_PREVIOUS_MISSING
+
+
+def test_build_snapshot_latest_change_unavailable_incomparable_vintage(
+    tmp_path, isolated_env_file
+):
+    """A chosen vintage that is not FRED's currently valid (open-ended) revision --
+    e.g. only a superseded, bounded-window vintage is on file for that date --
+    must not be compared."""
+    settings, builder = initialized_builder(tmp_path, isolated_env_file)
+    repo = MacroObservationRepository(settings=settings)
+    repo.store_observations(
+        [
+            make_observation(
+                observation_date="2026-06-01",
+                value=Decimal("5.000000"),
+                realtime_start="2026-06-02",
+                realtime_end="2026-07-31",  # bounded -- not the open-ended sentinel
+            ),
+            make_observation(observation_date="2026-07-01", value=Decimal("5.330000")),
+        ]
+    )
+
+    snapshot = builder.build_snapshot(["FEDFUNDS"])
+
+    change = snapshot["series"][0]["latest_change_from_previous"]
+    assert change["available"] is False
+    assert change["unavailable_reason"] == CHANGE_UNAVAILABLE_INCOMPARABLE_VINTAGE
 
 
 # --- No network or model usage ---------------------------------------------------------

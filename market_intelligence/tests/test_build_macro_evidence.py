@@ -51,7 +51,7 @@ class _RaisingBuilder:
     def __init__(self, exc: Exception) -> None:
         self._exc = exc
 
-    def build_snapshot(self, series_ids=("FEDFUNDS",)):
+    def build_snapshot(self, series_ids=("FEDFUNDS",), recent_observations_limit=6):
         raise self._exc
 
 
@@ -94,6 +94,32 @@ def test_main_rejects_invalid_series(tmp_path, isolated_env_file, capsys):
     builder = isolated_builder(tmp_path, isolated_env_file)
 
     exit_code = module.main(["--series", "not a valid id!"], builder=builder)
+
+    assert exit_code == 2
+    output = json.loads(capsys.readouterr().out)
+    assert output["error"] == "invalid_input"
+
+
+def test_main_recent_observations_limit_flag_is_forwarded(tmp_path, isolated_env_file, capsys):
+    module = load_script_module()
+    builder = isolated_builder(tmp_path, isolated_env_file)
+
+    exit_code = module.main(
+        ["--series", "FEDFUNDS", "--recent-observations-limit", "3"], builder=builder
+    )
+
+    assert exit_code == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["request"]["recent_observations_limit"] == 3
+
+
+def test_main_rejects_out_of_range_recent_observations_limit(tmp_path, isolated_env_file, capsys):
+    module = load_script_module()
+    builder = isolated_builder(tmp_path, isolated_env_file)
+
+    exit_code = module.main(
+        ["--series", "FEDFUNDS", "--recent-observations-limit", "1"], builder=builder
+    )
 
     assert exit_code == 2
     output = json.loads(capsys.readouterr().out)

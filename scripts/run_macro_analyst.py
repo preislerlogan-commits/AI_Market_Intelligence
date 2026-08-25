@@ -35,6 +35,7 @@ from market_intelligence.agents.macro_analyst import (
     MacroAnalystValidationError,
 )
 from market_intelligence.market_features.macro_evidence import (
+    DEFAULT_RECENT_OBSERVATIONS_LIMIT,
     MacroEvidenceError,
     MacroEvidenceValidationError,
 )
@@ -85,6 +86,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "default (dry run, zero OpenAI requests)."
         ),
     )
+    parser.add_argument(
+        "--recent-observations-limit",
+        type=int,
+        default=DEFAULT_RECENT_OBSERVATIONS_LIMIT,
+        dest="recent_observations_limit",
+        help=(
+            "Number of most recent stored observations to include per "
+            f"series (2-24). Defaults to {DEFAULT_RECENT_OBSERVATIONS_LIMIT} "
+            "if omitted."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -96,7 +108,9 @@ def main(argv: list[str] | None = None, *, agent: MacroAnalyst | None = None) ->
     if not args.execute:
         try:
             agent_instance = agent or MacroAnalyst()
-            preflight = agent_instance.build_preflight(series_ids)
+            preflight = agent_instance.build_preflight(
+                series_ids, args.recent_observations_limit
+            )
         except _VALIDATION_ERRORS as exc:
             print(json.dumps({"error": "invalid_input", "detail": str(exc)}))
             return 2
@@ -126,7 +140,7 @@ def main(argv: list[str] | None = None, *, agent: MacroAnalyst | None = None) ->
 
     try:
         agent_instance = agent or MacroAnalyst()
-        result = agent_instance.run(series_ids)
+        result = agent_instance.run(series_ids, args.recent_observations_limit)
     except _VALIDATION_ERRORS as exc:
         print(json.dumps({"error": "invalid_input", "detail": str(exc)}))
         return 2

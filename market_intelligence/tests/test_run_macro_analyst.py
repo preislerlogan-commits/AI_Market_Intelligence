@@ -84,15 +84,19 @@ class FakeAgent:
         self._run_exception = run_exception
         self.preflight_calls: list[list[str]] = []
         self.run_calls: list[list[str]] = []
+        self.preflight_recent_limits: list[int] = []
+        self.run_recent_limits: list[int] = []
 
-    def build_preflight(self, series_ids):
+    def build_preflight(self, series_ids, recent_observations_limit=6):
         self.preflight_calls.append(list(series_ids))
+        self.preflight_recent_limits.append(recent_observations_limit)
         if self._preflight_exception is not None:
             raise self._preflight_exception
         return self._preflight
 
-    def run(self, series_ids):
+    def run(self, series_ids, recent_observations_limit=6):
         self.run_calls.append(list(series_ids))
+        self.run_recent_limits.append(recent_observations_limit)
         if self._run_exception is not None:
             raise self._run_exception
         return self._run_result
@@ -365,6 +369,41 @@ def test_dry_run_agent_construction_failure_prints_only_unexpected_error(monkeyp
     assert output == {"error": "unexpected_error"}
     assert _UNEXPECTED_FAILURE_MARKER not in raw_output
     assert "RuntimeError" not in raw_output
+
+
+# --- recent-observations-limit flag forwarding --------------------------------
+
+
+def test_dry_run_recent_observations_limit_flag_is_forwarded():
+    module = load_script_module()
+    fake_agent = FakeAgent(preflight=make_preflight())
+
+    module.main(
+        ["--series", "FEDFUNDS", "--recent-observations-limit", "4"], agent=fake_agent
+    )
+
+    assert fake_agent.preflight_recent_limits == [4]
+
+
+def test_execute_recent_observations_limit_flag_is_forwarded():
+    module = load_script_module()
+    fake_agent = FakeAgent(run_result=completed_run_result())
+
+    module.main(
+        ["--series", "FEDFUNDS", "--execute", "--recent-observations-limit", "10"],
+        agent=fake_agent,
+    )
+
+    assert fake_agent.run_recent_limits == [10]
+
+
+def test_dry_run_recent_observations_limit_defaults_when_omitted():
+    module = load_script_module()
+    fake_agent = FakeAgent(preflight=make_preflight())
+
+    module.main(["--series", "FEDFUNDS"], agent=fake_agent)
+
+    assert fake_agent.preflight_recent_limits == [6]
 
 
 def test_execute_unexpected_run_failure_prints_only_unexpected_error(capsys):

@@ -31,13 +31,19 @@ It is read-only end to end:
   instant. It never imports a connector's HTTP client, a storage
   repository's write path, or any model client.
 - It never labels a series bullish/bearish, never classifies a market
-  regime, never infers a rate-cut/hike direction, never predicts, never
-  describes a transmission mechanism, and never recommends anything
-  (including options language). It performs no transformation,
-  interpolation, forward-filling, seasonal adjustment, or derived-change
-  calculation -- every value is exactly what FRED reported and this
+  regime, never infers a rate-cut/hike direction, never predicts, and never
+  describes a transmission mechanism or recommends anything (including
+  options language). It performs no interpolation, forward-filling, or
+  seasonal adjustment -- every value is exactly what FRED reported and this
   project already stored, plus this module's own
-  provenance/coverage/staleness bookkeeping about it.
+  provenance/coverage/staleness bookkeeping about it. Each series entry
+  also reports a bounded, read-only `recent_observations` excerpt and, when
+  precisely supported, one exact `latest_change_from_previous` comparison
+  (an absolute difference and increased/decreased/unchanged direction
+  between exactly two stored observations) -- the **only** derived
+  quantities this module computes; it never computes a percentage,
+  annualized, or basis-point change, and never labels anything a trend
+  (see "`recent_observations[]`"/"`latest_change_from_previous`" below).
 - It also reads locally stored series-*metadata* (migration `0008`,
   `macro_series_metadata` table -- see
   [docs/STORAGE_ARCHITECTURE.md](STORAGE_ARCHITECTURE.md)), when present,
@@ -51,18 +57,19 @@ It is read-only end to end:
 python scripts/build_macro_evidence.py
 python scripts/build_macro_evidence.py --series FEDFUNDS
 python scripts/build_macro_evidence.py --series FEDFUNDS --series UNRATE
+python scripts/build_macro_evidence.py --series FEDFUNDS --recent-observations-limit 12
 ```
 
 An unrecognized flag is rejected by `argparse` itself before anything else
-runs. An invalid `--series` selection is rejected by
-`MacroEvidenceBuilder`'s own validation (see "Input validation" below)
-before any DuckDB connection is opened, and is reported as a small
-sanitized JSON object (`{"error": "invalid_input", "detail": "..."}`) with
-exit code `2`. A database read failure is similarly reported
-(`{"error": "storage_error", "detail": "..."}`) with exit code `1`, never
-as a raw traceback, database path, SQL, or credential. A missing database
-file is **not** treated as an error -- see "Behavior with no stored data"
-below.
+runs. An invalid `--series` selection, or a `--recent-observations-limit`
+outside `2`-`24`, is rejected by `MacroEvidenceBuilder`'s own validation
+(see "Input validation" below) before any DuckDB connection is opened, and
+is reported as a small sanitized JSON object (`{"error": "invalid_input",
+"detail": "..."}`) with exit code `2`. A database read failure is similarly
+reported (`{"error": "storage_error", "detail": "..."}`) with exit code
+`1`, never as a raw traceback, database path, SQL, or credential. A missing
+database file is **not** treated as an error -- see "Behavior with no
+stored data" below.
 
 ## Input validation (before any DuckDB connection is opened)
 
@@ -90,6 +97,20 @@ The normalized result **preserves the caller's requested order** -- it is
 never sorted -- so the snapshot's `series` array always reflects the order
 actually requested. Default: `("FEDFUNDS",)`.
 
+`normalize_recent_observations_limit` validates `recent_observations_limit`
+in the same before-any-DuckDB-access way, raising
+`MacroEvidenceValidationError` for: a non-`int` (a `bool` is explicitly
+rejected even though `bool` is a subclass of `int`), or a value outside
+`MIN_RECENT_OBSERVATIONS_LIMIT` (`2`) to `MAX_RECENT_OBSERVATIONS_LIMIT`
+(`24`) inclusive. Default: `DEFAULT_RECENT_OBSERVATIONS_LIMIT` (`6`). The
+minimum is `2` so that whenever at least two distinct observation dates are
+stored, the excerpt always contains enough rows to also support
+`latest_change_from_previous` (see below) -- a caller never needs a larger
+request just to get the two-observation comparison. Both `series_ids` and
+`recent_observations_limit` are validated before `build_snapshot` opens any
+DuckDB connection, checks whether the database file exists, or checks
+whether `macro_observations` exists.
+
 ## Snapshot field contract
 
 All Decimal and date/datetime values are serialized as plain strings so the
@@ -101,7 +122,7 @@ injected clock in tests).
 ```json
 {
   "snapshot_created_at_utc": "2026-08-24T12:00:00Z",
-  "request": {"series_ids": ["FEDFUNDS"]},
+  "request": {"series_ids": ["FEDFUNDS"], "recent_observations_limit": 6},
   "series": [
     {
       "series_id": "FEDFUNDS",
@@ -126,9 +147,40 @@ injected clock in tests).
         "future_date_detected": false,
         "stale_after_days": 90
       },
+      "recent_observations": [
+        {
+          "observation_date": "2026-07-01",
+          "value": "5.330000",
+          "is_missing": false,
+          "realtime_start": "1776-07-04",
+          "realtime_end": "9999-12-31",
+          "evidence_id": "macro_3f2a9c1d4e5b6789"
+        },
+        {
+          "observation_date": "2026-06-01",
+          "value": "5.000000",
+          "is_missing": false,
+          "realtime_start": "1776-07-04",
+          "realtime_end": "9999-12-31",
+          "evidence_id": "macro_7a1b2c3d4e5f6081"
+        }
+      ],
+      "latest_change_from_previous": {
+        "available": true,
+        "unavailable_reason": null,
+        "latest_observation_date": "2026-07-01",
+        "latest_value": "5.330000",
+        "latest_evidence_id": "macro_3f2a9c1d4e5b6789",
+        "previous_observation_date": "2026-06-01",
+        "previous_value": "5.000000",
+        "previous_evidence_id": "macro_7a1b2c3d4e5f6081",
+        "absolute_change_native_units": "0.330000",
+        "direction": "increased"
+      },
       "metadata_available": true,
       "title": "Federal Funds Effective Rate",
       "frequency": "Monthly",
+      "frequency_short": "M",
       "units": "Percent",
       "seasonal_adjustment": "Not Seasonally Adjusted"
     }
@@ -198,6 +250,85 @@ mixed in. `realtime_start`/`realtime_end` are always reported explicitly on
 the entry so a future consumer can audit exactly which revision window was
 selected, rather than having to assume it.
 
+The same tie-break rule (latest `realtime_start`, then latest
+`realtime_end`) is applied **independently per `observation_date`** to
+build `recent_observations` below -- every item in that bounded excerpt is
+also a single, deterministically chosen vintage, never a mix of fields from
+more than one stored row for its date.
+
+### `recent_observations[]`
+
+A bounded, read-only excerpt of up to `recent_observations_limit` most
+recent **distinct** stored `observation_date` values for the series,
+ordered **newest first**. Each item is exactly one deterministically chosen
+vintage for its date (see "Vintage selection" above) and contains only:
+`observation_date`, `value` (a decimal string, or `null` when
+`is_missing` is `true`), `is_missing`, `realtime_start`, `realtime_end`,
+and `evidence_id` (the same stable, code-generated ID scheme as the
+series-level `evidence_id` -- the first item's `evidence_id` always equals
+the entry's top-level `evidence_id`, since both are derived from the same
+chosen latest row). This is a bounded excerpt of history, entirely separate
+from `coverage` (below), which always reflects the **full** stored history
+for the series regardless of `recent_observations_limit`. No
+interpolation, forward-filling, seasonal adjustment, or value rewriting is
+ever performed -- a gap between two stored dates (e.g. a missing monthly
+release) is never filled in with a synthetic entry; only dates that are
+actually stored appear.
+
+### `latest_change_from_previous`
+
+One precisely supported comparison between the latest and immediately
+preceding chronological stored observation (i.e. the first two items of
+`recent_observations`, when present):
+
+```json
+{
+  "available": true,
+  "unavailable_reason": null,
+  "latest_observation_date": "2026-07-01",
+  "latest_value": "5.330000",
+  "latest_evidence_id": "macro_3f2a9c1d4e5b6789",
+  "previous_observation_date": "2026-06-01",
+  "previous_value": "5.000000",
+  "previous_evidence_id": "macro_7a1b2c3d4e5f6081",
+  "absolute_change_native_units": "0.330000",
+  "direction": "increased"
+}
+```
+
+- **`available`** -- `true` only when **all** of the following hold,
+  checked in this order (the documented deterministic "comparable vintage
+  series" rule):
+  1. At least two distinct `observation_date` values are stored for the
+     series (otherwise `unavailable_reason` is `"insufficient_history"`).
+  2. The latest chosen row is not missing (otherwise
+     `"latest_missing"`).
+  3. The immediately preceding chosen row is not missing (otherwise
+     `"previous_missing"`).
+  4. Both chosen rows' `realtime_end` equal FRED's open-ended sentinel
+     (`9999-12-31`) -- i.e. both are the series' **currently valid**
+     revision for their date, not an already-superseded, bounded-window
+     vintage (otherwise `"incomparable_vintage"`). Both rows were selected
+     by the identical, fixed per-date vintage-selection rule described
+     above, so "comparable" here means neither is stale, already-revised
+     history.
+- **`unavailable_reason`** -- `null` when `available` is `true`; otherwise
+  exactly one of `"insufficient_history"`, `"latest_missing"`,
+  `"previous_missing"`, or `"incomparable_vintage"` -- a small, fixed enum.
+- **`absolute_change_native_units`** -- the **exact** `Decimal` subtraction
+  `abs(latest_value - previous_value)`, formatted as a decimal string --
+  never a float computation, so it never carries binary-float rounding
+  artifacts. **Never** a percentage change, an annualized change, a
+  basis-point change, or a "surprise" relative to a consensus expectation
+  -- none of those are computed anywhere in this module.
+- **`direction`** -- exactly one of `"increased"`, `"decreased"`, or
+  `"unchanged"`, based only on comparing the two exact values. **Two
+  observations are never described as a trend** -- this field describes
+  one comparison between exactly two stored points, nothing more.
+- When `available` is `false`, every other field is `null` -- no partial
+  latest-only data is duplicated here (the entry's own top-level
+  `latest_observation_date`/`latest_value` already report that).
+
 ### Freshness
 
 - **`freshness.stale_after_days`** -- a fixed, documented threshold (`90`
@@ -238,12 +369,19 @@ schedule.
   a series can have `has_stored_observation: true` with
   `metadata_available: false` (or the reverse), since the two tables are
   populated by separate, independently authorized ingestion runs.
-- **`title`**, **`frequency`**, **`units`**, **`seasonal_adjustment`** --
-  read exactly as stored in `macro_series_metadata`, verbatim, when
-  `metadata_available` is `true`; otherwise `null`. These are **never
-  inferred from the series ID itself** -- a well-known series ID (e.g.
-  `FEDFUNDS`) with no stored metadata row always reports `null` for all
-  four fields, never a guessed or hard-coded label.
+- **`title`**, **`frequency`**, **`frequency_short`**, **`units`**,
+  **`seasonal_adjustment`** -- read exactly as stored in
+  `macro_series_metadata`, verbatim, when `metadata_available` is `true`;
+  otherwise `null`. These are **never inferred from the series ID itself**
+  -- a well-known series ID (e.g. `FEDFUNDS`) with no stored metadata row
+  always reports `null` for all five fields, never a guessed or hard-coded
+  label. `frequency_short` is FRED's short, machine-stable frequency code
+  (e.g. `"M"`, `"W"`, `"Q"`) -- distinct from the free-text `frequency`
+  field, which can carry extra qualifiers (e.g. `"Weekly, Ending Friday"`).
+  The Macro Analyst (see
+  [docs/MACRO_ANALYST.md](MACRO_ANALYST.md)) uses `frequency_short`, not
+  `frequency`, as the deterministic basis for its frequency-aware wording
+  requirement.
 - **`flags.missing_metadata_series`** -- the requested series IDs (in
   request order) for which `metadata_available` is `false`.
 
@@ -297,17 +435,23 @@ sanitized error is what the caller sees. The connection opened by
   validated forecasts, and must not be treated as such (see
   [DECISION_RULES.md](../DECISION_RULES.md)).
 - This module performs **no** transformation, interpolation,
-  forward-filling, seasonal adjustment, or derived-change (e.g.
-  period-over-period delta) calculation of any kind. It reports exactly
-  the single chosen stored row's value, unmodified. Any such derived
-  feature is separate, future, reviewed work.
-- This module is intentionally not a general feature store or a Macro
-  Analyst: it has no plugin system, no caching layer, and makes no model
-  request. Building an actual Macro Analyst agent on top of this snapshot
-  is separate, future, reviewed work -- see
-  [docs/MARKET_EVIDENCE_AGENT.md](MARKET_EVIDENCE_AGENT.md) and
-  [docs/NEWS_ANALYST.md](NEWS_ANALYST.md) for the equivalent pattern
-  already used for market/session and news evidence.
+  forward-filling, or seasonal adjustment of any kind -- every value in
+  `recent_observations` is reported exactly as stored, unmodified. The
+  **one** derived quantity this module computes is
+  `latest_change_from_previous`'s exact absolute difference and
+  increased/decreased/unchanged direction between exactly two stored
+  observations (see above) -- it never computes a percentage change, an
+  annualized change, a basis-point change, a moving average, a
+  period-over-period growth rate, or any comparison spanning more than two
+  observations. Any such broader derived feature is separate, future,
+  reviewed work.
+- This module is intentionally not a general feature store: it has no
+  plugin system, no caching layer, and makes no model request. A Macro
+  Analyst agent (`market_intelligence/agents/macro_analyst.py`) is now
+  built directly on this snapshot -- see
+  [docs/MACRO_ANALYST.md](MACRO_ANALYST.md) for its own bounded contract,
+  including how it uses `recent_observations` and
+  `latest_change_from_previous`.
 
 ## Components
 

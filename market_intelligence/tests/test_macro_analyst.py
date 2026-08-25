@@ -23,12 +23,15 @@ from market_intelligence.agents.macro_analyst import (
     ADVISORY_PREFERRED_MIN_MACRO_CLAIMS,
     AGENT_INSTRUCTIONS,
     CONTENT_BASIS_STORED_OBSERVATION_AND_OFFICIAL_METADATA,
+    FREQUENCY_SHORT_WORDS,
     MAX_CLAIM_SUMMARY_LENGTH,
     MAX_CONDITIONAL_MECHANISM_LENGTH,
+    MAX_EVIDENCE_IDS_PER_CLAIM,
     MAX_LIMITATION_LENGTH,
     MAX_LIMITATIONS,
     MAX_MACRO_CLAIMS,
     PREFLIGHT_REASON_REQUESTED_SERIES_MISMATCH,
+    PREFLIGHT_REASON_SERIES_FREQUENCY_UNRECOGNIZED,
     PREFLIGHT_REASON_SERIES_FUTURE_DATED,
     PREFLIGHT_REASON_SERIES_LATEST_MISSING,
     PREFLIGHT_REASON_SERIES_METADATA_MISSING,
@@ -37,13 +40,16 @@ from market_intelligence.agents.macro_analyst import (
     PREFLIGHT_REASON_SERIES_STALE,
     MacroAnalyst,
     MacroAnalystCitationError,
+    MacroAnalystComparisonError,
     MacroAnalystContentScopeError,
+    MacroAnalystFrequencyWordingError,
     MacroAnalystIncompleteError,
     MacroAnalystModelAnalysis,
     MacroAnalystPolicyError,
     MacroAnalystQualityConsistencyError,
     MacroAnalystRefusalError,
     MacroAnalystSeriesError,
+    MacroAnalystTransmissionChannelError,
     MacroAnalystUnexpectedError,
     MacroAnalystValidationError,
     MacroClaimDraft,
@@ -60,6 +66,49 @@ from market_intelligence.model_clients.openai_structured import (
 # ---------------------------------------------------------------------------
 
 
+def make_unavailable_change(reason: str = "insufficient_history") -> dict:
+    return {
+        "available": False,
+        "unavailable_reason": reason,
+        "latest_observation_date": None,
+        "latest_value": None,
+        "latest_evidence_id": None,
+        "previous_observation_date": None,
+        "previous_value": None,
+        "previous_evidence_id": None,
+        "absolute_change_native_units": None,
+        "direction": None,
+    }
+
+
+def make_available_change(
+    *,
+    series_id: str = "FEDFUNDS",
+    latest_observation_date: str = "2026-07-01",
+    latest_value: str = "5.330000",
+    latest_evidence_id: str | None = None,
+    previous_observation_date: str = "2026-06-01",
+    previous_value: str = "5.000000",
+    previous_evidence_id: str | None = None,
+    absolute_change_native_units: str = "0.330000",
+    direction: str = "increased",
+) -> dict:
+    return {
+        "available": True,
+        "unavailable_reason": None,
+        "latest_observation_date": latest_observation_date,
+        "latest_value": latest_value,
+        "latest_evidence_id": latest_evidence_id or f"macro_{series_id.lower()}evidence0001",
+        "previous_observation_date": previous_observation_date,
+        "previous_value": previous_value,
+        "previous_evidence_id": (
+            previous_evidence_id or f"macro_{series_id.lower()}evidenceprev1"
+        ),
+        "absolute_change_native_units": absolute_change_native_units,
+        "direction": direction,
+    }
+
+
 def make_series_entry(
     series_id: str = "FEDFUNDS",
     *,
@@ -71,15 +120,31 @@ def make_series_entry(
     include_evidence_id: bool = True,
     title: str = "Federal Funds Effective Rate",
     frequency: str = "Monthly",
+    frequency_short: str = "M",
     units: str = "Percent",
     seasonal_adjustment: str = "Not Seasonally Adjusted",
     observation_date: str = "2026-07-01",
     latest_value: str = "5.330000",
+    latest_change_from_previous: dict | None = None,
 ) -> dict:
     evidence_id = (
         f"macro_{series_id.lower()}evidence0001"
         if include_evidence_id and has_stored_observation
         else None
+    )
+    recent_observations = (
+        [
+            {
+                "observation_date": observation_date,
+                "value": None if latest_is_missing else latest_value,
+                "is_missing": latest_is_missing,
+                "realtime_start": "1776-07-04",
+                "realtime_end": "9999-12-31",
+                "evidence_id": evidence_id,
+            }
+        ]
+        if has_stored_observation and evidence_id is not None
+        else []
     )
     return {
         "series_id": series_id,
@@ -106,9 +171,16 @@ def make_series_entry(
             "future_date_detected": future_dated,
             "stale_after_days": 90,
         },
+        "recent_observations": recent_observations,
+        "latest_change_from_previous": (
+            latest_change_from_previous
+            if latest_change_from_previous is not None
+            else make_unavailable_change()
+        ),
         "metadata_available": metadata_available,
         "title": title if metadata_available else None,
         "frequency": frequency if metadata_available else None,
+        "frequency_short": frequency_short if metadata_available else None,
         "units": units if metadata_available else None,
         "seasonal_adjustment": seasonal_adjustment if metadata_available else None,
     }
@@ -145,9 +217,11 @@ class FakeEvidenceBuilder:
     def __init__(self, snapshot: dict) -> None:
         self._snapshot = snapshot
         self.calls: list[tuple[str, ...]] = []
+        self.recent_limit_calls: list[int] = []
 
-    def build_snapshot(self, series_ids) -> dict:
+    def build_snapshot(self, series_ids, recent_observations_limit=6) -> dict:
         self.calls.append(tuple(series_ids))
+        self.recent_limit_calls.append(recent_observations_limit)
         return self._snapshot
 
 
@@ -182,8 +256,8 @@ def valid_claim_draft(**overrides) -> MacroClaimDraft:
     fields = dict(
         series_id="FEDFUNDS",
         claim_summary=(
-            "The provider's stored data reports the latest FEDFUNDS observation, "
-            "dated 2026-07-01, per official FRED metadata."
+            "The stored monthly observation dated 2026-07-01 reports the latest "
+            "FEDFUNDS value, per official FRED metadata."
         ),
         evidence_ids=["macro_fedfundsevidence0001"],
         economic_category="policy_rate",
@@ -444,12 +518,17 @@ def test_fabricated_evidence_id_is_rejected():
 
 
 def test_excessive_evidence_ids_is_rejected_via_model_construct():
-    """Schema bounds max_length=1; bypass via model_construct to exercise the
-    explicit defense-in-depth count check."""
+    """Schema bounds max_length=2; bypass via model_construct to exercise the
+    explicit defense-in-depth count check with a genuinely excessive count."""
+    assert MAX_EVIDENCE_IDS_PER_CLAIM == 2
     bad_claim = MacroClaimDraft.model_construct(
         series_id="FEDFUNDS",
         claim_summary="Valid summary.",
-        evidence_ids=["macro_fedfundsevidence0001", "macro_fedfundsevidence0001_dup"],
+        evidence_ids=[
+            "macro_fedfundsevidence0001",
+            "macro_fedfundsevidence0001_dup",
+            "macro_fedfundsevidence0001_dup2",
+        ],
         economic_category="policy_rate",
         transmission_channels=["rates"],
         conditional_mechanism=None,
@@ -531,6 +610,9 @@ def test_valid_multi_series_claims_are_accepted():
             evidence_ids=["macro_unrateevidence0001"],
             economic_category="labor",
             transmission_channels=["growth"],
+            conditional_mechanism=(
+                "Labor-market conditions can in general relate to broader economic growth."
+            ),
         ),
     ]
     agent, *_ = make_agent(
@@ -551,10 +633,6 @@ def test_valid_multi_series_claims_are_accepted():
 @pytest.mark.parametrize(
     "forbidden_summary",
     [
-        "The rate increased from the prior reading.",
-        "The value decreased sharply this month.",
-        "This reading rose to a new level.",
-        "The value fell compared to last period.",
         "Observations show an accelerating trend.",
         "This decelerated relative to prior data.",
         "The value surprised economists.",
@@ -579,7 +657,7 @@ def test_trend_change_regime_language_is_rejected_in_claim_summary(forbidden_sum
 
 def test_trend_language_is_rejected_in_conditional_mechanism():
     bad_claim = valid_claim_draft(
-        conditional_mechanism="Rates that increase can generally raise borrowing costs."
+        conditional_mechanism="Rates in general reflect a broader market regime shift."
     )
     agent, *_ = make_agent(
         model_result=completed_result(parsed=completed_analysis(macro_claims=[bad_claim]))
@@ -591,7 +669,9 @@ def test_trend_language_is_rejected_in_conditional_mechanism():
 def test_trend_language_is_rejected_in_limitations():
     agent, *_ = make_agent(
         model_result=completed_result(
-            parsed=completed_analysis(limitations=["Coverage has increased since last month."])
+            parsed=completed_analysis(
+                limitations=["Coverage reflects a historical high not seen in prior periods."]
+            )
         )
     )
     with pytest.raises(MacroAnalystContentScopeError):
@@ -599,22 +679,21 @@ def test_trend_language_is_rejected_in_limitations():
 
 
 def test_content_scope_error_never_echoes_rejected_text():
-    bad_claim = valid_claim_draft(claim_summary="The rate increased sharply.")
+    bad_claim = valid_claim_draft(claim_summary="The rate reflects a clear historical extreme.")
     agent, *_ = make_agent(
         model_result=completed_result(parsed=completed_analysis(macro_claims=[bad_claim]))
     )
     with pytest.raises(MacroAnalystContentScopeError) as exc_info:
         agent.run(["FEDFUNDS"])
-    assert "increased sharply" not in str(exc_info.value)
+    assert "historical extreme" not in str(exc_info.value)
 
 
 def test_factual_snapshot_only_language_is_accepted():
     """A description confined to the single stored level/date/metadata must pass."""
     safe_claim = valid_claim_draft(
         claim_summary=(
-            "The provider's stored FEDFUNDS observation dated 2026-07-01 has a "
-            "value of 5.33 percent, per official FRED metadata (monthly, not "
-            "seasonally adjusted)."
+            "The stored monthly observation dated 2026-07-01 has a value of "
+            "5.33 percent, per official FRED metadata (not seasonally adjusted)."
         ),
         conditional_mechanism=(
             "Policy interest rates can in general relate to broad borrowing costs."
@@ -832,3 +911,377 @@ def test_model_schema_excludes_forbidden_fields():
     claim_fields = set(MacroClaimDraft.model_fields.keys())
     assert "content_basis" not in claim_fields
     assert "options" not in claim_fields
+
+
+# ---------------------------------------------------------------------------
+# Preflight: frequency-recognition gate
+# ---------------------------------------------------------------------------
+
+
+def test_preflight_abstains_when_frequency_unrecognized():
+    agent, *_ = make_agent(
+        snapshot=make_snapshot([make_series_entry(frequency_short="XYZ")])
+    )
+    preflight = agent.build_preflight(["FEDFUNDS"])
+
+    assert preflight.eligible is False
+    assert PREFLIGHT_REASON_SERIES_FREQUENCY_UNRECOGNIZED in preflight.reasons
+
+
+def test_preflight_eligible_for_every_known_frequency_short():
+    for code in FREQUENCY_SHORT_WORDS:
+        agent, *_ = make_agent(snapshot=make_snapshot([make_series_entry(frequency_short=code)]))
+        preflight = agent.build_preflight(["FEDFUNDS"])
+        assert preflight.eligible is True, code
+
+
+def test_preflight_flags_report_frequency_unrecognized_series():
+    agent, *_ = make_agent(
+        snapshot=make_snapshot([make_series_entry(frequency_short="XYZ")])
+    )
+    preflight = agent.build_preflight(["FEDFUNDS"])
+
+    assert preflight.flags["frequency_unrecognized_series"] == ["FEDFUNDS"]
+
+
+# ---------------------------------------------------------------------------
+# Evidence package includes recent_observations / latest_change_from_previous
+# ---------------------------------------------------------------------------
+
+
+def test_evidence_package_includes_recent_observations_and_frequency_short():
+    agent, *_ = make_agent()
+    preflight = agent.build_preflight(["FEDFUNDS"])
+
+    fact = preflight.evidence_package["series"]["macro_fedfundsevidence0001"]
+    assert fact["frequency_short"] == "M"
+    assert fact["recent_observations"][0]["observation_date"] == "2026-07-01"
+
+
+def test_evidence_package_includes_unavailable_latest_change_by_default():
+    agent, *_ = make_agent()
+    preflight = agent.build_preflight(["FEDFUNDS"])
+
+    fact = preflight.evidence_package["series"]["macro_fedfundsevidence0001"]
+    assert fact["latest_change_from_previous"]["available"] is False
+
+
+def test_evidence_package_includes_available_latest_change():
+    change = make_available_change()
+    snapshot = make_snapshot([make_series_entry(latest_change_from_previous=change)])
+    agent, *_ = make_agent(snapshot=snapshot)
+    preflight = agent.build_preflight(["FEDFUNDS"])
+
+    fact = preflight.evidence_package["series"]["macro_fedfundsevidence0001"]
+    assert fact["latest_change_from_previous"]["direction"] == "increased"
+
+
+# ---------------------------------------------------------------------------
+# Comparison claims: increase/decrease/unchanged, only when fully supported
+# ---------------------------------------------------------------------------
+
+COMPARISON_CLAIM_SUMMARY = (
+    "Comparing the stored monthly observations dated 2026-06-01 and 2026-07-01, "
+    "the value increased from 5.000000 to 5.330000."
+)
+
+
+def make_comparison_snapshot(**change_overrides) -> dict:
+    change = make_available_change(**change_overrides)
+    return make_snapshot([make_series_entry(latest_change_from_previous=change)]), change
+
+
+def test_supported_two_observation_comparison_claim_is_accepted():
+    snapshot, change = make_comparison_snapshot()
+    claim = valid_claim_draft(
+        claim_summary=COMPARISON_CLAIM_SUMMARY,
+        evidence_ids=[change["latest_evidence_id"], change["previous_evidence_id"]],
+    )
+    agent, *_ = make_agent(
+        snapshot=snapshot,
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[claim])),
+    )
+    result = agent.run(["FEDFUNDS"])
+
+    assert result.report.status == "completed"
+    assert set(result.report.macro_claims[0].evidence_ids) == {
+        change["latest_evidence_id"],
+        change["previous_evidence_id"],
+    }
+
+
+def test_comparison_language_with_one_citation_is_rejected():
+    """Change wording without citing both comparison evidence IDs is rejected."""
+    snapshot, _change = make_comparison_snapshot()
+    claim = valid_claim_draft(claim_summary=COMPARISON_CLAIM_SUMMARY)
+    agent, *_ = make_agent(
+        snapshot=snapshot,
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[claim])),
+    )
+    with pytest.raises(MacroAnalystComparisonError):
+        agent.run(["FEDFUNDS"])
+
+
+def test_comparison_claim_wrong_evidence_id_pair_is_rejected():
+    snapshot, change = make_comparison_snapshot()
+    claim = valid_claim_draft(
+        claim_summary=COMPARISON_CLAIM_SUMMARY,
+        evidence_ids=[change["latest_evidence_id"], "macro_fedfundsevidence0001"],
+    )
+    agent, *_ = make_agent(
+        snapshot=snapshot,
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[claim])),
+    )
+    with pytest.raises((MacroAnalystComparisonError, MacroAnalystCitationError)):
+        agent.run(["FEDFUNDS"])
+
+
+def test_comparison_claim_unavailable_change_is_rejected():
+    """A series with no available comparison evidence cannot support a two-ID claim."""
+    snapshot = make_snapshot([make_series_entry()])  # default: unavailable change
+    claim = valid_claim_draft(
+        claim_summary=COMPARISON_CLAIM_SUMMARY,
+        evidence_ids=["macro_fedfundsevidence0001", "macro_fedfundsevidence0001"],
+    )
+    agent, *_ = make_agent(
+        snapshot=snapshot,
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[claim])),
+    )
+    with pytest.raises((MacroAnalystComparisonError, MacroAnalystCitationError)):
+        agent.run(["FEDFUNDS"])
+
+
+def test_comparison_claim_missing_previous_date_is_rejected():
+    snapshot, change = make_comparison_snapshot()
+    claim = valid_claim_draft(
+        claim_summary=(
+            "The stored monthly observation dated 2026-07-01 increased to 5.330000 "
+            "from a prior reading of 5.000000."
+        ),
+        evidence_ids=[change["latest_evidence_id"], change["previous_evidence_id"]],
+    )
+    agent, *_ = make_agent(
+        snapshot=snapshot,
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[claim])),
+    )
+    with pytest.raises(MacroAnalystComparisonError):
+        agent.run(["FEDFUNDS"])
+
+
+def test_comparison_claim_mismatched_value_is_rejected():
+    snapshot, change = make_comparison_snapshot()
+    claim = valid_claim_draft(
+        claim_summary=(
+            "Comparing the stored monthly observations dated 2026-06-01 and "
+            "2026-07-01, the value increased from 5.000000 to 5.990000."
+        ),
+        evidence_ids=[change["latest_evidence_id"], change["previous_evidence_id"]],
+    )
+    agent, *_ = make_agent(
+        snapshot=snapshot,
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[claim])),
+    )
+    with pytest.raises(MacroAnalystComparisonError):
+        agent.run(["FEDFUNDS"])
+
+
+def test_comparison_claim_wrong_direction_is_rejected():
+    snapshot, change = make_comparison_snapshot()
+    claim = valid_claim_draft(
+        claim_summary=(
+            "Comparing the stored monthly observations dated 2026-06-01 and "
+            "2026-07-01, the value decreased from 5.000000 to 5.330000."
+        ),
+        evidence_ids=[change["latest_evidence_id"], change["previous_evidence_id"]],
+    )
+    agent, *_ = make_agent(
+        snapshot=snapshot,
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[claim])),
+    )
+    with pytest.raises(MacroAnalystComparisonError):
+        agent.run(["FEDFUNDS"])
+
+
+def test_change_words_in_conditional_mechanism_always_rejected():
+    snapshot, change = make_comparison_snapshot()
+    claim = valid_claim_draft(
+        claim_summary=COMPARISON_CLAIM_SUMMARY,
+        evidence_ids=[change["latest_evidence_id"], change["previous_evidence_id"]],
+        conditional_mechanism="Policy rates that increased can in general raise borrowing costs.",
+    )
+    agent, *_ = make_agent(
+        snapshot=snapshot,
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[claim])),
+    )
+    with pytest.raises(MacroAnalystComparisonError):
+        agent.run(["FEDFUNDS"])
+
+
+def test_change_words_in_limitations_always_rejected():
+    agent, *_ = make_agent(
+        model_result=completed_result(
+            parsed=completed_analysis(limitations=["Coverage increased since last month."])
+        )
+    )
+    with pytest.raises(MacroAnalystComparisonError):
+        agent.run(["FEDFUNDS"])
+
+
+def test_comparison_error_never_echoes_rejected_text():
+    snapshot, _change = make_comparison_snapshot()
+    claim = valid_claim_draft(claim_summary=COMPARISON_CLAIM_SUMMARY)
+    agent, *_ = make_agent(
+        snapshot=snapshot,
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[claim])),
+    )
+    with pytest.raises(MacroAnalystComparisonError) as exc_info:
+        agent.run(["FEDFUNDS"])
+    assert "increased from 5.000000" not in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# Frequency-aware wording
+# ---------------------------------------------------------------------------
+
+
+def test_point_in_time_phrasing_is_rejected():
+    bad_claim = valid_claim_draft(
+        claim_summary="The stored monthly observation is at 5.33 percent on 2026-07-01."
+    )
+    agent, *_ = make_agent(
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[bad_claim]))
+    )
+    with pytest.raises(MacroAnalystFrequencyWordingError):
+        agent.run(["FEDFUNDS"])
+
+
+def test_missing_required_frequency_phrase_is_rejected():
+    bad_claim = valid_claim_draft(
+        claim_summary="FEDFUNDS was last reported as 5.33 percent, per official FRED metadata."
+    )
+    agent, *_ = make_agent(
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[bad_claim]))
+    )
+    with pytest.raises(MacroAnalystFrequencyWordingError):
+        agent.run(["FEDFUNDS"])
+
+
+def test_frequency_wording_uses_series_own_official_frequency_word():
+    """A weekly series must never be described as 'monthly'."""
+    snapshot = make_snapshot([make_series_entry(frequency_short="W")])
+    claim = valid_claim_draft(
+        claim_summary=(
+            "The stored weekly observation dated 2026-07-01 reports the latest "
+            "FEDFUNDS value, per official FRED metadata."
+        )
+    )
+    agent, *_ = make_agent(
+        snapshot=snapshot,
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[claim])),
+    )
+    result = agent.run(["FEDFUNDS"])
+    assert result.report.status == "completed"
+
+
+def test_frequency_wording_wrong_frequency_word_is_rejected():
+    """A weekly series described with the monthly word must be rejected."""
+    snapshot = make_snapshot([make_series_entry(frequency_short="W")])
+    claim = valid_claim_draft(
+        claim_summary=(
+            "The stored monthly observation dated 2026-07-01 reports the latest "
+            "FEDFUNDS value, per official FRED metadata."
+        )
+    )
+    agent, *_ = make_agent(
+        snapshot=snapshot,
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[claim])),
+    )
+    with pytest.raises(MacroAnalystFrequencyWordingError):
+        agent.run(["FEDFUNDS"])
+
+
+def test_frequency_wording_error_never_echoes_rejected_text():
+    bad_claim = valid_claim_draft(
+        claim_summary="The stored monthly observation is at 5.33 percent on 2026-07-01."
+    )
+    agent, *_ = make_agent(
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[bad_claim]))
+    )
+    with pytest.raises(MacroAnalystFrequencyWordingError) as exc_info:
+        agent.run(["FEDFUNDS"])
+    assert "5.33 percent on 2026-07-01" not in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# Transmission-channel addressing
+# ---------------------------------------------------------------------------
+
+
+def test_transmission_channel_addressed_is_accepted():
+    claim = valid_claim_draft(
+        transmission_channels=["rates"],
+        conditional_mechanism="Policy interest rates can in general affect borrowing costs.",
+    )
+    agent, *_ = make_agent(
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[claim]))
+    )
+    result = agent.run(["FEDFUNDS"])
+    assert result.report.status == "completed"
+
+
+def test_transmission_channel_not_addressed_is_rejected():
+    """Reproduces the manual-review finding: a listed channel the mechanism never explains."""
+    claim = valid_claim_draft(
+        transmission_channels=["rates", "inflation"],
+        conditional_mechanism="Policy interest rates can in general affect borrowing costs.",
+    )
+    agent, *_ = make_agent(
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[claim]))
+    )
+    with pytest.raises(MacroAnalystTransmissionChannelError):
+        agent.run(["FEDFUNDS"])
+
+
+def test_transmission_channel_other_is_always_rejected():
+    claim = valid_claim_draft(
+        transmission_channels=["other"],
+        conditional_mechanism="This series can in general relate to markets in some way.",
+    )
+    agent, *_ = make_agent(
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[claim]))
+    )
+    with pytest.raises(MacroAnalystTransmissionChannelError):
+        agent.run(["FEDFUNDS"])
+
+
+def test_transmission_channel_missing_conditional_mechanism_is_rejected():
+    claim = valid_claim_draft(transmission_channels=["rates"], conditional_mechanism=None)
+    agent, *_ = make_agent(
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[claim]))
+    )
+    with pytest.raises(MacroAnalystTransmissionChannelError):
+        agent.run(["FEDFUNDS"])
+
+
+def test_transmission_channel_error_never_echoes_rejected_text():
+    claim = valid_claim_draft(
+        transmission_channels=["inflation"],
+        conditional_mechanism="Policy interest rates can in general affect borrowing costs.",
+    )
+    agent, *_ = make_agent(
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[claim]))
+    )
+    with pytest.raises(MacroAnalystTransmissionChannelError) as exc_info:
+        agent.run(["FEDFUNDS"])
+    assert "borrowing costs" not in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# recent_observations_limit forwarding
+# ---------------------------------------------------------------------------
+
+
+def test_recent_observations_limit_is_forwarded_to_evidence_builder():
+    agent, evidence_builder, _ = make_agent()
+    agent.build_preflight(["FEDFUNDS"], recent_observations_limit=3)
+    assert evidence_builder.recent_limit_calls == [3]
