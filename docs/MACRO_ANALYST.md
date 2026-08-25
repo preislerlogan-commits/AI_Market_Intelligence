@@ -58,6 +58,13 @@ ever be supported by stored observations alone. This is enforced both by
 `AGENT_INSTRUCTIONS` and, as defense-in-depth, by a deterministic,
 fail-closed post-response content-scope check (`_validate_content_scope`/
 `MacroAnalystContentScopeError` -- see "Post-response validation" below).
+**A model-authored `limitation` that clearly negates this same prohibited
+language, or frames it as unavailable/insufficient (e.g. "insufficient
+observations to establish a trend"), is narrowly and separately allowed --
+see "Post-response validation" below -- but `claim_summary` and
+`conditional_mechanism` are never exempted, and an unnegated affirmative
+claim anywhere, including elsewhere in the same `limitation`, is still
+rejected.**
 
 **Comparison claims.** A claim may additionally state that a series'
 latest stored observation *increased*, *decreased*, or was *unchanged*
@@ -415,14 +422,37 @@ Before a model response is accepted as `status="completed"`:
   `MacroAnalystContentScopeError`)** -- a fixed, deterministic, fail-closed
   denylist rejecting language describing acceleration/deceleration,
   surprise, historical extreme (record/all-time high or low), a trend,
-  correlation, causation, a policy change, or a market regime, in every
-  macro claim's `claim_summary`/`conditional_mechanism` and every
-  model-supplied `limitation`. This is a conservative, bounded pattern
-  match, not general semantic understanding -- it is not proof that every
-  possible unsupported statement is caught (see "Known limitations" below).
-  Increase/decrease/unchanged language is deliberately **not** covered here
-  -- it is instead conditionally permitted; see "Comparison-claim
-  validation" below.
+  correlation, causation, a policy change, or a market regime. Applied
+  **unconditionally** to every macro claim's `claim_summary`/
+  `conditional_mechanism` -- neither field is ever exempted, regardless of
+  wording. For every model-supplied `limitation` **only**, a narrow,
+  fail-closed allowance
+  (`_limitation_content_scope_violation`/`_match_is_negated`) permits a
+  match when it is immediately adjacent, within a small bounded word gap
+  and in the same clause, to one of a fixed set of negation/insufficiency
+  cues: `no`/`not`, `cannot`/`can't`, `insufficient to`, `does not`/
+  `do not`, `unavailable`, `limited evidence for`, and `cannot be
+  inferred/established/determined/assessed`. This exists because a
+  limitation honestly stating that the evidence is *too thin* to support a
+  trend/regime/causation/correlation claim -- e.g. "Six observations are
+  insufficient to establish a trend," "No regime conclusion can be drawn
+  from this bounded excerpt," or "The supplied evidence does not establish
+  causation" -- is a desirable, truthful limitation, not a prohibited
+  affirmative claim, and should not be rejected identically to one.
+  `limitations` text is first split into clauses (on sentence terminators
+  and on a comma before a coordinating conjunction) so a negated disclaimer
+  clause never shields a separate, unnegated affirmative claim elsewhere in
+  the same limitation -- e.g. "insufficient data to draw conclusions, but
+  the rate is clearly following an accelerating trend" is still rejected,
+  for its second clause. Every prohibited match in a `limitation` must be
+  individually negated; a single unnegated match anywhere still rejects the
+  whole limitation. This is a conservative, bounded pattern match, not
+  general semantic understanding -- it is not proof that every possible
+  unsupported statement is caught, nor that every possible honest
+  limitation phrasing is recognized as negated (see "Known limitations"
+  below). Increase/decrease/unchanged language is deliberately **not**
+  covered here -- it is instead conditionally permitted; see
+  "Comparison-claim validation" below.
 - **Post-response content policy** -- after the checks above and before
   `MacroAnalystReport` is constructed, every model-authored free-text field
   is checked against the same fixed, deterministic, fail-closed denylist the
@@ -583,7 +613,7 @@ exception type, message, or traceback.
 
 `market_intelligence/tests/test_macro_analyst.py`,
 `test_run_macro_analyst.py`, and `test_macro_analyst_eval_fixtures.py` cover
-(112 tests total): an eligible FEDFUNDS snapshot; every preflight abstention
+(126 tests total): an eligible FEDFUNDS snapshot; every preflight abstention
 reason with zero model calls (missing, missing metadata, stale, future-
 dated, `latest_is_missing`, no evidence ID, requested-series mismatch, and
 now also `series_frequency_unrecognized`, plus every known
@@ -630,9 +660,22 @@ error never echoes rejected text; a transmission channel addressed by
 `conditional_mechanism` accepted, an unaddressed channel rejected
 (reproducing the manual-review finding described in `PROJECT_STATE.md`), a
 missing `conditional_mechanism` rejected, `"other"` always rejected, and
-that the error never echoes rejected text; and `recent_observations_limit`
+that the error never echoes rejected text; `recent_observations_limit`
 forwarding from the agent to the evidence builder and from the CLI to the
-agent (both dry-run and `--execute`, including the CLI default).
+agent (both dry-run and `--execute`, including the CLI default); and the
+narrow negated-limitation content-scope allowance described above -- an
+accepted negated-trend limitation, an accepted no-regime limitation, an
+accepted no-causation/no-correlation limitation, an accepted
+insufficient-history limitation, an accepted limitation with multiple
+independently negated clauses, that an accepted negated limitation still
+makes exactly one model call, a parametrized sweep of affirmative
+(unnegated) trend/regime/causation limitations still rejected, a
+disclaimer-then-affirmative-claim limitation still rejected with no retry
+following the rejection, that the rejection error never echoes rejected
+text, that identical negated wording is still rejected outright in
+`claim_summary` and `conditional_mechanism` (no exemption), and that the
+shared non-directional output policy still fires on a limitation whose
+negated scope language separately passes the content-scope allowance.
 
 `OpenAIStructuredClient` is always injected as a fake recording calls and
 returning/raising canned `StructuredOutputResult` values (mirroring
@@ -672,6 +715,38 @@ touches only `market_intelligence/agents/macro_analyst.py`,
 
 ## Known limitations
 
+- **Second live run failed content-scope validation, and this change's
+  motivation.** A separately authorized live `--execute` run made after the
+  item-21 hardening below (FEDFUNDS, `recent_observations_limit=6`) had its
+  deterministic preflight pass and sent exactly one OpenAI request, but the
+  response was rejected by `_validate_content_scope` at `field=limitations[0]`
+  (`category=content_scope_invalid`) -- no report was accepted and no retry
+  was made. Per this agent's sanitization contract, the model-authored text
+  that triggered the rejection was never recorded, so **the exact live
+  wording is not known and is not reproduced anywhere in this repository.**
+  Offline analysis found a locally reproducible false-positive class in the
+  content-scope denylist as it existed at the time: it rejected a
+  `limitation` for using words like "trend"/"regime"/"correlation"/
+  "causation" even when clearly negated (e.g. "insufficient observations to
+  establish a trend"), which are desirable, truthful limitations rather
+  than prohibited claims. This motivated the narrow, fail-closed negation
+  allowance for `limitations` described above (`_validate_content_scope`,
+  "Post-response validation"), plus the correction of this check's error
+  wording (it previously said "not supported by a single-snapshot
+  observation," stale since the item-21 hardening added a bounded
+  `recent_observations` history excerpt to the evidence package; it now
+  says "not supported by the bounded stored evidence"). **This is offline
+  analysis of a plausible failure class reproduced with locally authored
+  test fixtures -- it is not proof of the exact wording rejected in that
+  live run, and it does not weaken `claim_summary`/`conditional_mechanism`
+  content-scope enforcement (still unconditional), the shared
+  non-directional output policy, the comparison-claim validator, the
+  frequency-wording validator, the transmission-channel validator, any
+  schema bound, or the one-OpenAI-request/zero-retry behavior -- all
+  verified unchanged by the existing test suite.** As of this change, the
+  fix has **not** been exercised against a live OpenAI response. See
+  `PROJECT_STATE.md` for the full sanitized record of both the live failure
+  and this fix.
 - **First live run and this change's motivation.** The first live
   `--execute` run (2026-08-24, FEDFUNDS, `gpt-5-mini`) completed
   successfully -- see `PROJECT_STATE.md` for the full sanitized record
@@ -710,7 +785,15 @@ touches only `market_intelligence/agents/macro_analyst.py`,
   trade-recommendation/options statement is caught. The frequency-wording
   required-phrase check in particular requires one specific fixed phrase
   ("stored `<frequency>` observation") -- a factually accurate description
-  using different wording would still be rejected.
+  using different wording would still be rejected. The `limitations`-only
+  negation allowance within `_validate_content_scope` is likewise a fixed,
+  bounded set of negation/insufficiency cue phrases matched by adjacency,
+  not general semantic understanding: a truthful, negated limitation
+  phrased with a cue word or construction outside that fixed set (or with
+  the negation cue too far from the prohibited term) would still be
+  rejected -- a conservative, fail-closed choice per this change's
+  "narrow allowance" requirement, not a claim that every honest negated
+  phrasing is recognized.
 - The two-observation comparison is only ever between the latest stored
   observation and the immediately preceding **chronological** one on file
   -- never a longer lookback, a percentage/annualized/basis-point change,

@@ -688,6 +688,203 @@ def test_content_scope_error_never_echoes_rejected_text():
     assert "historical extreme" not in str(exc_info.value)
 
 
+# ---------------------------------------------------------------------------
+# Narrow negated-limitation allowance -- a limitation that clearly negates or
+# frames prohibited scope language as unavailable/insufficient is a
+# desirable, honest limitation, not a prohibited affirmative claim. This
+# allowance applies ONLY to `limitations`, never to `claim_summary`/
+# `conditional_mechanism`, and never shields an unnegated affirmative claim
+# elsewhere in the same text.
+# ---------------------------------------------------------------------------
+
+
+def test_negated_trend_limitation_is_accepted():
+    agent, *_ = make_agent(
+        model_result=completed_result(
+            parsed=completed_analysis(
+                limitations=[
+                    "Six stored observations are insufficient to establish a trend for "
+                    "this series."
+                ]
+            )
+        )
+    )
+    result = agent.run(["FEDFUNDS"])
+    assert result.report.status == "completed"
+
+
+def test_no_regime_limitation_is_accepted():
+    agent, *_ = make_agent(
+        model_result=completed_result(
+            parsed=completed_analysis(
+                limitations=[
+                    "No conclusion about a market regime can be drawn from this bounded "
+                    "excerpt."
+                ]
+            )
+        )
+    )
+    result = agent.run(["FEDFUNDS"])
+    assert result.report.status == "completed"
+
+
+def test_no_causation_and_correlation_limitation_is_accepted():
+    agent, *_ = make_agent(
+        model_result=completed_result(
+            parsed=completed_analysis(
+                limitations=[
+                    "No correlation or causation can be inferred from a single stored "
+                    "observation."
+                ]
+            )
+        )
+    )
+    result = agent.run(["FEDFUNDS"])
+    assert result.report.status == "completed"
+
+
+def test_insufficient_history_trend_limitation_is_accepted():
+    agent, *_ = make_agent(
+        model_result=completed_result(
+            parsed=completed_analysis(
+                limitations=[
+                    "The stored history for this series is insufficient to determine a "
+                    "trend."
+                ]
+            )
+        )
+    )
+    result = agent.run(["FEDFUNDS"])
+    assert result.report.status == "completed"
+
+
+def test_multiple_negated_clauses_in_one_limitation_are_all_accepted():
+    agent, *_ = make_agent(
+        model_result=completed_result(
+            parsed=completed_analysis(
+                limitations=[
+                    "No trend can be established, and no market regime shift is "
+                    "indicated either."
+                ]
+            )
+        )
+    )
+    result = agent.run(["FEDFUNDS"])
+    assert result.report.status == "completed"
+
+
+def test_accepted_negated_limitation_makes_exactly_one_model_call():
+    agent, _, model_client = make_agent(
+        model_result=completed_result(
+            parsed=completed_analysis(
+                limitations=[
+                    "Six stored observations are insufficient to establish a trend."
+                ]
+            )
+        )
+    )
+    result = agent.run(["FEDFUNDS"])
+    assert result.report.status == "completed"
+    assert len(model_client.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "forbidden_limitation",
+    [
+        "The rate is clearly following an accelerating trend.",
+        "This indicates a shift in the market regime.",
+        "The reading is caused by prior policy decisions.",
+    ],
+)
+def test_affirmative_trend_regime_causation_limitation_is_still_rejected(forbidden_limitation):
+    agent, *_ = make_agent(
+        model_result=completed_result(parsed=completed_analysis(limitations=[forbidden_limitation]))
+    )
+    with pytest.raises(MacroAnalystContentScopeError):
+        agent.run(["FEDFUNDS"])
+
+
+def test_disclaimer_then_affirmative_claim_limitation_is_rejected():
+    """A negated disclaimer clause never shields a separate, unnegated
+    affirmative claim elsewhere in the same limitation."""
+    agent, _, model_client = make_agent(
+        model_result=completed_result(
+            parsed=completed_analysis(
+                limitations=[
+                    "There is insufficient data to draw firm conclusions, but the rate "
+                    "is clearly following an accelerating trend and causation is "
+                    "evident."
+                ]
+            )
+        )
+    )
+    with pytest.raises(MacroAnalystContentScopeError):
+        agent.run(["FEDFUNDS"])
+    # Rejected outright; no retry was attempted after the one model call.
+    assert len(model_client.calls) == 1
+
+
+def test_disclaimer_then_affirmative_claim_error_never_echoes_rejected_text():
+    agent, *_ = make_agent(
+        model_result=completed_result(
+            parsed=completed_analysis(
+                limitations=[
+                    "There is insufficient data to draw firm conclusions, but the rate "
+                    "is clearly following an accelerating trend and causation is "
+                    "evident."
+                ]
+            )
+        )
+    )
+    with pytest.raises(MacroAnalystContentScopeError) as exc_info:
+        agent.run(["FEDFUNDS"])
+    message = str(exc_info.value)
+    assert "accelerating trend" not in message
+    assert "causation is evident" not in message
+
+
+def test_negated_scope_language_still_rejected_in_claim_summary():
+    """The negated-limitation allowance never extends to claim_summary."""
+    bad_claim = valid_claim_draft(
+        claim_summary="The supplied evidence does not establish causation."
+    )
+    agent, *_ = make_agent(
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[bad_claim]))
+    )
+    with pytest.raises(MacroAnalystContentScopeError):
+        agent.run(["FEDFUNDS"])
+
+
+def test_negated_scope_language_still_rejected_in_conditional_mechanism():
+    """The negated-limitation allowance never extends to conditional_mechanism."""
+    bad_claim = valid_claim_draft(
+        conditional_mechanism="No market regime conclusion can be drawn here."
+    )
+    agent, *_ = make_agent(
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[bad_claim]))
+    )
+    with pytest.raises(MacroAnalystContentScopeError):
+        agent.run(["FEDFUNDS"])
+
+
+def test_shared_output_policy_still_active_after_negated_content_scope_passes():
+    """A limitation whose negated scope language passes content-scope
+    validation is still screened by the shared non-directional output
+    policy check."""
+    agent, *_ = make_agent(
+        model_result=completed_result(
+            parsed=completed_analysis(
+                limitations=[
+                    "There is no evidence of causation, but investors should consider "
+                    "buying this dip."
+                ]
+            )
+        )
+    )
+    with pytest.raises(MacroAnalystPolicyError):
+        agent.run(["FEDFUNDS"])
+
+
 def test_factual_snapshot_only_language_is_accepted():
     """A description confined to the single stored level/date/metadata must pass."""
     safe_claim = valid_claim_draft(

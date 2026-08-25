@@ -1170,34 +1170,128 @@ def _validate_transmission_channels(analysis: MacroAnalystModelAnalysis) -> None
                 )
 
 
+# --- Narrow negated-limitation allowance for content-scope language --------
+#
+# `_validate_content_scope` below applies the trend/change/regime denylist
+# unconditionally to claim_summary/conditional_mechanism -- those are never
+# exempted. For model-supplied `limitations` only, a denylist match is
+# additionally allowed when it is clearly negated or framed as
+# unavailable/insufficient -- e.g. "insufficient to establish a trend" or
+# "does not establish causation" are desirable, honest limitations, not
+# prohibited affirmative claims. This allowance is deliberately narrow and
+# fail-closed:
+#
+# - It is recognized only as a fixed, bounded set of negation/insufficiency
+#   cue phrases (see _PRE_NEGATION_RE/_POST_NEGATION_RE below) immediately
+#   adjacent (within a small word gap) to the matched prohibited term, in
+#   the same clause -- never a bare cue occurring anywhere else in the text.
+# - Text is split into clauses first (on sentence terminators and on a
+#   comma before a coordinating conjunction), so a disclaimer clause never
+#   shields a separate, unnegated affirmative claim elsewhere in the same
+#   limitation (e.g. "insufficient data to draw conclusions, but the rate
+#   is clearly trending higher" is still rejected for the second clause).
+# - Every prohibited match in a limitation must be individually negated;
+#   a single unnegated match anywhere still rejects the whole limitation.
+_CLAUSE_SPLIT_RE = re.compile(
+    r"(?<=[.!?;])\s+|,\s*(?:and|but|however|although|though|yet|so)\s+",
+    re.IGNORECASE,
+)
+
+# Cue immediately BEFORE the prohibited term (within a bounded word gap),
+# e.g. "insufficient to establish a trend", "no regime conclusion",
+# "does not establish causation", "cannot infer any correlation".
+_PRE_NEGATION_CUE_ALTERNATION = (
+    r"no|not|cannot|can't|does\s+not|do\s+not|insufficient\s+to|"
+    r"unavailable|limited\s+evidence\s+for"
+)
+_PRE_NEGATION_RE = re.compile(
+    rf"\b(?:{_PRE_NEGATION_CUE_ALTERNATION})\b(?:\s+\S+){{0,4}}\s*$",
+    re.IGNORECASE,
+)
+
+# Cue immediately AFTER the prohibited term (within a bounded word gap),
+# e.g. "a trend cannot be established", "causation is unavailable" -- kept
+# to a narrow, specific set of wrap phrases (never a bare "not", which could
+# otherwise misfire on unrelated wording like "a high not seen before").
+_POST_NEGATION_CUE_ALTERNATION = (
+    r"cannot\s+be\s+(?:inferred|established|determined|assessed)|"
+    r"(?:is|are|remains?)\s+unavailable|unavailable"
+)
+_POST_NEGATION_RE = re.compile(
+    rf"^(?:\S+\s+){{0,4}}(?:{_POST_NEGATION_CUE_ALTERNATION})\b",
+    re.IGNORECASE,
+)
+
+# How far to look for an adjacent negation cue around a prohibited match --
+# generous enough for the bounded word gap above, never crossing a clause
+# boundary (clauses are split before this is applied).
+_NEGATION_CONTEXT_CHARS = 80
+
+
+def _match_is_negated(clause: str, match: re.Match[str]) -> bool:
+    """True if a prohibited-scope ``match`` within ``clause`` is immediately
+    preceded or followed by a recognized negation/insufficiency cue, within
+    a small word gap -- never a bare or distant cue occurring elsewhere in
+    the clause."""
+    start, end = match.span()
+    before = clause[max(0, start - _NEGATION_CONTEXT_CHARS) : start]
+    after = clause[end : end + _NEGATION_CONTEXT_CHARS].lstrip()
+    return bool(_PRE_NEGATION_RE.search(before)) or bool(_POST_NEGATION_RE.search(after))
+
+
+def _limitation_content_scope_violation(text: str) -> bool:
+    """True if ``text`` contains at least one prohibited trend/change/regime
+    match that is NOT clearly negated/framed as unavailable or insufficient
+    -- i.e. an affirmative unsupported claim. Only used for model-supplied
+    ``limitations``; never for ``claim_summary``/``conditional_mechanism``,
+    which remain strictly denylisted with no exemption."""
+    for clause in _CLAUSE_SPLIT_RE.split(text):
+        for match in _MACRO_TREND_CHANGE_REGIME_RE.finditer(clause):
+            if not _match_is_negated(clause, match):
+                return True
+    return False
+
+
+def _content_scope_error(field_name: str) -> MacroAnalystContentScopeError:
+    return MacroAnalystContentScopeError(
+        "Model-authored output described a trend, change, comparison, correlation, "
+        "causation, policy change, or market regime not supported by the bounded "
+        f"stored evidence (field={field_name}). The rejected text is never included "
+        "in this error."
+    )
+
+
 def _validate_content_scope(analysis: MacroAnalystModelAnalysis) -> None:
     """Deterministic, fail-closed check rejecting trend/change/comparison/
     regime language in every model-authored free-text field.
 
-    Applied to every macro claim's ``claim_summary``/``conditional_mechanism``
-    (when not ``None``) and every model-supplied ``limitation``, before
-    ``_enforce_output_policy`` and before ``MacroAnalystReport`` is
-    constructed. Raises ``MacroAnalystContentScopeError`` on the first
-    match; the rejected text is never included in the error or logged
-    anywhere.
+    Applied unconditionally to every macro claim's ``claim_summary``/
+    ``conditional_mechanism`` (when not ``None``) -- these are never
+    exempted. For every model-supplied ``limitation``, a match is instead
+    routed through ``_limitation_content_scope_violation``, which allows a
+    match only when it is clearly negated or framed as unavailable/
+    insufficient (see the narrow-allowance block above); an affirmative,
+    unnegated match, or a mixed disclaimer-then-affirmative-claim
+    limitation, is still rejected. Runs before ``_enforce_output_policy``
+    and before ``MacroAnalystReport`` is constructed. Raises
+    ``MacroAnalystContentScopeError`` on the first violation; the rejected
+    text is never included in the error or logged anywhere.
     """
-    fields: list[tuple[str, str]] = []
+    strict_fields: list[tuple[str, str]] = []
     for i, claim in enumerate(analysis.macro_claims):
-        fields.append((f"macro_claims[{i}].claim_summary", claim.claim_summary))
+        strict_fields.append((f"macro_claims[{i}].claim_summary", claim.claim_summary))
         if claim.conditional_mechanism is not None:
-            fields.append((f"macro_claims[{i}].conditional_mechanism", claim.conditional_mechanism))
-    fields.extend(
-        (f"limitations[{i}]", limitation) for i, limitation in enumerate(analysis.limitations)
-    )
-
-    for field_name, text in fields:
-        if _MACRO_TREND_CHANGE_REGIME_RE.search(text):
-            raise MacroAnalystContentScopeError(
-                "Model-authored output described a trend, change, comparison, correlation, "
-                "causation, policy change, or market regime not supported by a "
-                f"single-snapshot observation (field={field_name}). The rejected text is "
-                "never included in this error."
+            strict_fields.append(
+                (f"macro_claims[{i}].conditional_mechanism", claim.conditional_mechanism)
             )
+
+    for field_name, text in strict_fields:
+        if _MACRO_TREND_CHANGE_REGIME_RE.search(text):
+            raise _content_scope_error(field_name)
+
+    for i, limitation in enumerate(analysis.limitations):
+        if _limitation_content_scope_violation(limitation):
+            raise _content_scope_error(f"limitations[{i}]")
 
 
 def _enforce_output_policy(analysis: MacroAnalystModelAnalysis) -> None:
