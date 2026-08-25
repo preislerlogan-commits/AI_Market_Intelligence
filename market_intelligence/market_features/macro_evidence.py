@@ -44,12 +44,37 @@ Each series entry also reports whether locally stored series-level metadata
 ``market_intelligence/storage/macro_series_metadata_repository.py``) is
 available, so a future Macro Analyst never interprets an unlabeled number.
 When available, the entry includes that metadata's ``title``, ``frequency``,
-``units``, and ``seasonal_adjustment`` fields, read exactly as stored --
-never inferred from the series ID itself. A missing metadata table or a
-series with no stored metadata is valid, non-error input: the entry reports
-``metadata_available: false`` and every metadata field ``null``, and the
-snapshot's aggregate ``flags.missing_metadata_series`` lists every requested
-series without stored metadata.
+``frequency_short``, ``units``, and ``seasonal_adjustment`` fields, read
+exactly as stored -- never inferred from the series ID itself. A missing
+metadata table or a series with no stored metadata is valid, non-error
+input: the entry reports ``metadata_available: false`` and every metadata
+field ``null``, and the snapshot's aggregate ``flags.missing_metadata_series``
+lists every requested series without stored metadata.
+
+Each series entry also reports a small, deterministic, read-only bounded
+excerpt of recent history:
+
+- ``recent_observations`` -- up to ``recent_observations_limit`` most recent
+  distinct stored ``observation_date`` values, ordered **newest first**,
+  each reduced to exactly **one**
+  deterministically chosen vintage per date using the same tie-break rule as
+  the single latest observation (latest ``realtime_start``, then latest
+  ``realtime_end``). This is a bounded excerpt, entirely separate from
+  ``coverage`` (which always reflects the *full* stored history for the
+  series regardless of this limit). No interpolation, forward-filling,
+  seasonal adjustment, or value rewriting of any kind is ever performed --
+  every item is exactly what is already stored.
+- ``latest_change_from_previous`` -- one precisely supported comparison
+  between the latest and immediately preceding chronological stored
+  observation, available only when both are present, both are non-missing,
+  and both were selected from the currently valid (non-superseded) vintage
+  for their date. When available, it reports the exact absolute difference
+  between the two values as a decimal string and a fixed
+  ``"increased"``/``"decreased"``/``"unchanged"`` direction -- **never** a
+  percentage change, an annualized change, a basis-point change, a
+  "surprise", or a trend (two observations are never themselves a trend).
+  When unavailable, every value field is ``null`` and
+  ``unavailable_reason`` is one of a small, fixed enum.
 """
 
 from __future__ import annotations
@@ -78,6 +103,27 @@ DEFAULT_PROVIDER = "fred"
 # but a caller may request a different bounded set explicitly.
 DEFAULT_SERIES_IDS: tuple[str, ...] = ("FEDFUNDS",)
 MAX_SERIES_IDS = 10
+
+# Bounds for the recent-observations excerpt (see normalize_recent_observations_limit
+# and _read_series below). MIN is 2 so that, whenever at least two distinct
+# observation dates are stored, the excerpt always contains enough rows to also
+# support latest_change_from_previous -- callers never need a separate, larger
+# request just to get the two-observation comparison.
+MIN_RECENT_OBSERVATIONS_LIMIT = 2
+MAX_RECENT_OBSERVATIONS_LIMIT = 24
+DEFAULT_RECENT_OBSERVATIONS_LIMIT = 6
+
+# The fixed, non-overridable realtime_end sentinel FredMacroDataClient.get_observations()
+# always requests (see market_intelligence/data_connectors/fred_macro_data.py) --
+# an observation's chosen vintage having this realtime_end means it is FRED's
+# currently valid (non-superseded) revision, not a historical/superseded one.
+_OPEN_REALTIME_END = date(9999, 12, 31)
+
+# Fixed, small enum of reasons latest_change_from_previous can be unavailable.
+CHANGE_UNAVAILABLE_INSUFFICIENT_HISTORY = "insufficient_history"
+CHANGE_UNAVAILABLE_LATEST_MISSING = "latest_missing"
+CHANGE_UNAVAILABLE_PREVIOUS_MISSING = "previous_missing"
+CHANGE_UNAVAILABLE_INCOMPARABLE_VINTAGE = "incomparable_vintage"
 
 # A conservative, documented default threshold suitable for monthly macro
 # observations (mirrors MarketContextBuilder's MACRO_STALE_AFTER rationale):
@@ -165,6 +211,27 @@ def normalize_series_ids(values: Sequence[str]) -> tuple[str, ...]:
     return tuple(normalized_ids)
 
 
+def normalize_recent_observations_limit(value: Any) -> int:
+    """Validate ``recent_observations_limit`` before any DuckDB access.
+
+    Must be a plain ``int`` (a ``bool`` is explicitly rejected even though
+    ``bool`` is a subclass of ``int`` in Python) between
+    ``MIN_RECENT_OBSERVATIONS_LIMIT`` and ``MAX_RECENT_OBSERVATIONS_LIMIT``
+    inclusive. Raises ``MacroEvidenceValidationError`` otherwise; the
+    rejected value is never echoed.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise MacroEvidenceValidationError(
+            "Invalid recent_observations_limit: must be a plain integer."
+        )
+    if not (MIN_RECENT_OBSERVATIONS_LIMIT <= value <= MAX_RECENT_OBSERVATIONS_LIMIT):
+        raise MacroEvidenceValidationError(
+            "Invalid recent_observations_limit: must be between "
+            f"{MIN_RECENT_OBSERVATIONS_LIMIT} and {MAX_RECENT_OBSERVATIONS_LIMIT}."
+        )
+    return value
+
+
 def _evidence_id(
     provider: str,
     series_id: str,
@@ -214,6 +281,21 @@ def _format_as_of(value: datetime) -> str:
     return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
+def _unavailable_change(reason: str) -> dict[str, Any]:
+    return {
+        "available": False,
+        "unavailable_reason": reason,
+        "latest_observation_date": None,
+        "latest_value": None,
+        "latest_evidence_id": None,
+        "previous_observation_date": None,
+        "previous_value": None,
+        "previous_evidence_id": None,
+        "absolute_change_native_units": None,
+        "direction": None,
+    }
+
+
 def _empty_series(series_id: str) -> dict[str, Any]:
     return {
         "series_id": series_id,
@@ -238,6 +320,10 @@ def _empty_series(series_id: str) -> dict[str, Any]:
             "future_date_detected": False,
             "stale_after_days": STALE_AFTER_DAYS,
         },
+        "recent_observations": [],
+        "latest_change_from_previous": _unavailable_change(
+            CHANGE_UNAVAILABLE_INSUFFICIENT_HISTORY
+        ),
     }
 
 
@@ -246,8 +332,60 @@ def _empty_metadata() -> dict[str, Any]:
         "metadata_available": False,
         "title": None,
         "frequency": None,
+        "frequency_short": None,
         "units": None,
         "seasonal_adjustment": None,
+    }
+
+
+def _compute_latest_change(
+    provider: str, series_id: str, recent_rows: list[tuple[Any, ...]]
+) -> dict[str, Any]:
+    """Compute the precisely supported latest-vs-previous change, if available.
+
+    ``recent_rows`` must already be ordered newest-first, one deterministically
+    chosen vintage per observation_date (see ``_read_series``). Available only
+    when at least two distinct observation dates are on file, both the latest
+    and immediately preceding chosen rows are non-missing, and both were
+    selected from FRED's currently valid (non-superseded) vintage for their
+    date (``realtime_end == _OPEN_REALTIME_END``) -- this is the documented
+    deterministic "comparable vintage series" rule: both rows were chosen by
+    the identical fixed per-date vintage-selection rule, and neither is a
+    stale, already-superseded revision. Never computes a percentage,
+    annualized, or basis-point change, and never labels two observations a
+    trend.
+    """
+    if len(recent_rows) < 2:
+        return _unavailable_change(CHANGE_UNAVAILABLE_INSUFFICIENT_HISTORY)
+
+    latest_date, latest_rs, latest_re, latest_value, latest_missing, _ = recent_rows[0]
+    prev_date, prev_rs, prev_re, prev_value, prev_missing, _ = recent_rows[1]
+
+    if latest_missing:
+        return _unavailable_change(CHANGE_UNAVAILABLE_LATEST_MISSING)
+    if prev_missing:
+        return _unavailable_change(CHANGE_UNAVAILABLE_PREVIOUS_MISSING)
+    if latest_re != _OPEN_REALTIME_END or prev_re != _OPEN_REALTIME_END:
+        return _unavailable_change(CHANGE_UNAVAILABLE_INCOMPARABLE_VINTAGE)
+
+    if latest_value > prev_value:
+        direction = "increased"
+    elif latest_value < prev_value:
+        direction = "decreased"
+    else:
+        direction = "unchanged"
+
+    return {
+        "available": True,
+        "unavailable_reason": None,
+        "latest_observation_date": _date_str(latest_date),
+        "latest_value": _decimal_str(latest_value),
+        "latest_evidence_id": _evidence_id(provider, series_id, latest_date, latest_rs, latest_re),
+        "previous_observation_date": _date_str(prev_date),
+        "previous_value": _decimal_str(prev_value),
+        "previous_evidence_id": _evidence_id(provider, series_id, prev_date, prev_rs, prev_re),
+        "absolute_change_native_units": _decimal_str(abs(latest_value - prev_value)),
+        "direction": direction,
     }
 
 
@@ -266,12 +404,17 @@ class MacroEvidenceBuilder:
         # connection, and it never applies a migration.
         self._database_path: Path = DuckDBManager(settings=self._settings).database_path
 
-    def build_snapshot(self, series_ids: Sequence[str] = DEFAULT_SERIES_IDS) -> dict[str, Any]:
+    def build_snapshot(
+        self,
+        series_ids: Sequence[str] = DEFAULT_SERIES_IDS,
+        recent_observations_limit: int = DEFAULT_RECENT_OBSERVATIONS_LIMIT,
+    ) -> dict[str, Any]:
         """Build one sanitized, JSON-ready macro-evidence snapshot dict.
 
-        ``series_ids`` is strictly validated and normalized before any
-        DuckDB connection is opened -- see ``normalize_series_ids``. Raises
-        ``MacroEvidenceValidationError`` for invalid input, or
+        ``series_ids`` and ``recent_observations_limit`` are both strictly
+        validated and normalized before any DuckDB connection is opened --
+        see ``normalize_series_ids``/``normalize_recent_observations_limit``.
+        Raises ``MacroEvidenceValidationError`` for invalid input, or
         ``MacroEvidenceError`` (sanitized) if the local database exists but
         cannot be read. A missing database file, a missing
         ``macro_observations`` table, or a requested series with no stored
@@ -279,6 +422,7 @@ class MacroEvidenceBuilder:
         describe this truthfully rather than raising.
         """
         normalized_series_ids = normalize_series_ids(series_ids)
+        normalized_recent_limit = normalize_recent_observations_limit(recent_observations_limit)
         as_of = resolve_as_of(self._clock)
 
         if not self._database_path.exists():
@@ -307,7 +451,9 @@ class MacroEvidenceBuilder:
                     series_entries = []
                     for series_id in normalized_series_ids:
                         observation_entry = (
-                            self._read_series(connection, series_id, as_of)
+                            self._read_series(
+                                connection, series_id, as_of, normalized_recent_limit
+                            )
                             if observations_table_exists
                             else _empty_series(series_id)
                         )
@@ -358,7 +504,10 @@ class MacroEvidenceBuilder:
 
         return {
             "snapshot_created_at_utc": _format_as_of(as_of),
-            "request": {"series_ids": list(normalized_series_ids)},
+            "request": {
+                "series_ids": list(normalized_series_ids),
+                "recent_observations_limit": normalized_recent_limit,
+            },
             "series": series_entries,
             "flags": {
                 "missing_series": missing_series,
@@ -376,18 +525,19 @@ class MacroEvidenceBuilder:
         missing row is valid, non-error input -- see ``_empty_metadata``.
         """
         row = connection.execute(
-            "SELECT title, frequency, units, seasonal_adjustment FROM macro_series_metadata "
-            "WHERE provider = ? AND series_id = ?",
+            "SELECT title, frequency, frequency_short, units, seasonal_adjustment "
+            "FROM macro_series_metadata WHERE provider = ? AND series_id = ?",
             [DEFAULT_PROVIDER, series_id],
         ).fetchone()
         if row is None:
             return _empty_metadata()
 
-        title, frequency, units, seasonal_adjustment = row
+        title, frequency, frequency_short, units, seasonal_adjustment = row
         return {
             "metadata_available": True,
             "title": title,
             "frequency": frequency,
+            "frequency_short": frequency_short,
             "units": units,
             "seasonal_adjustment": seasonal_adjustment,
         }
@@ -397,29 +547,42 @@ class MacroEvidenceBuilder:
         connection: duckdb.DuckDBPyConnection,
         series_id: str,
         as_of: datetime,
+        recent_observations_limit: int,
     ) -> dict[str, Any]:
-        # Vintage selection: pick the latest observation_date, then break any
-        # tie deterministically by the latest realtime_start, then the
-        # latest realtime_end -- i.e. the most recently reported revision of
-        # the most recent observation. This never combines fields from more
-        # than one stored row; every field below comes from this single
-        # chosen row.
-        latest_row = connection.execute(
+        # Vintage selection (per observation_date): among any rows sharing a
+        # date, break the tie deterministically by the latest realtime_start,
+        # then the latest realtime_end -- i.e. the most recently reported
+        # revision of that date. This never combines fields from more than
+        # one stored row for a given date. Rows are then ordered
+        # newest-observation-date-first and bounded to
+        # recent_observations_limit -- this single query serves both the
+        # "latest" fields below and the recent_observations excerpt, so both
+        # always agree on which row is "the latest".
+        recent_rows = connection.execute(
             """
             SELECT observation_date, realtime_start, realtime_end, value, is_missing, retrieved_at
-            FROM macro_observations
-            WHERE provider = ? AND series_id = ?
-            ORDER BY observation_date DESC, realtime_start DESC, realtime_end DESC
-            LIMIT 1
+            FROM (
+                SELECT observation_date, realtime_start, realtime_end, value, is_missing,
+                       retrieved_at,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY observation_date
+                           ORDER BY realtime_start DESC, realtime_end DESC
+                       ) AS rn
+                FROM macro_observations
+                WHERE provider = ? AND series_id = ?
+            ) ranked
+            WHERE rn = 1
+            ORDER BY observation_date DESC
+            LIMIT ?
             """,
-            [DEFAULT_PROVIDER, series_id],
-        ).fetchone()
+            [DEFAULT_PROVIDER, series_id, recent_observations_limit],
+        ).fetchall()
 
-        if latest_row is None:
+        if not recent_rows:
             return _empty_series(series_id)
 
         observation_date, realtime_start, realtime_end, value, is_missing, retrieved_at = (
-            latest_row
+            recent_rows[0]
         )
 
         row_count, earliest_date, latest_date, missing_count = connection.execute(
@@ -436,6 +599,18 @@ class MacroEvidenceBuilder:
         future_date_detected = observation_date > future_threshold
         elapsed_days = (as_of.date() - observation_date).days
         stale = future_date_detected or elapsed_days > STALE_AFTER_DAYS
+
+        recent_observations = [
+            {
+                "observation_date": _date_str(row[0]),
+                "value": _decimal_str(row[3]),
+                "is_missing": bool(row[4]),
+                "realtime_start": _date_str(row[1]),
+                "realtime_end": _date_str(row[2]),
+                "evidence_id": _evidence_id(DEFAULT_PROVIDER, series_id, row[0], row[1], row[2]),
+            }
+            for row in recent_rows
+        ]
 
         return {
             "series_id": series_id,
@@ -462,4 +637,8 @@ class MacroEvidenceBuilder:
                 "future_date_detected": future_date_detected,
                 "stale_after_days": STALE_AFTER_DAYS,
             },
+            "recent_observations": recent_observations,
+            "latest_change_from_previous": _compute_latest_change(
+                DEFAULT_PROVIDER, series_id, recent_rows
+            ),
         }

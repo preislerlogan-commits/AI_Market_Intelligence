@@ -201,7 +201,21 @@ change, or market regime, since a single snapshot observation with no
 comparison value or consensus expectation can never support such a
 statement. **This is infrastructure/agent code added in code, tests, and
 docs only -- it has not been run against the real local database, and no
-live OpenAI request has been made using it, as part of this change.**
+live OpenAI request has been made using it, as part of this change.** A
+first authorized live run has since succeeded (2026-08-24, FEDFUNDS,
+`gpt-5-mini`, stored value 3.63 percent, observation date 2026-07-01,
+monthly), and a manual review of that one completed output found two
+wording/scope weaknesses -- point-in-time phrasing that could mislead about
+a stored monthly observation, and a listed transmission channel
+(inflation) not actually explained by `conditional_mechanism` -- which
+motivated a bounded hardening change (a deterministic, bounded
+`recent_observations` excerpt plus one precisely supported
+`latest_change_from_previous` comparison added to `MacroEvidenceBuilder`;
+frequency-aware wording, a gated two-observation comparison, and
+per-channel addressing validation added to `MacroAnalyst`). **One completed
+run and one manual review is not a validated evaluation methodology.** See
+item 21 below for the full sanitized record of both the live run and this
+hardening change.
 
 ## Status
 
@@ -2137,6 +2151,100 @@ live OpenAI request has been made using it, as part of this change.**
     `python -m pytest` (1873 passed), `python -m ruff check .`, and
     `git diff --check` were all run and pass. See
     [docs/MACRO_ANALYST.md](docs/MACRO_ANALYST.md) for full detail.
+    **This "not yet run live" status has since been superseded -- see item
+    21 below.**
+
+21. **First live Macro Analyst run (2026-08-24), and a manual-review-driven
+    hardening change that followed it.**
+
+    A separately authorized live `--execute` run was made against the real
+    local database and the real OpenAI API, requesting the default series
+    (`FEDFUNDS`). The deterministic preflight passed and exactly one OpenAI
+    request was sent; it completed successfully with `status="completed"`.
+    Sanitized results: stored value `3.63` percent, observation date
+    `2026-07-01`, frequency `monthly`, model `gpt-5-mini`, `input_tokens=
+    1390`, `output_tokens=1356`, `total_tokens=2746`. As required by this
+    agent's absolute, model-excluded fields, the report's
+    `directional_assessment` and `trade_recommendation` were both
+    `"not_performed"` -- no direction or recommendation of any kind was
+    produced or could have been produced. Only this sanitized status is
+    recorded here -- no raw provider response, response ID, or full
+    evidence payload is reproduced.
+
+    **A manual quality review of that one completed output found two
+    issues, neither a schema, citation, or policy violation (both passed
+    every check that existed at the time), but both genuine wording/scope
+    weaknesses:**
+
+    1. Phrasing along the lines of "at 3.63 percent on 2026-07-01" can
+       misleadingly imply a live, point-in-time reading of a stored,
+       already-published monthly observation. It should instead say
+       something like "the stored monthly observation dated 2026-07-01".
+    2. The report listed a transmission channel (inflation) among
+       `transmission_channels` that `conditional_mechanism` did not
+       actually explain -- the channel was named but never addressed.
+
+    The agent **correctly avoided** any change/trend/comparison claim on
+    this run, since at that time the evidence package supplied only the
+    single latest stored observation with no comparison value -- exactly as
+    designed and documented.
+
+    **This one manual review of one completed output is not a validated
+    evaluation methodology, and finding two issues in one output is not
+    itself proof that only two issues exist or that any future response
+    will be free of similar issues.** It motivated a bounded, deterministic
+    hardening change (code/tests/docs only, made the same day, not yet
+    exercised live as part of this change -- see below): `MacroEvidenceBuilder`
+    (`market_intelligence/market_features/macro_evidence.py`) now adds a
+    bounded, deterministic, read-only `recent_observations` excerpt (default
+    6, bounded 2-24 observations, newest first, one deterministically
+    chosen vintage per date, validated before any DuckDB access) and one
+    precisely supported `latest_change_from_previous` comparison (an exact
+    `Decimal` absolute difference and `"increased"`/`"decreased"`/
+    `"unchanged"` direction between the latest and immediately preceding
+    stored observation, available only when both are non-missing and both
+    are the series' currently valid, non-superseded vintage -- never a
+    percentage, annualized, or basis-point change, and two observations are
+    never called a trend). It also now exposes each series' official
+    `frequency_short` code. `MacroAnalyst`
+    (`market_intelligence/agents/macro_analyst.py`) was correspondingly
+    hardened: every claim must now use frequency-aware wording ("the stored
+    `<frequency>` observation dated ...", using that series' own official
+    frequency -- never assumed "monthly" -- and never point-in-time "at ...
+    on `<date>`" phrasing), validated by a new
+    `_validate_frequency_wording`/`MacroAnalystFrequencyWordingError`
+    check; a series whose `frequency_short` is not one of a small,
+    recognized set now fails preflight instead
+    (`series_frequency_unrecognized`) rather than let the model guess.
+    Increase/decrease/unchanged language is now conditionally permitted,
+    but only for a fully validated two-observation comparison claim citing
+    exactly the supplied latest/previous evidence IDs, stating both exact
+    dates and both exact values, and stating a direction matching the
+    supplied evidence exactly -- checked by a new
+    `_validate_comparison_claims`/`MacroAnalystComparisonError`; change
+    words anywhere else (a single-evidence claim, `conditional_mechanism`,
+    or a `limitation`) are still always rejected, and every previously
+    forbidden category (acceleration/deceleration, surprise, historical
+    extreme, trend, correlation, causation, policy change, market regime)
+    remains always rejected. A new
+    `_validate_transmission_channels`/`MacroAnalystTransmissionChannelError`
+    check now requires every listed `transmission_channels` entry to be
+    explicitly and verifiably addressed by `conditional_mechanism` (a
+    deterministic, word-boundary token check per channel), directly
+    addressing finding (2) above; `"other"` can never be verified this way
+    and is always rejected if listed. Zero-claim insufficient abstention,
+    citation validation, the shared non-directional output policy,
+    code-controlled final fields (`directional_assessment`/
+    `trade_recommendation` always `"not_performed"`, `content_basis` always
+    the fixed literal), the one-OpenAI-request maximum, and the dry-run
+    default were all preserved unchanged. `python -m pytest` (1927 passed),
+    `python -m ruff check .`, and `git diff --check` were all run and pass.
+    **As of this item, none of this hardening has been exercised against a
+    live OpenAI response** -- it has been validated only by tests using a
+    fake, hand-authored model client and a fake evidence builder; no live
+    database access or live OpenAI request was made as part of this change.
+    See [docs/MACRO_EVIDENCE_SNAPSHOT.md](docs/MACRO_EVIDENCE_SNAPSHOT.md)
+    and [docs/MACRO_ANALYST.md](docs/MACRO_ANALYST.md) for full detail.
 
 ## Notes
 
