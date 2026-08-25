@@ -1544,3 +1544,427 @@ def test_get_observations_module_has_no_storage_dependency():
     import market_intelligence.data_connectors.fred_macro_data as module
 
     assert not hasattr(module, "duckdb")
+
+
+# =====================================================================
+# get_series_metadata() -- series-level metadata
+# =====================================================================
+
+from market_intelligence.data_connectors.fred_macro_data import (  # noqa: E402
+    SERIES_PATH,
+    FredSeriesMetadata,
+    FredSeriesMetadataError,
+)
+
+
+def series_metadata_json(
+    *,
+    id_: str = "FEDFUNDS",
+    title: str = "Federal Funds Effective Rate",
+    observation_start: str = "1954-07-01",
+    observation_end: str = "2026-08-01",
+    frequency: str = "Monthly",
+    frequency_short: str = "M",
+    units: str = "Percent",
+    units_short: str = "%",
+    seasonal_adjustment: str = "Not Seasonally Adjusted",
+    seasonal_adjustment_short: str = "NSA",
+    last_updated: str = "2026-08-20 08:35:01-05",
+    popularity: int = 84,
+    notes: str | None = "Averages of daily figures.",
+) -> dict:
+    return {
+        "id": id_,
+        "realtime_start": "2026-08-20",
+        "realtime_end": "2026-08-20",
+        "title": title,
+        "observation_start": observation_start,
+        "observation_end": observation_end,
+        "frequency": frequency,
+        "frequency_short": frequency_short,
+        "units": units,
+        "units_short": units_short,
+        "seasonal_adjustment": seasonal_adjustment,
+        "seasonal_adjustment_short": seasonal_adjustment_short,
+        "last_updated": last_updated,
+        "popularity": popularity,
+        "group_popularity": popularity,
+        "notes": notes,
+    }
+
+
+def series_metadata_payload(*series: dict) -> dict:
+    return {
+        "realtime_start": "2026-08-20",
+        "realtime_end": "2026-08-20",
+        "seriess": list(series),
+    }
+
+
+# --- get_series_metadata: success -----------------------------------------
+
+
+def test_get_series_metadata_returns_normalized_metadata(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == SERIES_PATH
+        assert request.url.params["series_id"] == "FEDFUNDS"
+        assert request.url.params["api_key"] == FAKE_FRED_KEY
+        return httpx.Response(200, json=series_metadata_payload(series_metadata_json()))
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        metadata = client.get_series_metadata("FEDFUNDS", client=http_client)
+
+    assert isinstance(metadata, FredSeriesMetadata)
+    assert metadata.provider == "fred"
+    assert metadata.series_id == "FEDFUNDS"
+    assert metadata.title == "Federal Funds Effective Rate"
+    assert metadata.observation_start == "1954-07-01"
+    assert metadata.observation_end == "2026-08-01"
+    assert metadata.frequency == "Monthly"
+    assert metadata.frequency_short == "M"
+    assert metadata.units == "Percent"
+    assert metadata.units_short == "%"
+    assert metadata.seasonal_adjustment == "Not Seasonally Adjusted"
+    assert metadata.seasonal_adjustment_short == "NSA"
+    assert metadata.last_updated == "2026-08-20T13:35:01Z"
+    assert metadata.popularity == 84
+    assert metadata.notes == "Averages of daily figures."
+    assert metadata.retrieved_at_utc.endswith("Z")
+
+
+def test_get_series_metadata_normalizes_lowercase_series_id(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["series_id"] == "FEDFUNDS"
+        return httpx.Response(200, json=series_metadata_payload(series_metadata_json()))
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        metadata = client.get_series_metadata("  fedfunds  ", client=http_client)
+
+    assert metadata.series_id == "FEDFUNDS"
+
+
+def test_get_series_metadata_null_notes_preserved_as_none(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json=series_metadata_payload(series_metadata_json(notes=None))
+        )
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        metadata = client.get_series_metadata("FEDFUNDS", client=http_client)
+
+    assert metadata.notes is None
+
+
+@pytest.mark.parametrize(
+    "last_updated",
+    ["2026-08-20 08:35:01-05", "2026-08-20 08:35:01-0500", "2026-08-20 08:35:01-05:00"],
+)
+def test_get_series_metadata_last_updated_offset_variants_normalize_to_same_utc(
+    monkeypatch, isolated_env_file, last_updated
+):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=series_metadata_payload(series_metadata_json(last_updated=last_updated)),
+        )
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        metadata = client.get_series_metadata("FEDFUNDS", client=http_client)
+
+    assert metadata.last_updated == "2026-08-20T13:35:01Z"
+
+
+# --- get_series_metadata: exactly-one-series validation ---------------------
+
+
+def test_get_series_metadata_zero_matching_series_fails(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=series_metadata_payload())
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredSeriesMetadataError) as exc_info:
+        client.get_series_metadata("FEDFUNDS", client=http_client)
+
+    assert "exactly one" in str(exc_info.value).lower()
+
+
+def test_get_series_metadata_multiple_series_fails(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = series_metadata_payload(
+            series_metadata_json(id_="FEDFUNDS"), series_metadata_json(id_="FEDFUNDS")
+        )
+        return httpx.Response(200, json=payload)
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredSeriesMetadataError) as exc_info:
+        client.get_series_metadata("FEDFUNDS", client=http_client)
+
+    assert "exactly one" in str(exc_info.value).lower()
+
+
+def test_get_series_metadata_mismatched_series_id_fails(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = series_metadata_payload(series_metadata_json(id_="CPIAUCSL"))
+        return httpx.Response(200, json=payload)
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredSeriesMetadataError):
+        client.get_series_metadata("FEDFUNDS", client=http_client)
+
+
+def test_get_series_metadata_missing_seriess_key_fails(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = series_metadata_payload(series_metadata_json())
+        del payload["seriess"]
+        return httpx.Response(200, json=payload)
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredSeriesMetadataError):
+        client.get_series_metadata("FEDFUNDS", client=http_client)
+
+
+# --- get_series_metadata: malformed field validation -------------------------
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "title",
+        "frequency",
+        "frequency_short",
+        "units",
+        "units_short",
+        "seasonal_adjustment",
+        "seasonal_adjustment_short",
+    ],
+)
+@pytest.mark.parametrize("bad_value", ["", "   ", None, 123, True], ids=repr)
+def test_get_series_metadata_blank_or_malformed_required_field_fails(
+    monkeypatch, isolated_env_file, field_name, bad_value
+):
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = series_metadata_payload(series_metadata_json())
+        payload["seriess"][0][field_name] = bad_value
+        return httpx.Response(200, json=payload)
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredSeriesMetadataError):
+        client.get_series_metadata("FEDFUNDS", client=http_client)
+
+
+@pytest.mark.parametrize(
+    "bad_date", ["", "2026-13-01", "2026-08-01T00:00:00Z", "not-a-date", None, 123, True]
+)
+def test_get_series_metadata_malformed_observation_start_fails(
+    monkeypatch, isolated_env_file, bad_date
+):
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = series_metadata_payload(series_metadata_json())
+        payload["seriess"][0]["observation_start"] = bad_date
+        return httpx.Response(200, json=payload)
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredSeriesMetadataError):
+        client.get_series_metadata("FEDFUNDS", client=http_client)
+
+
+@pytest.mark.parametrize(
+    "bad_date", ["", "2026-13-01", "2026-08-01T00:00:00Z", "not-a-date", None, 123, True]
+)
+def test_get_series_metadata_malformed_observation_end_fails(
+    monkeypatch, isolated_env_file, bad_date
+):
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = series_metadata_payload(series_metadata_json())
+        payload["seriess"][0]["observation_end"] = bad_date
+        return httpx.Response(200, json=payload)
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredSeriesMetadataError):
+        client.get_series_metadata("FEDFUNDS", client=http_client)
+
+
+@pytest.mark.parametrize(
+    "bad_last_updated",
+    ["", "2026-08-20 08:35:01", "not-a-timestamp", "2026-08-20T08:35:01-05:00", None, 123, True],
+)
+def test_get_series_metadata_malformed_last_updated_fails(
+    monkeypatch, isolated_env_file, bad_last_updated
+):
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = series_metadata_payload(series_metadata_json())
+        payload["seriess"][0]["last_updated"] = bad_last_updated
+        return httpx.Response(200, json=payload)
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredSeriesMetadataError):
+        client.get_series_metadata("FEDFUNDS", client=http_client)
+
+
+@pytest.mark.parametrize("bad_popularity", [-1, True, False, "84", 1.5, None])
+def test_get_series_metadata_invalid_popularity_fails(
+    monkeypatch, isolated_env_file, bad_popularity
+):
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = series_metadata_payload(series_metadata_json())
+        payload["seriess"][0]["popularity"] = bad_popularity
+        return httpx.Response(200, json=payload)
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredSeriesMetadataError):
+        client.get_series_metadata("FEDFUNDS", client=http_client)
+
+
+def test_get_series_metadata_popularity_zero_is_valid(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = series_metadata_payload(series_metadata_json(popularity=0))
+        return httpx.Response(200, json=payload)
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        metadata = client.get_series_metadata("FEDFUNDS", client=http_client)
+
+    assert metadata.popularity == 0
+
+
+@pytest.mark.parametrize("bad_notes", [123, True, False, ["notes"]])
+def test_get_series_metadata_invalid_notes_type_fails(monkeypatch, isolated_env_file, bad_notes):
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = series_metadata_payload(series_metadata_json())
+        payload["seriess"][0]["notes"] = bad_notes
+        return httpx.Response(200, json=payload)
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredSeriesMetadataError):
+        client.get_series_metadata("FEDFUNDS", client=http_client)
+
+
+# --- get_series_metadata: request/response failure sanitization -------------
+
+
+def test_get_series_metadata_raises_without_credentials(isolated_env_file):
+    client = FredMacroDataClient(settings=unconfigured_settings(isolated_env_file))
+    with pytest.raises(FredCredentialsMissingError):
+        client.get_series_metadata("FEDFUNDS")
+
+
+@pytest.mark.parametrize("raw", INVALID_SERIES_IDS)
+def test_get_series_metadata_invalid_series_id_makes_zero_requests(
+    monkeypatch, isolated_env_file, raw
+):
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json=series_metadata_payload(series_metadata_json()))
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredInvalidSeriesIdError):
+        client.get_series_metadata(raw, client=http_client)
+
+    assert calls == []
+
+
+def test_get_series_metadata_sanitized_error_on_http_status_error(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"message": "internal error"})
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredSeriesMetadataError) as exc_info:
+        client.get_series_metadata("FEDFUNDS", client=http_client)
+
+    message = str(exc_info.value)
+    assert FAKE_FRED_KEY not in message
+    assert "500" in message
+
+
+def test_get_series_metadata_sanitized_error_on_network_error(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection failed", request=request)
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredSeriesMetadataError) as exc_info:
+        client.get_series_metadata("FEDFUNDS", client=http_client)
+
+    assert FAKE_FRED_KEY not in str(exc_info.value)
+
+
+def test_get_series_metadata_sanitized_error_on_malformed_json(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"{not valid json")
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredSeriesMetadataError) as exc_info:
+        client.get_series_metadata("FEDFUNDS", client=http_client)
+
+    assert "{not valid json" not in str(exc_info.value)
+    assert FAKE_FRED_KEY not in str(exc_info.value)
+
+
+def test_get_series_metadata_sanitized_error_on_non_object_json(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=["FEDFUNDS"])
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredSeriesMetadataError):
+        client.get_series_metadata("FEDFUNDS", client=http_client)
+
+
+def test_get_series_metadata_sanitized_error_on_fred_error_payload(monkeypatch, isolated_env_file):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={
+                "error_code": 400,
+                "error_message": f"Bad Request. api_key {FAKE_FRED_KEY} is not a valid API key.",
+            },
+        )
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredSeriesMetadataError) as exc_info:
+        client.get_series_metadata("FEDFUNDS", client=http_client)
+
+    assert FAKE_FRED_KEY not in str(exc_info.value)
+
+
+def test_get_series_metadata_error_never_exposes_title_or_notes(monkeypatch, isolated_env_file):
+    secret_title = "SECRET-TITLE-MARKER"
+    secret_notes = "SECRET-NOTES-MARKER"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = series_metadata_payload(
+            series_metadata_json(title=secret_title, notes=secret_notes)
+        )
+        payload["seriess"][0]["popularity"] = "not-an-int"  # forces malformed-entry failure
+        return httpx.Response(200, json=payload)
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(FredSeriesMetadataError) as exc_info:
+        client.get_series_metadata("FEDFUNDS", client=http_client)
+
+    message = str(exc_info.value)
+    assert secret_title not in message
+    assert secret_notes not in message
+
+
+def test_get_series_metadata_api_key_sent_as_query_param_not_header(
+    monkeypatch, isolated_env_file
+):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert FAKE_FRED_KEY not in dict(request.headers).values()
+        assert request.url.params["api_key"] == FAKE_FRED_KEY
+        return httpx.Response(200, json=series_metadata_payload(series_metadata_json()))
+
+    client = FredMacroDataClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client:
+        client.get_series_metadata("FEDFUNDS", client=http_client)
+
+
+def test_get_series_metadata_module_has_no_storage_dependency():
+    import market_intelligence.data_connectors.fred_macro_data as module
+
+    assert not hasattr(module, "duckdb")

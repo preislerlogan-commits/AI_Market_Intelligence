@@ -19,7 +19,7 @@ import duckdb
 import pytest
 
 from market_intelligence.config.settings import Settings
-from market_intelligence.data_connectors.fred_macro_data import FredObservation
+from market_intelligence.data_connectors.fred_macro_data import FredObservation, FredSeriesMetadata
 from market_intelligence.market_features import macro_evidence
 from market_intelligence.market_features.macro_evidence import (
     DEFAULT_SERIES_IDS,
@@ -32,6 +32,9 @@ from market_intelligence.market_features.macro_evidence import (
 )
 from market_intelligence.storage.database import DuckDBManager, default_database_path
 from market_intelligence.storage.macro_observation_repository import MacroObservationRepository
+from market_intelligence.storage.macro_series_metadata_repository import (
+    MacroSeriesMetadataRepository,
+)
 
 CREDENTIAL_ENV_VARS = [
     "ALPACA_API_KEY",
@@ -95,6 +98,33 @@ def initialized_builder(
     settings = isolated_settings(tmp_path, isolated_env_file)
     DuckDBManager(settings=settings).initialize()
     return settings, MacroEvidenceBuilder(settings=settings, clock=fixed_clock(as_of))
+
+
+def make_metadata(
+    *,
+    series_id: str = "FEDFUNDS",
+    title: str = "Federal Funds Effective Rate",
+    frequency: str = "Monthly",
+    units: str = "Percent",
+    seasonal_adjustment: str = "Not Seasonally Adjusted",
+) -> FredSeriesMetadata:
+    return FredSeriesMetadata(
+        provider="fred",
+        series_id=series_id,
+        title=title,
+        observation_start="1954-07-01",
+        observation_end="2026-08-01",
+        frequency=frequency,
+        frequency_short="M",
+        units=units,
+        units_short="%",
+        seasonal_adjustment=seasonal_adjustment,
+        seasonal_adjustment_short="NSA",
+        last_updated="2026-08-20T13:35:01Z",
+        popularity=84,
+        notes="Averages of daily figures.",
+        retrieved_at_utc="2026-08-20T09:35:00Z",
+    )
 
 
 # --- Pure validation: normalize_series_ids -----------------------------------------
@@ -472,6 +502,152 @@ def test_build_snapshot_coverage_counts_and_missing_observation_count(
     assert coverage["earliest_observation_date"] == "2026-05-01"
     assert coverage["latest_observation_date"] == "2026-07-01"
     assert coverage["missing_observation_count"] == 1
+
+
+# --- Series metadata --------------------------------------------------------------------
+
+
+def test_build_snapshot_metadata_available_with_stored_metadata(tmp_path, isolated_env_file):
+    settings, builder = initialized_builder(tmp_path, isolated_env_file)
+    obs_repo = MacroObservationRepository(settings=settings)
+    obs_repo.store_observations([make_observation(series_id="FEDFUNDS")])
+    meta_repo = MacroSeriesMetadataRepository(settings=settings)
+    meta_repo.store_metadata(make_metadata(series_id="FEDFUNDS"))
+
+    snapshot = builder.build_snapshot(["FEDFUNDS"])
+
+    entry = snapshot["series"][0]
+    assert entry["metadata_available"] is True
+    assert entry["title"] == "Federal Funds Effective Rate"
+    assert entry["frequency"] == "Monthly"
+    assert entry["units"] == "Percent"
+    assert entry["seasonal_adjustment"] == "Not Seasonally Adjusted"
+    assert snapshot["flags"]["missing_metadata_series"] == []
+
+
+def test_build_snapshot_metadata_unavailable_when_never_stored(tmp_path, isolated_env_file):
+    settings, builder = initialized_builder(tmp_path, isolated_env_file)
+    obs_repo = MacroObservationRepository(settings=settings)
+    obs_repo.store_observations([make_observation(series_id="FEDFUNDS")])
+
+    snapshot = builder.build_snapshot(["FEDFUNDS"])
+
+    entry = snapshot["series"][0]
+    assert entry["metadata_available"] is False
+    assert entry["title"] is None
+    assert entry["frequency"] is None
+    assert entry["units"] is None
+    assert entry["seasonal_adjustment"] is None
+    assert snapshot["flags"]["missing_metadata_series"] == ["FEDFUNDS"]
+
+
+def test_build_snapshot_metadata_unavailable_when_missing_observation_too(
+    tmp_path, isolated_env_file
+):
+    """A series with neither a stored observation nor stored metadata is valid input."""
+    _, builder = initialized_builder(tmp_path, isolated_env_file)
+
+    snapshot = builder.build_snapshot(["FEDFUNDS"])
+
+    entry = snapshot["series"][0]
+    assert entry["has_stored_observation"] is False
+    assert entry["metadata_available"] is False
+    assert snapshot["flags"]["missing_metadata_series"] == ["FEDFUNDS"]
+
+
+def test_build_snapshot_metadata_available_even_without_stored_observation(
+    tmp_path, isolated_env_file
+):
+    """Metadata and observations are read independently -- neither is inferred from the other."""
+    settings, builder = initialized_builder(tmp_path, isolated_env_file)
+    meta_repo = MacroSeriesMetadataRepository(settings=settings)
+    meta_repo.store_metadata(make_metadata(series_id="FEDFUNDS"))
+
+    snapshot = builder.build_snapshot(["FEDFUNDS"])
+
+    entry = snapshot["series"][0]
+    assert entry["has_stored_observation"] is False
+    assert entry["metadata_available"] is True
+    assert entry["title"] == "Federal Funds Effective Rate"
+
+
+def test_build_snapshot_missing_database_reports_metadata_unavailable(
+    tmp_path, isolated_env_file
+):
+    settings = isolated_settings(tmp_path, isolated_env_file)
+    assert not default_database_path(settings).exists()
+    builder = MacroEvidenceBuilder(settings=settings, clock=fixed_clock(DEFAULT_AS_OF))
+
+    snapshot = builder.build_snapshot(["FEDFUNDS"])
+
+    entry = snapshot["series"][0]
+    assert entry["metadata_available"] is False
+    assert snapshot["flags"]["missing_metadata_series"] == ["FEDFUNDS"]
+
+
+def test_build_snapshot_missing_macro_series_metadata_table_reports_unavailable(
+    tmp_path, isolated_env_file
+):
+    settings, builder = initialized_builder(tmp_path, isolated_env_file)
+    obs_repo = MacroObservationRepository(settings=settings)
+    obs_repo.store_observations([make_observation(series_id="FEDFUNDS")])
+    connection = duckdb.connect(str(default_database_path(settings)))
+    try:
+        connection.execute("DROP TABLE macro_series_metadata")
+    finally:
+        connection.close()
+
+    snapshot = builder.build_snapshot(["FEDFUNDS"])
+
+    entry = snapshot["series"][0]
+    assert entry["has_stored_observation"] is True  # observations still readable
+    assert entry["metadata_available"] is False
+
+
+def test_build_snapshot_metadata_partial_across_multiple_series(tmp_path, isolated_env_file):
+    settings, builder = initialized_builder(tmp_path, isolated_env_file)
+    obs_repo = MacroObservationRepository(settings=settings)
+    obs_repo.store_observations([make_observation(series_id="FEDFUNDS")])
+    obs_repo.store_observations([make_observation(series_id="UNRATE")])
+    meta_repo = MacroSeriesMetadataRepository(settings=settings)
+    meta_repo.store_metadata(make_metadata(series_id="FEDFUNDS"))
+    # UNRATE metadata deliberately never stored.
+
+    snapshot = builder.build_snapshot(["FEDFUNDS", "UNRATE"])
+
+    by_id = {entry["series_id"]: entry for entry in snapshot["series"]}
+    assert by_id["FEDFUNDS"]["metadata_available"] is True
+    assert by_id["UNRATE"]["metadata_available"] is False
+    assert snapshot["flags"]["missing_metadata_series"] == ["UNRATE"]
+
+
+def test_build_snapshot_metadata_does_not_alter_observation_values(tmp_path, isolated_env_file):
+    """Values remain unchanged decimal strings regardless of metadata presence."""
+    settings, builder = initialized_builder(tmp_path, isolated_env_file)
+    obs_repo = MacroObservationRepository(settings=settings)
+    obs_repo.store_observations(
+        [make_observation(series_id="FEDFUNDS", value=Decimal("5.330000"))]
+    )
+    meta_repo = MacroSeriesMetadataRepository(settings=settings)
+    meta_repo.store_metadata(make_metadata(series_id="FEDFUNDS"))
+
+    snapshot = builder.build_snapshot(["FEDFUNDS"])
+
+    assert snapshot["series"][0]["latest_value"] == "5.330000"
+
+
+def test_build_snapshot_does_not_infer_metadata_from_series_id(tmp_path, isolated_env_file):
+    """A well-known series ID with no stored metadata must never be silently populated."""
+    _, builder = initialized_builder(tmp_path, isolated_env_file)
+
+    snapshot = builder.build_snapshot(["FEDFUNDS"])
+
+    entry = snapshot["series"][0]
+    assert entry["metadata_available"] is False
+    assert entry["title"] is None
+    assert entry["frequency"] is None
+    assert entry["units"] is None
+    assert entry["seasonal_adjustment"] is None
 
 
 # --- Connection-close error handling ------------------------------------------------

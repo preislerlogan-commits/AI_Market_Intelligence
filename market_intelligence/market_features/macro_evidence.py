@@ -38,6 +38,18 @@ malicious input never reaches storage. A missing database file, a missing
 valid, non-error input -- this module always returns a truthful,
 non-crashing snapshot with that series reported ``has_stored_observation:
 false`` and its own ``freshness.missing``/``freshness.stale`` both ``true``.
+
+Each series entry also reports whether locally stored series-level metadata
+(migration ``0008``, ``macro_series_metadata`` table -- see
+``market_intelligence/storage/macro_series_metadata_repository.py``) is
+available, so a future Macro Analyst never interprets an unlabeled number.
+When available, the entry includes that metadata's ``title``, ``frequency``,
+``units``, and ``seasonal_adjustment`` fields, read exactly as stored --
+never inferred from the series ID itself. A missing metadata table or a
+series with no stored metadata is valid, non-error input: the entry reports
+``metadata_available: false`` and every metadata field ``null``, and the
+snapshot's aggregate ``flags.missing_metadata_series`` lists every requested
+series without stored metadata.
 """
 
 from __future__ import annotations
@@ -229,6 +241,16 @@ def _empty_series(series_id: str) -> dict[str, Any]:
     }
 
 
+def _empty_metadata() -> dict[str, Any]:
+    return {
+        "metadata_available": False,
+        "title": None,
+        "frequency": None,
+        "units": None,
+        "seasonal_adjustment": None,
+    }
+
+
 class MacroEvidenceBuilder:
     """Builds one deterministic, read-only macro-evidence snapshot from local DuckDB storage.
 
@@ -260,7 +282,10 @@ class MacroEvidenceBuilder:
         as_of = resolve_as_of(self._clock)
 
         if not self._database_path.exists():
-            series_entries = [_empty_series(series_id) for series_id in normalized_series_ids]
+            series_entries = [
+                {**_empty_series(series_id), **_empty_metadata()}
+                for series_id in normalized_series_ids
+            ]
         else:
             try:
                 connection = duckdb.connect(str(self._database_path), read_only=True)
@@ -269,19 +294,29 @@ class MacroEvidenceBuilder:
 
             try:
                 try:
-                    table_exists = connection.execute(
-                        "SELECT count(*) FROM information_schema.tables "
-                        "WHERE table_name = 'macro_observations'"
-                    ).fetchone()[0]
-                    if not table_exists:
-                        series_entries = [
-                            _empty_series(series_id) for series_id in normalized_series_ids
-                        ]
-                    else:
-                        series_entries = [
+                    existing_tables = {
+                        row[0]
+                        for row in connection.execute(
+                            "SELECT table_name FROM information_schema.tables "
+                            "WHERE table_name IN ('macro_observations', 'macro_series_metadata')"
+                        ).fetchall()
+                    }
+                    observations_table_exists = "macro_observations" in existing_tables
+                    metadata_table_exists = "macro_series_metadata" in existing_tables
+
+                    series_entries = []
+                    for series_id in normalized_series_ids:
+                        observation_entry = (
                             self._read_series(connection, series_id, as_of)
-                            for series_id in normalized_series_ids
-                        ]
+                            if observations_table_exists
+                            else _empty_series(series_id)
+                        )
+                        metadata_entry = (
+                            self._read_metadata(connection, series_id)
+                            if metadata_table_exists
+                            else _empty_metadata()
+                        )
+                        series_entries.append({**observation_entry, **metadata_entry})
                 except duckdb.Error:
                     raise MacroEvidenceError(
                         "Failed to read macro evidence data from local storage."
@@ -317,6 +352,9 @@ class MacroEvidenceBuilder:
             for entry in series_entries
             if entry["freshness"]["future_date_detected"]
         ]
+        missing_metadata_series = [
+            entry["series_id"] for entry in series_entries if not entry["metadata_available"]
+        ]
 
         return {
             "snapshot_created_at_utc": _format_as_of(as_of),
@@ -326,7 +364,32 @@ class MacroEvidenceBuilder:
                 "missing_series": missing_series,
                 "stale_series": stale_series,
                 "future_dated_series": future_dated_series,
+                "missing_metadata_series": missing_metadata_series,
             },
+        }
+
+    @staticmethod
+    def _read_metadata(connection: duckdb.DuckDBPyConnection, series_id: str) -> dict[str, Any]:
+        """Read this series' locally stored metadata, if present.
+
+        Read-only; never infers metadata from the series ID itself. A
+        missing row is valid, non-error input -- see ``_empty_metadata``.
+        """
+        row = connection.execute(
+            "SELECT title, frequency, units, seasonal_adjustment FROM macro_series_metadata "
+            "WHERE provider = ? AND series_id = ?",
+            [DEFAULT_PROVIDER, series_id],
+        ).fetchone()
+        if row is None:
+            return _empty_metadata()
+
+        title, frequency, units, seasonal_adjustment = row
+        return {
+            "metadata_available": True,
+            "title": title,
+            "frequency": frequency,
+            "units": units,
+            "seasonal_adjustment": seasonal_adjustment,
         }
 
     @staticmethod

@@ -20,6 +20,19 @@ realtime_start/realtime_end, retrieved_at) — no prediction, sentiment, or
 derived analysis. This module does not write to DuckDB; storage is handled
 separately by ``market_intelligence/storage/macro_observation_repository.py``.
 
+This module also exposes ``get_series_metadata`` for fetching FRED's
+series-level metadata (title, units, frequency, seasonal adjustment, etc.)
+for a single series via FRED's official series endpoint
+(``https://api.stlouisfed.org/fred/series``) — distinct from
+``get_observations``, which fetches the series' *values*. It returns exactly
+one normalized ``FredSeriesMetadata`` record containing only FRED's own
+reviewed metadata fields plus this project's retrieval provenance — never an
+interpretation, summary, or derived label of that text. Provider-reported
+free text (``title``, ``notes``) is preserved exactly as FRED reported it
+and is never included in any exception or sanitized status output. Storage
+is handled separately by
+``market_intelligence/storage/macro_series_metadata_repository.py``.
+
 **Real-time period and units are explicit, fixed request parameters for
 ``get_observations`` only.** FRED's documented default behavior, when a
 request omits ``realtime_start``/``realtime_end``, is to report each
@@ -56,6 +69,7 @@ from market_intelligence.config.settings import Settings
 
 FRED_BASE_URL = "https://api.stlouisfed.org"
 OBSERVATIONS_PATH = "/fred/series/observations"
+SERIES_PATH = "/fred/series"
 DEFAULT_TIMEOUT = httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0)
 
 MAX_SERIES_ID_LENGTH = 64
@@ -136,6 +150,24 @@ class _MalformedObservationError(Exception):
 
     Never raised across the public API -- callers only ever see the
     sanitized ``FredMacroDataError`` raised when this is caught.
+    """
+
+
+class FredSeriesMetadataError(FredMacroDataError):
+    """Raised for a sanitized ``get_series_metadata`` request failure.
+
+    Never includes the API key, request URL/query parameters, raw response
+    body, or provider-reported free text (``title``, ``notes``) -- only a
+    status code, exception type, or a generic FRED-error/validation
+    category.
+    """
+
+
+class _MalformedSeriesMetadataError(Exception):
+    """Internal signal that a raw series-metadata entry failed normalization.
+
+    Never raised across the public API -- callers only ever see the
+    sanitized ``FredSeriesMetadataError`` raised when this is caught.
     """
 
 
@@ -320,6 +352,181 @@ def _normalize_observation(raw: Any, *, series_id: str, retrieved_at: str) -> Fr
 def _observations_match(a: FredObservation, b: FredObservation) -> bool:
     """Return True if two observations sharing the same identity agree on value/is_missing."""
     return a.value == b.value and a.is_missing == b.is_missing
+
+
+# --- Series metadata (get_series_metadata) ----------------------------------
+
+# Strict FRED last_updated shape: "YYYY-MM-DD HH:MM:SS" followed by a fixed
+# UTC offset with either no minutes ("-05"), or explicit minutes with or
+# without a colon ("-0500" / "-05:00"). FRED's documented format omits
+# offset minutes (e.g. "-05"), which Python's datetime.fromisoformat cannot
+# parse directly, so the offset is normalized to "+HH:MM"/"-HH:MM" below
+# before parsing.
+_LAST_UPDATED_PATTERN = re.compile(
+    r"^(?P<date>\d{4}-\d{2}-\d{2}) "
+    r"(?P<time>[01]\d:[0-5]\d:[0-5]\d)"
+    r"(?P<sign>[+-])(?P<offset_hour>[01]\d|2[0-3])(?P<offset_minute>:?[0-5]\d)?$"
+)
+
+MAX_LAST_UPDATED_LENGTH = 40
+
+
+def _parse_last_updated(value: Any) -> str:
+    """Parse FRED's ``last_updated`` field into a normalized, timezone-aware UTC string.
+
+    Raises ``_MalformedSeriesMetadataError`` for anything other than a
+    strict ``YYYY-MM-DD HH:MM:SS`` timestamp with an explicit, valid fixed
+    UTC offset (FRED's documented shape, e.g. ``"2026-08-20 08:35:01-05"``).
+    The result is always timezone-aware and normalized to UTC, formatted as
+    an RFC3339 string ending in ``"Z"``.
+    """
+    if isinstance(value, bool) or not isinstance(value, str):
+        raise _MalformedSeriesMetadataError("last_updated invalid")
+    trimmed = value.strip()
+    if not trimmed or len(trimmed) > MAX_LAST_UPDATED_LENGTH:
+        raise _MalformedSeriesMetadataError("last_updated invalid")
+
+    match = _LAST_UPDATED_PATTERN.match(trimmed)
+    if match is None:
+        raise _MalformedSeriesMetadataError("last_updated invalid")
+
+    offset_minute = match.group("offset_minute")
+    minute_digits = offset_minute.lstrip(":") if offset_minute else "00"
+    offset = f"{match.group('sign')}{match.group('offset_hour')}:{minute_digits}"
+
+    try:
+        parsed = datetime.fromisoformat(f"{match.group('date')}T{match.group('time')}{offset}")
+    except ValueError:
+        raise _MalformedSeriesMetadataError("last_updated invalid") from None
+
+    if parsed.tzinfo is None:
+        raise _MalformedSeriesMetadataError("last_updated invalid")
+
+    return parsed.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _parse_popularity(value: Any) -> int:
+    """Parse FRED's ``popularity`` field. Raises ``_MalformedSeriesMetadataError`` if unusable.
+
+    Requires a plain, nonnegative ``int`` -- booleans are explicitly
+    rejected even though ``bool`` is a subclass of ``int`` in Python.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise _MalformedSeriesMetadataError("popularity invalid")
+    if value < 0:
+        raise _MalformedSeriesMetadataError("popularity invalid")
+    return value
+
+
+def _parse_notes(value: Any) -> str | None:
+    """Parse FRED's ``notes`` field. Raises ``_MalformedSeriesMetadataError`` if unusable.
+
+    ``None`` (FRED reports no notes for some series) is preserved as
+    ``None``; any string (including blank) is preserved exactly, verbatim --
+    never interpreted or summarized. Any other type is malformed.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, str):
+        raise _MalformedSeriesMetadataError("notes invalid")
+    return value
+
+
+def _require_nonblank_metadata_field(raw: dict[str, Any], field_name: str) -> str:
+    value = raw.get(field_name)
+    if isinstance(value, bool) or not isinstance(value, str) or not value.strip():
+        raise _MalformedSeriesMetadataError(f"{field_name} invalid")
+    return value
+
+
+@dataclass(frozen=True)
+class FredSeriesMetadata:
+    """Normalized FRED series-level metadata for a single series.
+
+    Deliberately contains only FRED's own reviewed series-metadata fields
+    plus this project's retrieval provenance -- no prediction, sentiment, or
+    derived analysis. ``provider`` is always ``"fred"``. ``title`` and
+    ``notes`` are preserved exactly as FRED reported them -- never
+    interpreted, summarized, or truncated. ``notes`` is ``None`` when FRED
+    reports no notes for this series. ``last_updated`` and
+    ``retrieved_at_utc`` are both RFC3339 UTC strings ending in ``"Z"``.
+    """
+
+    provider: str
+    series_id: str
+    title: str
+    observation_start: str
+    observation_end: str
+    frequency: str
+    frequency_short: str
+    units: str
+    units_short: str
+    seasonal_adjustment: str
+    seasonal_adjustment_short: str
+    last_updated: str
+    popularity: int
+    notes: str | None
+    retrieved_at_utc: str
+
+
+def _normalize_series_metadata(
+    raw: Any, *, series_id: str, retrieved_at_utc: str
+) -> FredSeriesMetadata:
+    """Normalize a single raw series-metadata entry.
+
+    Raises ``_MalformedSeriesMetadataError`` if unusable, including when the
+    entry's own reported ``id`` does not exactly match the requested,
+    normalized ``series_id``.
+    """
+    if not isinstance(raw, dict):
+        raise _MalformedSeriesMetadataError("series metadata entry is not an object")
+
+    raw_id = raw.get("id")
+    if isinstance(raw_id, bool) or not isinstance(raw_id, str) or raw_id != series_id:
+        raise _MalformedSeriesMetadataError("series id mismatch")
+
+    title = _require_nonblank_metadata_field(raw, "title")
+    frequency = _require_nonblank_metadata_field(raw, "frequency")
+    frequency_short = _require_nonblank_metadata_field(raw, "frequency_short")
+    units = _require_nonblank_metadata_field(raw, "units")
+    units_short = _require_nonblank_metadata_field(raw, "units_short")
+    seasonal_adjustment = _require_nonblank_metadata_field(raw, "seasonal_adjustment")
+    seasonal_adjustment_short = _require_nonblank_metadata_field(raw, "seasonal_adjustment_short")
+
+    try:
+        observation_start = _parse_response_date(raw.get("observation_start"))
+        observation_end = _parse_response_date(raw.get("observation_end"))
+    except _MalformedObservationError:
+        raise _MalformedSeriesMetadataError("observation_start/observation_end invalid") from None
+    last_updated = _parse_last_updated(raw.get("last_updated"))
+    popularity = _parse_popularity(raw.get("popularity"))
+    notes = _parse_notes(raw.get("notes"))
+
+    return FredSeriesMetadata(
+        provider="fred",
+        series_id=series_id,
+        title=title,
+        observation_start=observation_start,
+        observation_end=observation_end,
+        frequency=frequency,
+        frequency_short=frequency_short,
+        units=units,
+        units_short=units_short,
+        seasonal_adjustment=seasonal_adjustment,
+        seasonal_adjustment_short=seasonal_adjustment_short,
+        last_updated=last_updated,
+        popularity=popularity,
+        notes=notes,
+        retrieved_at_utc=retrieved_at_utc,
+    )
+
+
+def _build_series_params(series_id: str, api_key: str) -> dict[str, Any]:
+    return {
+        "series_id": series_id,
+        "api_key": api_key,
+        "file_type": "json",
+    }
 
 
 def _build_observations_params(
@@ -727,6 +934,82 @@ class FredMacroDataClient:
             observations_by_identity.values(),
             key=lambda o: (o.observation_date, o.realtime_start, o.realtime_end),
         )
+
+    def get_series_metadata(
+        self, series_id: str, *, client: httpx.Client | None = None
+    ) -> FredSeriesMetadata:
+        """Fetch and strictly validate series-level metadata for a single FRED series.
+
+        Read-only: makes exactly one request to FRED's official series
+        endpoint (``/fred/series``) for one series. ``series_id`` is
+        normalized/validated via ``normalize_series_id`` before any HTTP
+        request is constructed, so invalid or malicious input never reaches
+        the network. Raises ``FredInvalidSeriesIdError`` for an invalid
+        ``series_id``, ``FredCredentialsMissingError`` if no API key is
+        configured, or ``FredSeriesMetadataError`` (sanitized) on
+        request/network failure, malformed JSON, a non-object JSON payload,
+        a FRED-reported error payload, a response that does not contain
+        exactly one matching series (zero, more than one, or an ``id`` that
+        does not match the requested series), or a malformed metadata field
+        (a blank required string, a malformed ``observation_start``/
+        ``observation_end``/``last_updated``, or an invalid ``popularity``/
+        ``notes``). On any failure, no partial ``FredSeriesMetadata`` is
+        ever returned. The raised error, and every other sanitized status
+        this method can produce, never includes the API key, request
+        URL/query parameters, raw response body, or provider-reported free
+        text (``title``, ``notes``).
+        """
+        normalized_series_id = normalize_series_id(series_id)
+        api_key = self._api_key()
+        params = _build_series_params(normalized_series_id, api_key)
+        owns_client = client is None
+        http_client = client or httpx.Client(base_url=FRED_BASE_URL, timeout=self._timeout)
+        retrieved_at_utc = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        try:
+            try:
+                response = http_client.get(SERIES_PATH, params=params)
+            except httpx.RequestError as exc:
+                raise FredSeriesMetadataError(
+                    f"FRED series metadata request failed: {type(exc).__name__}."
+                ) from None
+
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = None
+
+            if _is_fred_error_payload(payload):
+                raise FredSeriesMetadataError("FRED reported an API error for this request.")
+
+            if not response.is_success:
+                raise FredSeriesMetadataError(
+                    f"FRED series metadata request failed with status {response.status_code}."
+                )
+
+            if not isinstance(payload, dict):
+                raise FredSeriesMetadataError(
+                    "FRED series metadata response payload was not a JSON object."
+                )
+        finally:
+            if owns_client:
+                http_client.close()
+
+        raw_series_list = payload.get("seriess")
+        if not isinstance(raw_series_list, list) or len(raw_series_list) != 1:
+            raise FredSeriesMetadataError(
+                "FRED series metadata response did not contain exactly one matching series."
+            )
+
+        try:
+            return _normalize_series_metadata(
+                raw_series_list[0],
+                series_id=normalized_series_id,
+                retrieved_at_utc=retrieved_at_utc,
+            )
+        except _MalformedSeriesMetadataError:
+            raise FredSeriesMetadataError(
+                "FRED series metadata response contained a malformed series entry."
+            ) from None
 
     def check_connection(
         self, series_id: str = "FEDFUNDS", *, client: httpx.Client | None = None

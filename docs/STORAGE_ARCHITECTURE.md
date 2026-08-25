@@ -7,8 +7,10 @@ for what data has (and has not) actually been ingested.
 
 ## Scope
 
-This foundation defines seven tables in code, and **all seven are now
-applied to the real database** (see below):
+This foundation defines eight tables in code. **The first seven are applied
+to the real database; the eighth (`macro_series_metadata`, migration
+`0008`) exists in code and tests only and has not yet been applied to the
+real database, which remains at migration `0007`** (see below):
 
 - **`schema_migrations`** — tracks which versioned migrations have been
   applied, with a checksum of each migration file's content.
@@ -55,6 +57,13 @@ applied to the real database** (see below):
   scheduling or continuous/unattended operation. See
   [docs/INGESTION_ORCHESTRATION.md](INGESTION_ORCHESTRATION.md) for full
   detail.
+- **`macro_series_metadata`** (added in migration `0008`) -- stores
+  normalized FRED series-level metadata (title, units, frequency, seasonal
+  adjustment, popularity, notes, observation date range, last-updated
+  timestamp) with provenance and idempotency. See "Macro series-metadata
+  storage" below. **This table, its repository, and its ingestion script
+  exist in code and tests only; migration `0008` has not been applied to
+  the real local database, which remains at migration `0007`.**
 
 No forecast or trade tables exist yet. Those each require a separate,
 reviewed data contract before they are added as their own versioned
@@ -353,6 +362,109 @@ rows reflect idempotent overlap with the 12 observations already stored
 above, within this job's own bounded request window -- not new distinct
 dataset coverage.
 
+## Macro series-metadata storage
+
+`macro_series_metadata`
+(`market_intelligence/storage/migrations/0008_create_macro_series_metadata.sql`)
+stores only FRED's own reviewed series-*metadata* fields plus this
+project's own provenance/ingestion bookkeeping -- never prediction,
+direction, sentiment, impact, recommendation, option-contract, order,
+execution, credentials, request headers, or raw API responses. This is
+distinct from `macro_observations` (migration `0006`), which stores a
+series' *values* -- this table stores the descriptive metadata (title,
+units, frequency, seasonal adjustment, popularity, notes, observation date
+range, last-updated timestamp) that labels those values, so a future Macro
+Analyst never interprets an unlabeled number. **As of this writing, this
+table, its repository, and its ingestion script exist in code and tests
+only** (temporary DuckDB files, mocked HTTP transports -- no live FRED
+request, no write to the real database); migration `0008` has not been
+applied to the real local database, which remains at migration `0007`.
+
+Columns: `provider` (fixed `"fred"`), `series_id`, `title`,
+`observation_start`/`observation_end` (`DATE`), `frequency`/
+`frequency_short`, `units`/`units_short`, `seasonal_adjustment`/
+`seasonal_adjustment_short`, `last_updated` (`TIMESTAMP`, FRED's own
+reported last-revision timestamp for this series' metadata, normalized to
+UTC), `popularity` (`BIGINT`), `notes` (`VARCHAR`, nullable -- FRED reports
+no notes for some series), `retrieved_at_utc` (when the connector fetched
+the specific API response that produced the currently-stored values),
+`first_ingested_at` (set once, on first insert, never changed afterward),
+`last_seen_at` (refreshed every time the row is re-ingested), and
+`ingestion_run_id` (the `ingestion_runs.run_id` of the run that most
+recently wrote this row -- recorded, not enforced as a DuckDB foreign key,
+for the same reason as `news_articles.ingestion_run_id`,
+`market_bars.ingestion_run_id`, and
+`macro_observations.ingestion_run_id`). The primary key is
+`(provider, series_id)`. **Unlike `macro_observations`, series metadata has
+no revision/vintage window of its own to preserve as part of the identity**
+-- FRED's series endpoint always reports the current metadata for a series,
+and this table is not a historical record of every past metadata state.
+Every required string field, `title` and `notes` included, is preserved
+exactly as FRED reported it -- never interpreted, summarized, or truncated.
+
+`market_intelligence/storage/macro_series_metadata_repository.py`
+(`MacroSeriesMetadataRepository`) is the only code that writes to this
+table. It accepts one already-normalized `FredSeriesMetadata` object (from
+`market_intelligence/data_connectors/fred_macro_data.py`'s
+`get_series_metadata()`) -- it makes no network requests itself and does
+not apply migrations; the database must already be initialized to at least
+migration `0008`. Every call to `store_metadata()` first strictly validates
+the item before any database write, rejecting: a `provider` argument that
+is not exactly the fixed value `"fred"` (any alternate, blank, malformed,
+or non-string value is rejected before any connection is opened, any
+`ingestion_runs` row is written, or any metadata is written, and the
+rejected value is never echoed); a non-`FredSeriesMetadata` item; an item
+`provider` other than the requested provider; an unnormalized `series_id`;
+a blank required string field; a malformed `observation_start`/
+`observation_end`/`last_updated`; an invalid `popularity` (a plain
+nonnegative integer is required -- booleans rejected); an invalid `notes`
+type (must be a string or `None`); and a naive, timezone-free, or otherwise
+malformed `retrieved_at_utc` -- with a sanitized
+`MacroSeriesMetadataStorageValidationError` and no `ingestion_runs` row
+created for this failure mode. It then records a `running` `ingestion_runs`
+row, and writes the item *plus* the final `succeeded` `ingestion_runs`
+status update inside one DuckDB transaction: an unseen
+`(provider, series_id)` identity is inserted; an already-known identity has
+**every mutable metadata/provenance column refreshed in place** (never
+rejected as a conflict -- series metadata is expected to change over time
+from FRED's own perspective, unlike an observation's value). A failure
+while recording the final `succeeded` status itself aborts the write --
+nothing persists, and no metadata change is left associated with a
+`running` or `failed` run -- and the `ingestion_runs` row is separately
+recorded as `failed` with a sanitized `error_category`
+(`"storage_error"`), never a raw exception message or metadata content. If
+recording that `failed` status itself also fails, a sanitized
+`MacroSeriesMetadataStorageError` is raised instead of returning a result.
+The returned `MacroSeriesMetadataStorageResult` reports only a sanitized
+`inserted` boolean and the ingestion-run id/status -- never provider-
+reported free text (title, notes), other metadata field values, database
+internals, or credentials.
+
+`scripts/ingest_fred_series_metadata.py` is the one manual ingestion entry
+point: it makes at most one bounded, explicit, read-only
+`FredMacroDataClient.get_series_metadata()` request for a single,
+strictly-validated command-line series ID, then stores the result through
+`MacroSeriesMetadataRepository`. An invalid `--series-id` is rejected
+before any network request is constructed or any database write occurs.
+Only sanitized metadata is ever printed (configured, fetch outcome, series
+ID, and a storage outcome/status) -- never the series title, units,
+frequency, seasonal adjustment, notes, popularity, last-updated timestamp,
+database rows, or credentials. **This script has not been run live as
+part of adding this storage layer.**
+
+`MacroEvidenceBuilder`
+(`market_intelligence/market_features/macro_evidence.py`) reads this table
+read-only, alongside `macro_observations`, when building a snapshot: each
+series entry now also reports `metadata_available` plus (when available)
+`title`, `frequency`, `units`, and `seasonal_adjustment`, read exactly as
+stored -- never inferred from the series ID itself -- and the snapshot adds
+an aggregate `flags.missing_metadata_series` list. A missing
+`macro_series_metadata` table or a series with no stored metadata is valid,
+non-error input, mirroring the builder's existing behavior for missing
+observations. See
+[docs/MACRO_EVIDENCE_SNAPSHOT.md](MACRO_EVIDENCE_SNAPSHOT.md) for the full
+field contract.
+
 ## Components
 
 - `market_intelligence/storage/database.py` — `DuckDBManager`, the
@@ -373,6 +485,10 @@ dataset coverage.
   storage service (migration `0007`, now applied to the real database,
   with one authorized live orchestration run recorded through it — see
   above). See [docs/INGESTION_ORCHESTRATION.md](INGESTION_ORCHESTRATION.md).
+- `market_intelligence/storage/macro_series_metadata_repository.py` —
+  `MacroSeriesMetadataRepository`, the macro series-metadata storage service
+  (see "Macro series-metadata storage" above). Migration `0008` exists in
+  code and tests only and has not been applied to the real database.
 - `scripts/initialize_database.py` — applies pending migrations to the
   configured local database; prints only the database path, schema
   version, and applied migration count.
@@ -387,6 +503,9 @@ dataset coverage.
 - `scripts/ingest_alpaca_bars.py` — one-shot manual bars ingestion (see
   "Market-bar storage" above); first authorized live run succeeded
   2026-08-21 (see above).
+- `scripts/ingest_fred_series_metadata.py` — one-shot manual macro
+  series-metadata ingestion (see "Macro series-metadata storage" above);
+  not run live as part of this change.
 
 ## Database location and path safety
 

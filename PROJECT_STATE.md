@@ -160,7 +160,22 @@ already-stored FRED macro observations. **This is infrastructure for a
 future Macro Analyst agent, not an agent itself** -- it makes no model
 request, no FRED request, and no prediction, market-regime label, or
 transmission-mechanism inference of any kind, and it has not been run
-against the real local database as part of this change.
+against the real local database as part of this change. A narrow FRED
+series-*metadata* pipeline (as distinct from the series *observations*
+pipeline above) has also since been added
+(2026-08-24, code/tests/docs only -- see Status below and
+[docs/STORAGE_ARCHITECTURE.md](docs/STORAGE_ARCHITECTURE.md)/
+[docs/MACRO_EVIDENCE_SNAPSHOT.md](docs/MACRO_EVIDENCE_SNAPSHOT.md)):
+`FredMacroDataClient.get_series_metadata()`, migration `0008`
+(`macro_series_metadata`), `MacroSeriesMetadataRepository`,
+`scripts/ingest_fred_series_metadata.py`, and a read-only
+`MacroEvidenceBuilder` update (`metadata_available` plus `title`,
+`frequency`, `units`, `seasonal_adjustment` per series, plus an aggregate
+`missing_metadata_series` flag) exist so a future Macro Analyst never
+interprets an unlabeled number. **This is infrastructure only, exists in
+code and tests only, and has not been run live or against the real local
+database as part of this change** -- migration `0008` has not been applied
+to the real database, which remains at migration `0007`.
 
 ## Status
 
@@ -1664,6 +1679,111 @@ against the real local database as part of this change.
   scheduling, persistence, direction, prediction, or trading functionality
   was added.
 
+- **FRED series-metadata pipeline added (2026-08-24, code/tests/docs only;
+  no live FRED request, no write to the real database, migration `0008`
+  not applied to the real database).** As distinct from the existing
+  series-*observations* pipeline (`get_observations()`/
+  `macro_observations`/`MacroObservationRepository`, see above), this adds
+  a narrow pipeline for FRED series-level *metadata* -- title, units,
+  frequency, seasonal adjustment, popularity, notes, observation date
+  range, and last-updated timestamp -- so a future Macro Analyst never
+  interprets an unlabeled number.
+
+  `FredMacroDataClient.get_series_metadata()`
+  (`market_intelligence/data_connectors/fred_macro_data.py`) fetches one
+  series' metadata via FRED's official series endpoint
+  (`https://api.stlouisfed.org/fred/series`), reusing the same
+  `normalize_series_id` validation as every other connector method. It
+  validates before any HTTP request is constructed, requests exactly one
+  series per call, uses an explicit timeout, reads the API key only from
+  `Settings`, and never exposes the request URL, query parameters, the API
+  key, the raw response body, or provider-reported free text (`title`,
+  `notes`) in any exception or sanitized status output. The response must
+  contain exactly one matching series (matched against the requested,
+  normalized series ID); every required string field
+  (`title`/`frequency`/`frequency_short`/`units`/`units_short`/
+  `seasonal_adjustment`/`seasonal_adjustment_short`) must be nonblank;
+  `observation_start`/`observation_end` must be strict `YYYY-MM-DD` dates;
+  `last_updated` must be a strict, timezone-aware timestamp in FRED's
+  documented `"YYYY-MM-DD HH:MM:SS±HH[:MM]"` shape and is normalized to
+  UTC; `popularity` must be a plain nonnegative integer (booleans
+  explicitly rejected); and `notes` is preserved exactly as FRED reported
+  it (or `None` when FRED reports none) -- provider text is never
+  interpreted or summarized. Any malformed or mismatched payload fails the
+  whole request; no partial `FredSeriesMetadata` object is ever returned.
+
+  Migration `0008`
+  (`market_intelligence/storage/migrations/0008_create_macro_series_metadata.sql`)
+  defines `macro_series_metadata` with primary key `(provider, series_id)`
+  and the exact normalized fields above, plus `first_ingested_at`,
+  `last_seen_at`, and `ingestion_run_id`. Unlike `macro_observations`,
+  series metadata has no revision/vintage window to preserve as part of
+  its identity -- FRED's series endpoint always reports current metadata --
+  so `MacroSeriesMetadataRepository`
+  (`market_intelligence/storage/macro_series_metadata_repository.py`)
+  always refreshes every mutable metadata/provenance column in place on a
+  repeat ingestion of an already-known series, rather than treating it as
+  a conflict. It requires `provider` to be exactly `"fred"`, validates the
+  entire item before opening any connection or creating an ingestion run,
+  writes the metadata plus the final `succeeded` `ingestion_runs` status
+  update inside one atomic transaction, and mirrors the existing
+  repositories' sanitized-failure/rollback behavior (a
+  `MacroSeriesMetadataStorageValidationError` for invalid input with zero
+  writes; a `failed` `ingestion_runs` row with a sanitized
+  `error_category` for a storage failure; a sanitized
+  `MacroSeriesMetadataStorageError`, never a raw exception, path, SQL, or
+  credential, if rollback or failure-recording itself fails).
+
+  A one-shot script, `scripts/ingest_fred_series_metadata.py --series-id
+  FEDFUNDS`, makes at most one bounded, read-only request and stores the
+  result; it prints only `configured`, fetch outcome, series ID, and a
+  storage outcome/status (inserted vs. updated, ingestion-run status) --
+  never the title, units, frequency, seasonal adjustment, notes,
+  popularity, last-updated timestamp, database rows, or credentials. **It
+  was not run live as part of this change.**
+
+  `MacroEvidenceBuilder`
+  (`market_intelligence/market_features/macro_evidence.py`) was updated to
+  read this table read-only, alongside `macro_observations`: each series
+  entry now also reports `metadata_available` plus (when available)
+  `title`, `frequency`, `units`, and `seasonal_adjustment`, read exactly as
+  stored -- never inferred from the series ID itself -- and the snapshot
+  adds an aggregate `flags.missing_metadata_series` list. Existing
+  observation-derived fields (`latest_value`, etc.) are unchanged. A
+  missing `macro_series_metadata` table or a series with no stored
+  metadata is valid, non-error input, mirroring the builder's existing
+  behavior for missing observations; metadata and observations are read
+  and reported independently, so either can be present without the other.
+
+  Covered by focused tests reusing existing helpers/patterns (not a full
+  matrix): the connector's success/normalization path, exactly-one-series
+  matching, per-field validation failures (blank required strings,
+  malformed dates, malformed/naive `last_updated`, invalid `popularity`,
+  invalid `notes` type), and sanitized-error/no-credential-leak behavior
+  (`market_intelligence/tests/test_fred_macro_data.py`); the repository's
+  insert/refresh-on-repeat behavior, provider enforcement, field
+  validation, atomic-write/rollback/failure-status behavior, and
+  no-leakage checks
+  (`market_intelligence/tests/test_macro_series_metadata_repository.py`);
+  the script's invalid-input/not-configured/success/failure paths and
+  sanitized output
+  (`market_intelligence/tests/test_ingest_fred_series_metadata.py`); the
+  updated `MacroEvidenceBuilder` behavior (metadata available/unavailable,
+  independent of observation presence, missing table, partial coverage
+  across multiple series, aggregate flag, no inference from series ID,
+  values unchanged) added to
+  `market_intelligence/tests/test_macro_evidence.py`; and updated
+  migration/health-check tests in
+  `market_intelligence/tests/test_database.py` (migration `0008` schema,
+  primary key, `NULL`-notes support, and a `0007`→`0008` upgrade test
+  preserving existing rows). Full test suite passes; `ruff check .` and
+  `git diff --check` both pass. **Migrations `0001`–`0007` are unchanged,
+  migration `0008` has not been applied to the real database (which
+  remains at schema version `0007`), and no live FRED request or real
+  database write was made as part of this change.** No agent, prediction,
+  regime label, change/delta calculation, trade recommendation, or
+  options/execution logic was added.
+
 ## Next Planned Work
 
 1. Data connector design — read-only Alpaca market-data, Alpaca news,
@@ -1932,6 +2052,21 @@ against the real local database as part of this change.
     any decision to add derived macro features (e.g. period-over-period
     change) beyond this bounded set, and any decision to expand this
     snapshot's scope all remain separate, future, and not yet authorized.
+
+19. **FRED series-metadata pipeline** -- done, code/tests/docs only (see
+    above): `FredMacroDataClient.get_series_metadata()`, migration `0008`
+    (`macro_series_metadata`), `MacroSeriesMetadataRepository`,
+    `scripts/ingest_fred_series_metadata.py`, and the corresponding
+    `MacroEvidenceBuilder` update all exist and are covered by focused
+    tests against temporary DuckDB databases and mocked HTTP transports
+    only. Migration `0008` has not been applied to the real database
+    (still at `0007`), and no live FRED request has been made. Remaining
+    future work: separately authorized application of migration `0008` to
+    the real database and a first live ingestion run; extending this
+    pattern to additional series beyond FEDFUNDS; and any actual Macro
+    Analyst agent that consumes the now-labeled evidence (mirroring
+    `MarketEvidenceAgent`'s/`NewsAnalyst`'s pattern) all remain separate,
+    future, and not yet authorized.
 
 ## Notes
 
