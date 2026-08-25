@@ -72,7 +72,7 @@ def test_committed_config_contains_exactly_the_seven_approved_series():
     assert series_ids == set(APPROVED_SERIES_IDS)
     assert series_ids == {
         "FEDFUNDS",
-        "DGS10",
+        "GS10",
         "CPIAUCSL",
         "PCEPI",
         "UNRATE",
@@ -91,10 +91,9 @@ def test_committed_config_every_series_enabled_category_and_lookback_bounds():
         assert config.recent_observations_limit <= MAX_RECENT_OBSERVATIONS_LIMIT
 
     # Exact conservative lookbacks per docs/CORE_MACRO_BASKET.md.
-    for series_id in ("FEDFUNDS", "CPIAUCSL", "PCEPI", "UNRATE", "INDPRO"):
+    for series_id in ("FEDFUNDS", "CPIAUCSL", "PCEPI", "UNRATE", "INDPRO", "GS10"):
         assert by_id[series_id].observation_lookback_days == 400
     assert by_id["GDPC1"].observation_lookback_days == 1100
-    assert by_id["DGS10"].observation_lookback_days == 180
 
 
 def test_committed_config_path_points_at_real_committed_file():
@@ -271,7 +270,7 @@ def test_entries_preserve_committed_file_order_not_sorted(tmp_path):
     entries = [
         _valid_entry(series_id="GDPC1", category="growth", observation_lookback_days=1100),
         _valid_entry(series_id="FEDFUNDS", category="policy_rate"),
-        _valid_entry(series_id="DGS10", category="long_term_rate", observation_lookback_days=180),
+        _valid_entry(series_id="GS10", category="long_term_rate", observation_lookback_days=400),
     ]
     configs = load_core_macro_series(_write_config(tmp_path, entries))
-    assert [config.series_id for config in configs] == ["GDPC1", "FEDFUNDS", "DGS10"]
+    assert [config.series_id for config in configs] == ["GDPC1", "FEDFUNDS", "GS10"]

@@ -8,10 +8,10 @@
       "recent_observations_limit": 6
     },
     {
-      "series_id": "DGS10",
+      "series_id": "GS10",
       "category": "long_term_rate",
       "enabled": true,
-      "observation_lookback_days": 180,
+      "observation_lookback_days": 400,
       "recent_observations_limit": 6
     },
     {
