@@ -18,7 +18,12 @@ normalized FEDFUNDS macro observations (see "Local Storage" below). A
 first authorized live ingestion-orchestration run (2026-08-23) has since
 run all three of these pipelines together through explicit job contracts
 (see "Local Storage" below); this confirms one controlled orchestrated
-run, not scheduling, continuous operation, or dataset completeness. Each
+run, not scheduling, continuous operation, or dataset completeness. A
+separately authorized live Core Macro Basket run (2026-08-25) has since
+stored 1 `GS10` metadata row and 13 `GS10` observation rows via
+`scripts/ingest_core_macro_basket.py` (see "Local Storage" below); this
+confirms one bounded, controlled ingestion for one series, not dataset
+completeness. Each
 collection verifies one ingestion run; none is a complete, gap-free, or
 validated dataset — connectivity, or a single ingestion run, is not the
 same as a validated data pipeline. No code in
@@ -118,8 +123,10 @@ The following tickers are the known initial universe of interest:
   mismatched payload fails the whole request rather than returning a
   partial object. Errors and sanitized status output never include the API
   key, request URL/query parameters, raw response body, or the
-  provider-reported `title`/`notes` text. This has not been exercised
-  against the live API.
+  provider-reported `title`/`notes` text. As of 2026-08-24 this had not
+  been exercised against the live API. **It has since been exercised
+  live for one series (`GS10`), as part of the authorized Core Macro
+  Basket `GS10` execute run (2026-08-25) -- see "Local Storage" below.**
 - **Alpaca News** — news provider. A read-only connector,
   `AlpacaNewsClient` in `market_intelligence/data_connectors/alpaca_news.py`,
   exists and talks only to Alpaca's read-only data host
@@ -569,6 +576,48 @@ existing monthly `observation_lookback_days` policy (400 days) with
 bounded, monthly replacement only -- it has not yet been requested live.**
 See [docs/CORE_MACRO_BASKET.md](docs/CORE_MACRO_BASKET.md) and
 [PROJECT_STATE.md](PROJECT_STATE.md) for full detail.
+
+**`GS10` first authorized live ingestion and read-only verification
+(2026-08-25).** The "not yet requested live" status above has since been
+superseded. A separately authorized live `--execute` run of
+`scripts/ingest_core_macro_basket.py` targeting `GS10` succeeded: mode
+`execute`, overall status `succeeded`, `series_id: GS10`,
+`metadata_status: succeeded`, `observation_status: succeeded`, 13
+observations received, 13 inserted, 0 existing/updated, 0 failed.
+
+A separate, subsequent read-only verification reported: the real local
+database at schema version `0008` (8 migrations applied), `healthy=True`;
+1 stored `macro_series_metadata` row for `GS10`; 13 stored
+`macro_observations` rows for `GS10`, covering 2025-07-01 through
+2026-07-01, with 0 missing observations; and the latest
+`macro_series_metadata`/`macro_observations` ingestion runs for `GS10`
+both recorded `succeeded` with no `error_category`. Only sanitized
+counts, status, schema version, and the verified row counts/coverage
+window are recorded here -- no `GS10` title, unit, value, or note is
+reproduced in this catalog.
+
+Because `--execute` requires the real database to already be healthy at
+exactly schema version `0008` before any network request (see
+[docs/CORE_MACRO_BASKET.md](docs/CORE_MACRO_BASKET.md)), migration `0008`
+(`macro_series_metadata`, see "Macro series metadata" above) must have
+been applied to the real database prior to this run; the read-only
+verification independently confirms this. The earlier "migration `0008`
+has not been applied ... remains at migration `0007`" statement recorded
+under "Macro series metadata" above was accurate as of 2026-08-24 and is
+preserved as an honest, time-scoped diagnostic record, not retracted.
+
+**This confirms one bounded, controlled live ingestion for one series
+(`GS10`) and its corresponding read-only storage verification. It does
+not establish a complete, gap-free, or research-validated macro dataset
+for `GS10` or for any other series in the Core Macro Basket** -- the
+other six series' live status is recorded separately above and is
+unchanged by this entry. Stored coverage and a zero missing-observation
+count describe what is present in local storage; they do not establish
+economic-data correctness or predictive/analytical usefulness of any
+kind. No forecasting, market-direction assessment, options
+recommendation, or trading execution was performed or implied as part of
+this run or this documentation update. See
+[PROJECT_STATE.md](PROJECT_STATE.md) (item 25) for the full record.
 
 No forecast or trade table has been created — each requires its own
 reviewed data contract and a corresponding versioned migration before it
