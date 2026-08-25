@@ -227,7 +227,22 @@ establish a trend"), which are desirable, honest limitations rather than
 prohibited claims; a narrow, fail-closed negation allowance for
 `limitations` only (never `claim_summary`/`conditional_mechanism`) was then
 added to address this false-positive class. See item 22 below for the full
-sanitized record of both this second live failure and the fix.
+sanitized record of both this second live failure and the fix. A narrow,
+committed **Core Macro Basket** configuration and dry-run-first batch
+ingestion script have also since been added (2026-08-24, code/tests/docs
+only -- see item 23 below and
+[docs/CORE_MACRO_BASKET.md](docs/CORE_MACRO_BASKET.md)): a fixed, reviewed
+list of exactly seven approved FRED series
+(`FEDFUNDS`, `DGS10`, `CPIAUCSL`, `PCEPI`, `UNRATE`, `INDPRO`, `GDPC1`), each
+with a strictly validated category/lookback/limit contract, plus
+`scripts/ingest_core_macro_basket.py`, which reuses the existing FRED
+metadata/observations connectors, repositories, and the existing
+orchestration run lock unmodified. **This is explicitly a first, bounded
+basket, not a complete macro model and not proof of predictive
+usefulness.** As of this change it has **not** been run live or against the
+real local database -- it exists in code, tests, and docs only, and does not
+modify `market_intelligence/orchestration/` (no new job type,
+`jobs.json` change, migration, or schema change of any kind).
 
 ## Status
 
@@ -2368,6 +2383,115 @@ sanitized record of both this second live failure and the fix.
     As of this item, this fix has **not** been exercised against a live
     OpenAI response; no live database access or live OpenAI request was made
     as part of this change.
+
+23. **Core Macro Basket configuration and dry-run-first batch ingestion
+    script added (2026-08-24, code/tests/docs only; not run live or against
+    the real database as part of this change).** See
+    [docs/CORE_MACRO_BASKET.md](docs/CORE_MACRO_BASKET.md) for full detail.
+
+    A new committed configuration file,
+    `market_intelligence/config/core_macro_series.json`, and its loader/
+    validator, `market_intelligence/config/macro_basket.py`
+    (`load_core_macro_series`), define a fixed, reviewed universe of exactly
+    seven approved FRED series -- `FEDFUNDS` (`policy_rate`), `DGS10`
+    (`long_term_rate`), `CPIAUCSL` (`inflation`), `PCEPI` (`inflation`),
+    `UNRATE` (`labor`), `INDPRO` (`growth`), `GDPC1` (`growth`) -- each with
+    a strictly validated `enabled`/`observation_lookback_days`/
+    `recent_observations_limit` contract. Validation enforces: exact
+    root/entry field sets (an unknown field anywhere is rejected); normalized,
+    unique series IDs; only the seven approved series IDs; that each series'
+    `category` exactly matches this module's own fixed, committed
+    `APPROVED_SERIES_CATEGORY` mapping (never accepted as arbitrary
+    configuration-file text); plain (non-boolean) integers for
+    `observation_lookback_days`/`recent_observations_limit`, each within
+    fixed bounds -- a conservative, per-series lookback ceiling
+    (`FEDFUNDS`/`CPIAUCSL`/`PCEPI`/`UNRATE`/`INDPRO`: 400 days;
+    `GDPC1`: 1,100 days; `DGS10`: 180 days) that exists specifically to
+    prevent an unbounded historical request, and `2`-`24` for
+    `recent_observations_limit` (mirroring `MacroEvidenceBuilder`'s own
+    bounds, fixed locally to avoid a layering dependency onto
+    `market_intelligence/market_features/`). Entries are always returned in
+    the committed file's own deterministic order. Loading performs no
+    network I/O and constructs no `Settings`, client, database connection,
+    or lock. **No series title, unit, frequency, seasonal adjustment, note,
+    or observation value is hardcoded anywhere in this configuration or its
+    loader** -- those come only from the existing, reviewed FRED metadata
+    endpoint and local storage, at ingestion time.
+
+    A new dry-run-first CLI, `scripts/ingest_core_macro_basket.py`, reuses
+    the existing `FredMacroDataClient`, `MacroSeriesMetadataRepository`,
+    `MacroObservationRepository`, and the existing orchestration run lock
+    (`market_intelligence/orchestration/lock.py`'s `RunLock`, at its usual
+    fixed path) unmodified. `--series SERIES_ID` (repeatable) and `--all`
+    are mutually exclusive and one is always required; selection is
+    validated purely against the already-loaded committed configuration --
+    before `Settings`, any client, the network, the database, or the run
+    lock are ever constructed -- and selected series are always processed in
+    the committed file's own deterministic order. Default behavior is a dry
+    run: it resolves one shared, injected UTC "as-of" instant (called
+    exactly once for the whole run), computes each selected series' bounded
+    observation window (`start = as_of_date - observation_lookback_days`,
+    `end = as_of_date`, via the FRED connector's own strict calendar-date
+    normalization), and prints a sanitized plan with **zero `Settings`
+    construction, zero network requests, and zero database activity of any
+    kind**. `--execute` is required for real activity: it acquires the
+    existing run lock, then requires the real local database to **already
+    be healthy at exactly schema version `0008`** (checked read-only via the
+    existing `DuckDBManager.check_health()`, before any network request --
+    this script deliberately never applies a migration itself), then
+    requires the FRED client to be configured, then processes each selected
+    series **sequentially**: exactly one `get_series_metadata` request and
+    one bounded `get_observations` request per series (an empty
+    observations result is reported `skipped_empty`, mirroring
+    `scripts/ingest_fred_observations.py`'s existing convention), with **no
+    automatic retry of any request**. One series' failure is recorded
+    truthfully but never prevents a later selected series from being
+    attempted; the overall run status is only `succeeded` if every selected
+    series' metadata request/storage succeeded and its observations
+    request/storage either succeeded or was validly empty. This script does
+    **not** write to `orchestration_runs`/`orchestration_job_runs` and does
+    **not** modify `market_intelligence/orchestration/jobs.json` or any
+    migration/schema -- it is a separate, narrower, manual batch tool, not
+    scheduling. All output, in both modes, is limited to series IDs, the
+    fixed category, configured bounds, computed request-window calendar
+    dates, per-series/overall status, and sanitized counts -- never a
+    series title, unit, frequency, seasonal adjustment, note, observation
+    value, URL, query parameter, raw exception text, SQL, a database path,
+    or a credential.
+
+    44 new focused tests were added
+    (`market_intelligence/tests/test_macro_basket_config.py`,
+    `market_intelligence/tests/test_ingest_core_macro_basket.py`), covering:
+    exact root/entry field validation; approved-series-ID and fixed-category
+    enforcement; plain-integer/bounded-value enforcement for both numeric
+    fields (including the per-series lookback ceiling); deterministic file
+    ordering; invalid/duplicate/disabled/unknown series selection rejected
+    before any `Settings`/network/database/lock activity; the shared clock
+    called exactly once; correctly computed bounded windows for monthly-,
+    quarterly-, and daily-lookback series; a dry run making zero
+    `Settings`/network/database activity; execute-mode sequential order and
+    per-series failure isolation (one series' provider failure does not
+    prevent a later series from being attempted, with no automatic retry);
+    an unhealthy or wrong-schema-version database failing before any network
+    request; lock contention; an empty-observations result reported
+    `skipped_empty` rather than failed; and sanitized output (no title,
+    unit, value, note, credential, or internal ever leaked) across both
+    success and failure paths. `python -m pytest` (1985 passed),
+    `python -m ruff check .`, and `git diff --check` were all run and pass;
+    the existing `scripts/ingest_fred_observations.py`/
+    `scripts/ingest_fred_series_metadata.py` scripts, and every other
+    existing test, were left unmodified and re-verified passing as part of
+    the same full-suite run.
+
+    **As of this item, this configuration and script exist in code, tests,
+    and docs only.** No live FRED request has been made using this script,
+    migration `0008` has not been (newly) applied as part of this change
+    (the real database's migration state is unchanged by this item), and no
+    row has been written to `macro_series_metadata`/`macro_observations` by
+    this script. This does not establish a complete, gap-free, or
+    research-validated macro dataset for any of the seven series, and it
+    implies no forecast, regime classification, or trading signal of any
+    kind.
 
 ## Notes
 

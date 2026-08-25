@@ -1,0 +1,53 @@
+{
+  "series": [
+    {
+      "series_id": "FEDFUNDS",
+      "category": "policy_rate",
+      "enabled": true,
+      "observation_lookback_days": 400,
+      "recent_observations_limit": 6
+    },
+    {
+      "series_id": "DGS10",
+      "category": "long_term_rate",
+      "enabled": true,
+      "observation_lookback_days": 180,
+      "recent_observations_limit": 6
+    },
+    {
+      "series_id": "CPIAUCSL",
+      "category": "inflation",
+      "enabled": true,
+      "observation_lookback_days": 400,
+      "recent_observations_limit": 6
+    },
+    {
+      "series_id": "PCEPI",
+      "category": "inflation",
+      "enabled": true,
+      "observation_lookback_days": 400,
+      "recent_observations_limit": 6
+    },
+    {
+      "series_id": "UNRATE",
+      "category": "labor",
+      "enabled": true,
+      "observation_lookback_days": 400,
+      "recent_observations_limit": 6
+    },
+    {
+      "series_id": "INDPRO",
+      "category": "growth",
+      "enabled": true,
+      "observation_lookback_days": 400,
+      "recent_observations_limit": 6
+    },
+    {
+      "series_id": "GDPC1",
+      "category": "growth",
+      "enabled": true,
+      "observation_lookback_days": 1100,
+      "recent_observations_limit": 6
+    }
+  ]
+}

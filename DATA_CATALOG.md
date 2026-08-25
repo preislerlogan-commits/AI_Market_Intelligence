@@ -509,6 +509,50 @@ remains at migration `0007` and unchanged. See
 [docs/MACRO_EVIDENCE_SNAPSHOT.md](docs/MACRO_EVIDENCE_SNAPSHOT.md) for full
 detail.
 
+**Core Macro Basket: committed configuration and dry-run-first batch
+ingestion script, code/tests only, not yet run live (2026-08-24).** A new
+committed configuration file,
+`market_intelligence/config/core_macro_series.json`, and its loader/
+validator, `market_intelligence/config/macro_basket.py`, define a fixed,
+reviewed universe of exactly seven approved FRED series -- `FEDFUNDS`
+(`policy_rate`), `DGS10` (`long_term_rate`), `CPIAUCSL` (`inflation`),
+`PCEPI` (`inflation`), `UNRATE` (`labor`), `INDPRO` (`growth`), `GDPC1`
+(`growth`) -- each with a strictly validated `enabled`/
+`observation_lookback_days`/`recent_observations_limit` contract and a
+conservative, per-series lookback ceiling (`FEDFUNDS`/`CPIAUCSL`/`PCEPI`/
+`UNRATE`/`INDPRO`: 400 days; `GDPC1`: 1,100 days; `DGS10`: 180 days) that
+prevents an unbounded historical request. **No series title, unit,
+frequency, seasonal adjustment, note, or observation value is hardcoded
+anywhere in this configuration or its loader** -- only the series ID,
+category, and bounded lookback/limit values are committed; titles, units,
+and values come only from the existing, reviewed FRED metadata/observations
+pipelines described above, at ingestion time.
+
+A new dry-run-first CLI, `scripts/ingest_core_macro_basket.py`, reuses the
+existing `FredMacroDataClient`, `MacroSeriesMetadataRepository`,
+`MacroObservationRepository`, and the existing orchestration run lock
+(`market_intelligence/orchestration/lock.py`) unmodified -- it does not
+write to `orchestration_runs`/`orchestration_job_runs` and does not modify
+`market_intelligence/orchestration/jobs.json` or any migration/schema; it is
+a separate, narrower, manual batch tool, not scheduling. Default behavior is
+a dry run: zero `Settings` construction, zero network requests, zero
+database activity. `--execute` requires the real local database to already
+be healthy at exactly schema version `0008` (checked read-only, before any
+network request -- this script never applies a migration itself), then
+processes each selected series sequentially (one bounded metadata request
+plus one bounded observations request per series, no automatic retry); one
+series' failure never prevents a later selected series from being
+attempted, and the overall run status is only `succeeded` if every selected
+series' metadata and observations requests/storage succeeded or were
+validly empty. See [docs/CORE_MACRO_BASKET.md](docs/CORE_MACRO_BASKET.md)
+for the full contract.
+
+**As of this entry, this configuration and script exist in code, tests, and
+docs only** -- no live FRED request has been made using this script, and no
+row has been written to `macro_series_metadata`/`macro_observations` by it.
+This is explicitly a first, bounded basket of seven series, not a complete
+macro model and not proof of predictive usefulness of any kind.
+
 No forecast or trade table has been created — each requires its own
 reviewed data contract and a corresponding versioned migration before it
 is added.
