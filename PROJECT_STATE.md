@@ -175,7 +175,33 @@ pipeline above) has also since been added
 interprets an unlabeled number. **This is infrastructure only, exists in
 code and tests only, and has not been run live or against the real local
 database as part of this change** -- migration `0008` has not been applied
-to the real database, which remains at migration `0007`.
+to the real database, which remains at migration `0007`. A bounded Macro
+Analyst agent (`market_intelligence/agents/macro_analyst.py`,
+`scripts/run_macro_analyst.py`) has also since been added (2026-08-24,
+code/tests/docs only -- see Status below and
+[docs/MACRO_ANALYST.md](docs/MACRO_ANALYST.md)), built directly on
+`MacroEvidenceBuilder` above, mirroring the Market Evidence Agent's/News
+Analyst's single-turn, no-tools pattern. **This is explicitly a first,
+bounded, factual macro-evidence analyst -- not a regime classifier,
+predictor, directional market model, or trading agent.** Its deterministic
+preflight gate is all-or-nothing across every requested series (default
+`FEDFUNDS`): it makes zero OpenAI requests unless every requested series has
+a stored observation, has stored official metadata, is not stale, is not
+future-dated, does not have `latest_is_missing=True`, and has a stable
+evidence ID. Every macro claim it can produce is scoped to a single stored
+observation and its official metadata only (`content_basis` is a fixed
+literal the agent sets itself, never sent to or received from the model);
+`directional_assessment`/`trade_recommendation` are always the fixed
+`"not_performed"` value, exactly as for the Market Evidence Agent and News
+Analyst. A dedicated, deterministic post-response content-scope check
+(distinct from the shared non-directional output policy the other two
+agents also use) rejects any claim describing a trend, change, acceleration/
+deceleration, surprise, historical extreme, correlation, causation, policy
+change, or market regime, since a single snapshot observation with no
+comparison value or consensus expectation can never support such a
+statement. **This is infrastructure/agent code added in code, tests, and
+docs only -- it has not been run against the real local database, and no
+live OpenAI request has been made using it, as part of this change.**
 
 ## Status
 
@@ -2066,7 +2092,51 @@ to the real database, which remains at migration `0007`.
     pattern to additional series beyond FEDFUNDS; and any actual Macro
     Analyst agent that consumes the now-labeled evidence (mirroring
     `MarketEvidenceAgent`'s/`NewsAnalyst`'s pattern) all remain separate,
-    future, and not yet authorized.
+    future, and not yet authorized. **This last item has since been
+    superseded -- see item 20 below.**
+
+20. **Macro Analyst added (2026-08-24, code/tests/docs only; no live
+    database access or live OpenAI request made as part of this change).**
+    `MacroAnalyst` (`market_intelligence/agents/macro_analyst.py`) and
+    `scripts/run_macro_analyst.py` exist (see the intro paragraph above and
+    [docs/MACRO_ANALYST.md](docs/MACRO_ANALYST.md)), covered by 86 tests
+    against fake evidence-builder/model-client stand-ins (no real database
+    or network access in tests): `test_macro_analyst.py`,
+    `test_run_macro_analyst.py`, `test_macro_analyst_eval_fixtures.py`. This
+    is a single-turn, no-tools agent built directly on
+    `MacroEvidenceBuilder` (item 18 above), explicitly **not** a regime
+    classifier, predictor, directional market model, or trading agent. Its
+    deterministic preflight gate is all-or-nothing across every requested
+    series -- it makes zero OpenAI requests if any requested series is
+    missing, lacks official stored metadata, is stale, is future-dated, has
+    `latest_is_missing=True`, or has no stable evidence ID, or if the
+    snapshot's echoed request does not match the normalized requested
+    series list. When eligible, it sends only official stored metadata and
+    the single latest stored observation per series (never a database path,
+    SQL text, ingestion ID, credential, or raw audit/internal field) and
+    makes exactly one OpenAI request. Every macro claim's `content_basis` is
+    a fixed literal (`"stored_observation_and_official_metadata"`) the
+    agent sets itself -- excluded from the model-facing schema entirely, so
+    the model cannot set it to anything else. A dedicated post-response
+    content-scope check (`MacroAnalystContentScopeError`, distinct from the
+    shared `non_directional_output_policy` denylist the Market Evidence
+    Agent and News Analyst also use) rejects trend/change/acceleration/
+    deceleration/surprise/historical-extreme/correlation/causation/policy-
+    change/market-regime language in every model-authored free-text field,
+    since a single snapshot observation with no comparison value or
+    consensus expectation can never support such a statement.
+    `directional_assessment`/`trade_recommendation` are always the fixed
+    `"not_performed"` value, exactly as for the other two agents; no
+    sentiment, probability, confidence score, forecast, or options-detail
+    field exists anywhere in its schema. **As of this entry, `MacroAnalyst`
+    has not been run against the real local database, and no live OpenAI
+    request has been made using it** -- both remain separate, future, and
+    not yet authorized. It is not integrated into
+    `market_intelligence/orchestration/`, adds no persistence or migration,
+    and adds no dashboard, alerting, or brokerage/Robinhood integration.
+    `python -m pytest` (1873 passed), `python -m ruff check .`, and
+    `git diff --check` were all run and pass. See
+    [docs/MACRO_ANALYST.md](docs/MACRO_ANALYST.md) for full detail.
 
 ## Notes
 
