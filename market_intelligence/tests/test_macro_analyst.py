@@ -19,8 +19,6 @@ from market_intelligence.agents.macro_analyst import (
     ADVISORY_MAX_CLAIM_SUMMARY_LENGTH,
     ADVISORY_MAX_CONDITIONAL_MECHANISM_LENGTH,
     ADVISORY_MAX_LIMITATION_LENGTH,
-    ADVISORY_PREFERRED_MAX_MACRO_CLAIMS,
-    ADVISORY_PREFERRED_MIN_MACRO_CLAIMS,
     AGENT_INSTRUCTIONS,
     CONTENT_BASIS_STORED_OBSERVATION_AND_OFFICIAL_METADATA,
     FREQUENCY_SHORT_WORDS,
@@ -39,9 +37,11 @@ from market_intelligence.agents.macro_analyst import (
     PREFLIGHT_REASON_SERIES_NO_EVIDENCE_ID,
     PREFLIGHT_REASON_SERIES_STALE,
     MacroAnalyst,
+    MacroAnalystAgentError,
     MacroAnalystCitationError,
     MacroAnalystComparisonError,
     MacroAnalystContentScopeError,
+    MacroAnalystCoverageError,
     MacroAnalystFrequencyWordingError,
     MacroAnalystIncompleteError,
     MacroAnalystModelAnalysis,
@@ -54,8 +54,10 @@ from market_intelligence.agents.macro_analyst import (
     MacroAnalystValidationError,
     MacroClaimDraft,
 )
+from market_intelligence.market_features.macro_evidence import MAX_SERIES_IDS
 from market_intelligence.model_clients.openai_structured import (
     OpenAIParseFailureError,
+    OpenAIStructuredClient,
     OpenAITimeoutError,
     StructuredOutputResult,
 )
@@ -626,6 +628,321 @@ def test_valid_multi_series_claims_are_accepted():
 
 
 # ---------------------------------------------------------------------------
+# Full-basket coverage (see MacroAnalystCoverageError/_validate_coverage)
+# ---------------------------------------------------------------------------
+
+# The seven approved Core Macro Basket series
+# (market_intelligence/config/core_macro_series.json), used here only as a
+# realistic, deterministic multi-series fixture -- these tests never load
+# that configuration file or touch the real database.
+FULL_BASKET_SERIES_IDS: tuple[str, ...] = (
+    "FEDFUNDS",
+    "GS10",
+    "CPIAUCSL",
+    "PCEPI",
+    "UNRATE",
+    "INDPRO",
+    "GDPC1",
+)
+
+
+def make_full_basket_snapshot(series_ids: tuple[str, ...] = FULL_BASKET_SERIES_IDS) -> dict:
+    entries = [make_series_entry(series_id) for series_id in series_ids]
+    return make_snapshot(entries, series_ids=series_ids)
+
+
+def make_full_basket_claims(
+    series_ids: tuple[str, ...] = FULL_BASKET_SERIES_IDS,
+) -> list[MacroClaimDraft]:
+    return [
+        valid_claim_draft(
+            series_id=series_id, evidence_ids=[f"macro_{series_id.lower()}evidence0001"]
+        )
+        for series_id in series_ids
+    ]
+
+
+def test_max_macro_claims_is_tied_to_evidence_layer_max_series_ids():
+    """The hard macro_claims bound must equal the evidence layer's existing
+    module-level maximum requested-series count, not an independent,
+    conflicting bound -- otherwise a full-basket request could never
+    structurally retain one claim per requested series."""
+    assert MAX_MACRO_CLAIMS == MAX_SERIES_IDS
+
+
+def test_full_seven_series_basket_response_is_accepted_with_one_claim_per_series():
+    snapshot = make_full_basket_snapshot()
+    claims = make_full_basket_claims()
+    agent, *_ = make_agent(
+        snapshot=snapshot,
+        model_result=completed_result(parsed=completed_analysis(macro_claims=claims)),
+    )
+    result = agent.run(list(FULL_BASKET_SERIES_IDS))
+
+    assert result.report.status == "completed"
+    assert len(result.report.macro_claims) == len(FULL_BASKET_SERIES_IDS)
+    assert {claim.series_id for claim in result.report.macro_claims} == set(
+        FULL_BASKET_SERIES_IDS
+    )
+    # No duplicate series across the retained claims.
+    claimed = [claim.series_id for claim in result.report.macro_claims]
+    assert len(claimed) == len(set(claimed))
+
+
+def test_reordered_but_complete_seven_series_claims_succeeds():
+    """Claim order need not match the requested series order -- only the set
+    of covered series matters for coverage validation."""
+    snapshot = make_full_basket_snapshot()
+    claims = list(reversed(make_full_basket_claims()))
+    agent, *_ = make_agent(
+        snapshot=snapshot,
+        model_result=completed_result(parsed=completed_analysis(macro_claims=claims)),
+    )
+    result = agent.run(list(FULL_BASKET_SERIES_IDS))
+
+    assert result.report.status == "completed"
+    assert {claim.series_id for claim in result.report.macro_claims} == set(
+        FULL_BASKET_SERIES_IDS
+    )
+
+
+def test_missing_one_requested_series_fails_coverage():
+    snapshot = make_full_basket_snapshot()
+    claims = make_full_basket_claims()[:-1]  # GDPC1 omitted
+    agent, *_ = make_agent(
+        snapshot=snapshot,
+        model_result=completed_result(parsed=completed_analysis(macro_claims=claims)),
+    )
+    with pytest.raises(MacroAnalystCoverageError):
+        agent.run(list(FULL_BASKET_SERIES_IDS))
+
+
+def test_duplicate_series_claim_fails_coverage():
+    snapshot = make_full_basket_snapshot()
+    claims = make_full_basket_claims()[:-1]  # GDPC1 omitted
+    claims.append(claims[0])  # FEDFUNDS claimed a second time instead
+    agent, *_ = make_agent(
+        snapshot=snapshot,
+        model_result=completed_result(parsed=completed_analysis(macro_claims=claims)),
+    )
+    with pytest.raises(MacroAnalystCoverageError):
+        agent.run(list(FULL_BASKET_SERIES_IDS))
+
+
+def test_unrequested_series_in_an_otherwise_full_basket_is_rejected():
+    """An extra claim for a series that was never requested is rejected by
+    series validation (which runs before coverage validation), never
+    silently accepted alongside full coverage of the requested series."""
+    snapshot = make_full_basket_snapshot()
+    claims = make_full_basket_claims() + [
+        valid_claim_draft(
+            series_id="UNREQUESTED_SERIES", evidence_ids=["macro_fedfundsevidence0001"]
+        )
+    ]
+    agent, *_ = make_agent(
+        snapshot=snapshot,
+        model_result=completed_result(parsed=completed_analysis(macro_claims=claims)),
+    )
+    with pytest.raises(MacroAnalystSeriesError):
+        agent.run(list(FULL_BASKET_SERIES_IDS))
+
+
+@pytest.mark.parametrize("quality", ["sufficient", "limited"])
+def test_full_coverage_accepted_for_both_sufficient_and_limited_quality(quality):
+    snapshot = make_full_basket_snapshot()
+    claims = make_full_basket_claims()
+    agent, *_ = make_agent(
+        snapshot=snapshot,
+        model_result=completed_result(
+            parsed=completed_analysis(evidence_quality=quality, macro_claims=claims)
+        ),
+    )
+    result = agent.run(list(FULL_BASKET_SERIES_IDS))
+
+    assert result.report.status == "completed"
+    assert result.report.evidence_quality == quality
+    assert len(result.report.macro_claims) == len(FULL_BASKET_SERIES_IDS)
+
+
+@pytest.mark.parametrize("quality", ["sufficient", "limited"])
+def test_partial_coverage_rejected_for_both_sufficient_and_limited_quality(quality):
+    """Since the deterministic preflight already required every requested
+    series to be present/fresh/metadata'd before the model was ever called,
+    'limited' evidence quality is never itself a legitimate reason to omit a
+    requested series -- only the distinct 'insufficient'/zero-claims outcome
+    may omit series."""
+    snapshot = make_full_basket_snapshot()
+    claims = make_full_basket_claims()[:-1]  # GDPC1 omitted
+    agent, *_ = make_agent(
+        snapshot=snapshot,
+        model_result=completed_result(
+            parsed=completed_analysis(evidence_quality=quality, macro_claims=claims)
+        ),
+    )
+    with pytest.raises(MacroAnalystCoverageError):
+        agent.run(list(FULL_BASKET_SERIES_IDS))
+
+
+def test_full_basket_insufficient_zero_claims_still_abstains_code_controlled():
+    """The existing zero-claim/'insufficient' abstention outcome is
+    unaffected by the new coverage requirement -- it remains the only
+    code-controlled way to omit series coverage, and it is still not a
+    fabricated placeholder response."""
+    snapshot = make_full_basket_snapshot()
+    agent, _, model_client = make_agent(
+        snapshot=snapshot,
+        model_result=completed_result(
+            parsed=completed_analysis(evidence_quality="insufficient", macro_claims=[])
+        ),
+    )
+    result = agent.run(list(FULL_BASKET_SERIES_IDS))
+
+    assert len(model_client.calls) == 1
+    assert result.report.status == "abstained"
+    assert result.report.abstained_reasons == [ABSTAIN_REASON_NO_SUFFICIENT_MACRO_EVIDENCE]
+    assert result.report.macro_claims == []
+
+
+def test_coverage_violation_makes_zero_retry_calls():
+    snapshot = make_full_basket_snapshot()
+    claims = make_full_basket_claims()[:-1]
+    agent, _, model_client = make_agent(
+        snapshot=snapshot,
+        model_result=completed_result(parsed=completed_analysis(macro_claims=claims)),
+    )
+    with pytest.raises(MacroAnalystCoverageError):
+        agent.run(list(FULL_BASKET_SERIES_IDS))
+
+    assert len(model_client.calls) == 1
+
+
+def test_coverage_error_never_echoes_model_authored_text():
+    marker = "unit-test-marker-should-never-leak-9f2a3c"
+    snapshot = make_full_basket_snapshot()
+    claims = make_full_basket_claims()[:-1]
+    claims[0] = valid_claim_draft(
+        series_id=claims[0].series_id,
+        evidence_ids=claims[0].evidence_ids,
+        claim_summary=(
+            "The stored monthly observation dated 2026-07-01 reports the latest "
+            f"value, per official FRED metadata. {marker}"
+        ),
+    )
+    agent, *_ = make_agent(
+        snapshot=snapshot,
+        model_result=completed_result(parsed=completed_analysis(macro_claims=claims)),
+    )
+    with pytest.raises(MacroAnalystCoverageError) as exc_info:
+        agent.run(list(FULL_BASKET_SERIES_IDS))
+
+    assert marker not in str(exc_info.value)
+
+
+def test_coverage_error_has_sanitized_category():
+    snapshot = make_full_basket_snapshot()
+    claims = make_full_basket_claims()[:-1]
+    agent, *_ = make_agent(
+        snapshot=snapshot,
+        model_result=completed_result(parsed=completed_analysis(macro_claims=claims)),
+    )
+    with pytest.raises(MacroAnalystCoverageError) as exc_info:
+        agent.run(list(FULL_BASKET_SERIES_IDS))
+
+    assert isinstance(exc_info.value, MacroAnalystAgentError)
+    assert exc_info.value.category == "coverage_invalid"
+
+
+# ---------------------------------------------------------------------------
+# Real production schema round-trips through OpenAIStructuredClient
+# ---------------------------------------------------------------------------
+
+
+class _FakeResponsesForRoundTrip:
+    """Stands in for ``openai.OpenAI().responses`` -- see
+    ``test_openai_structured.py``'s identical pattern. Local to this file so
+    this test never depends on another test module's internals."""
+
+    def __init__(self, *, result) -> None:
+        self._result = result
+        self.calls: list[dict] = []
+
+    def parse(self, **kwargs):
+        self.calls.append(kwargs)
+        return self._result
+
+
+class _FakeSDKClientForRoundTrip:
+    def __init__(self, *, result) -> None:
+        self.responses = _FakeResponsesForRoundTrip(result=result)
+
+
+def _make_sdk_response_for_round_trip(parsed: MacroAnalystModelAnalysis):
+    from types import SimpleNamespace
+
+    content = SimpleNamespace(type="output_text", parsed=parsed)
+    message = SimpleNamespace(type="message", content=[content])
+    return SimpleNamespace(
+        id="resp_unit_test_full_basket",
+        status="completed",
+        incomplete_details=None,
+        usage=SimpleNamespace(input_tokens=500, output_tokens=400, total_tokens=900),
+        output=[message],
+        output_parsed=parsed,
+    )
+
+
+def test_real_schema_round_trips_through_openai_structured_client(monkeypatch, tmp_path):
+    """Builds the REAL production ``MacroAnalystModelAnalysis``/``MacroClaimDraft``
+    schema (not the fake stand-ins used elsewhere in this file) with a valid
+    seven-series response, and sends it through the REAL
+    ``OpenAIStructuredClient`` (only its SDK transport is faked) to prove the
+    schema and client stay compatible for a full-basket response. No network
+    call is made -- the SDK client is injected."""
+    from market_intelligence.config.settings import Settings
+
+    monkeypatch.setenv("OPENAI_API_KEY", "unit-test-openai-key-should-never-leak")
+    settings = Settings(_env_file=tmp_path / "does-not-exist.env")
+
+    analysis = MacroAnalystModelAnalysis(
+        evidence_quality="sufficient",
+        macro_claims=[
+            MacroClaimDraft(
+                series_id=series_id,
+                claim_summary=(
+                    "The stored monthly observation dated 2026-07-01 reports the "
+                    f"latest {series_id} value, per official FRED metadata."
+                ),
+                evidence_ids=[f"macro_{series_id.lower()}evidence0001"],
+                economic_category="policy_rate",
+                transmission_channels=["rates"],
+                conditional_mechanism=(
+                    "Short-term policy rates can in general relate to broad "
+                    "borrowing costs."
+                ),
+            )
+            for series_id in FULL_BASKET_SERIES_IDS
+        ],
+        limitations=[],
+    )
+    fake_sdk = _FakeSDKClientForRoundTrip(result=_make_sdk_response_for_round_trip(analysis))
+    client = OpenAIStructuredClient(settings, sdk_client=fake_sdk)
+
+    result = client.generate(
+        instructions=AGENT_INSTRUCTIONS,
+        evidence={"series_ids": list(FULL_BASKET_SERIES_IDS)},
+        output_model=MacroAnalystModelAnalysis,
+    )
+
+    assert result.status == "completed"
+    assert isinstance(result.parsed, MacroAnalystModelAnalysis)
+    assert len(result.parsed.macro_claims) == len(FULL_BASKET_SERIES_IDS)
+    assert {claim.series_id for claim in result.parsed.macro_claims} == set(
+        FULL_BASKET_SERIES_IDS
+    )
+    assert fake_sdk.responses.calls[0]["text_format"] is MacroAnalystModelAnalysis
+
+
+# ---------------------------------------------------------------------------
 # Unsupported trend/change/regime language is rejected
 # ---------------------------------------------------------------------------
 
@@ -1082,10 +1399,12 @@ def test_advisory_limitation_budget_below_hard_max():
     assert ADVISORY_MAX_LIMITATION_LENGTH < MAX_LIMITATION_LENGTH
 
 
-def test_advisory_preferred_claim_count_below_hard_max():
-    assert str(ADVISORY_PREFERRED_MAX_MACRO_CLAIMS) in AGENT_INSTRUCTIONS
-    assert ADVISORY_PREFERRED_MAX_MACRO_CLAIMS < MAX_MACRO_CLAIMS
-    assert str(ADVISORY_PREFERRED_MIN_MACRO_CLAIMS) in AGENT_INSTRUCTIONS
+def test_instructions_state_the_mandatory_full_coverage_requirement():
+    """There is no longer a 'preferred' claim-count range -- coverage is a
+    hard, mandatory requirement (one claim per requested series), stated as
+    such in AGENT_INSTRUCTIONS."""
+    assert "exactly one macro_claim for EVERY series requested" in AGENT_INSTRUCTIONS
+    assert "no partial coverage" in AGENT_INSTRUCTIONS
 
 
 def test_report_limitations_hard_bound_unchanged():
