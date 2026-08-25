@@ -62,9 +62,24 @@ monthly, percent, not seasonally adjusted -- kept under the same
 now uses the same conservative monthly `observation_lookback_days` policy
 (400 days) as the other five monthly series, rather than `DGS10`'s former
 180-day daily ceiling; `recent_observations_limit` remains `6`, unchanged.
-**`GS10` is a proposed, bounded, monthly replacement only -- as of this
-document, it has not yet been requested live** (no live FRED request, no
+**`GS10` is a proposed, bounded, monthly replacement only -- as of
+2026-08-24, it had not yet been requested live** (no live FRED request, no
 live database write) -- see PROJECT_STATE.md for the authoritative status.
+
+**`GS10` first authorized live ingestion (2026-08-25).** The "not yet
+requested live" status above has since been superseded: a separately
+authorized live `--execute` run of `scripts/ingest_core_macro_basket.py`
+targeting `GS10` succeeded (overall status `succeeded`,
+`metadata_status: succeeded`, `observation_status: succeeded`, 13
+observations received, 13 inserted, 0 existing/updated, 0 failed). A
+subsequent read-only verification confirmed the real local database
+healthy at schema version `0008` with 1 stored `GS10` metadata row and 13
+stored `GS10` observation rows covering 2025-07-01 through 2026-07-01 (0
+missing). This confirms one bounded, controlled live ingestion for
+`GS10` only -- it does not establish a complete, gap-free, or
+research-validated macro dataset for `GS10` or any other series in this
+basket. See [PROJECT_STATE.md](../PROJECT_STATE.md) (item 25) and
+[DATA_CATALOG.md](../DATA_CATALOG.md) for the full record.
 
 **No title, unit, frequency, seasonal adjustment, note, or observation value
 is ever hardcoded anywhere in this configuration, the loader, or the

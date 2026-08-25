@@ -7,10 +7,17 @@ for what data has (and has not) actually been ingested.
 
 ## Scope
 
-This foundation defines eight tables in code. **The first seven are applied
-to the real database; the eighth (`macro_series_metadata`, migration
-`0008`) exists in code and tests only and has not yet been applied to the
-real database, which remains at migration `0007`** (see below):
+This foundation defines eight tables in code. **As of 2026-08-24, the first
+seven were applied to the real database and the eighth
+(`macro_series_metadata`, migration `0008`) existed in code and tests only,
+with the real database remaining at migration `0007`.** That status has
+since been superseded: a read-only verification performed 2026-08-25
+(following an authorized live Core Macro Basket `GS10` ingestion, which
+requires the database already healthy at exactly schema version `0008`
+before making any network request) confirmed the real local database is
+now at schema version `0008` (8 migrations applied), healthy=True. **All
+eight tables, including `macro_series_metadata`, are now applied to the
+real database** (see below):
 
 - **`schema_migrations`** — tracks which versioned migrations have been
   applied, with a checksum of each migration file's content.
@@ -61,9 +68,16 @@ real database, which remains at migration `0007`** (see below):
   normalized FRED series-level metadata (title, units, frequency, seasonal
   adjustment, popularity, notes, observation date range, last-updated
   timestamp) with provenance and idempotency. See "Macro series-metadata
-  storage" below. **This table, its repository, and its ingestion script
-  exist in code and tests only; migration `0008` has not been applied to
-  the real local database, which remains at migration `0007`.**
+  storage" below. **As originally built, this table, its repository, and
+  its ingestion script existed in code and tests only, with migration
+  `0008` not yet applied to the real database (accurate as of
+  2026-08-24). Migration `0008` has since been applied to the real local
+  database, and one explicitly authorized live ingestion (`GS10`, via the
+  Core Macro Basket, 2026-08-25) has succeeded and stored 1 metadata row
+  through it** -- see "Status" in `PROJECT_STATE.md` (item 25) and the
+  `GS10` entry in `DATA_CATALOG.md`. This confirms one controlled
+  ingestion for one series; it is not a complete, gap-free, or
+  research-validated metadata dataset.
 
 No forecast or trade tables exist yet. Those each require a separate,
 reviewed data contract before they are added as their own versioned
@@ -374,11 +388,19 @@ distinct from `macro_observations` (migration `0006`), which stores a
 series' *values* -- this table stores the descriptive metadata (title,
 units, frequency, seasonal adjustment, popularity, notes, observation date
 range, last-updated timestamp) that labels those values, so a future Macro
-Analyst never interprets an unlabeled number. **As of this writing, this
-table, its repository, and its ingestion script exist in code and tests
-only** (temporary DuckDB files, mocked HTTP transports -- no live FRED
-request, no write to the real database); migration `0008` has not been
-applied to the real local database, which remains at migration `0007`.
+Analyst never interprets an unlabeled number. **As originally written
+(2026-08-24), this table, its repository, and its ingestion script
+existed in code and tests only** (temporary DuckDB files, mocked HTTP
+transports -- no live FRED request, no write to the real database);
+migration `0008` had not been applied to the real local database, which
+remained at migration `0007`. **This has since been superseded: migration
+`0008` has been applied to the real local database, and a subsequent
+read-only verification (2026-08-25) reported schema version `0008` (8
+migrations applied), `healthy=True`, with 1 stored row (`GS10`, via the
+authorized Core Macro Basket live ingestion described in
+`PROJECT_STATE.md` item 25 and `DATA_CATALOG.md`).** This confirms one
+controlled ingestion for one series; it is not a complete, gap-free, or
+research-validated metadata dataset for `GS10` or any other series.
 
 Columns: `provider` (fixed `"fred"`), `series_id`, `title`,
 `observation_start`/`observation_end` (`DATE`), `frequency`/
@@ -487,8 +509,9 @@ field contract.
   above). See [docs/INGESTION_ORCHESTRATION.md](INGESTION_ORCHESTRATION.md).
 - `market_intelligence/storage/macro_series_metadata_repository.py` —
   `MacroSeriesMetadataRepository`, the macro series-metadata storage service
-  (see "Macro series-metadata storage" above). Migration `0008` exists in
-  code and tests only and has not been applied to the real database.
+  (see "Macro series-metadata storage" above). Migration `0008` has been
+  applied to the real database (2026-08-25 verification), and one
+  authorized live ingestion (`GS10`) has succeeded through it — see above.
 - `scripts/initialize_database.py` — applies pending migrations to the
   configured local database; prints only the database path, schema
   version, and applied migration count.
@@ -504,8 +527,11 @@ field contract.
   "Market-bar storage" above); first authorized live run succeeded
   2026-08-21 (see above).
 - `scripts/ingest_fred_series_metadata.py` — one-shot manual macro
-  series-metadata ingestion (see "Macro series-metadata storage" above);
-  not run live as part of this change.
+  series-metadata ingestion (see "Macro series-metadata storage" above).
+  This standalone script itself has not been run live; the real database's
+  one `GS10` metadata row was written via `scripts/ingest_core_macro_basket.py`
+  instead (see above), which uses the same underlying
+  `MacroSeriesMetadataRepository`.
 
 ## Database location and path safety
 

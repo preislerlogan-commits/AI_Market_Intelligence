@@ -4,7 +4,7 @@ This document is the **authoritative source of truth** for the current status
 of AI Market Intelligence. It must be read before beginning any work in this
 repository, and updated whenever the project's status materially changes.
 
-Last updated: 2026-08-24
+Last updated: 2026-08-25
 
 ## Current Phase
 
@@ -249,7 +249,16 @@ first live run of this basket succeeded for six series but failed for
 metadata succeeded), and `DGS10` was then replaced in the committed
 configuration by the monthly FRED series `GS10`, a proposed bounded
 replacement not yet requested live -- see item 24 below for the full
-record.**
+record. **This "not yet requested live" status for `GS10` has since been
+superseded: a separately authorized live `--execute` run of
+`scripts/ingest_core_macro_basket.py` targeting `GS10` (2026-08-25)
+succeeded (`metadata_status=succeeded`, `observation_status=succeeded`, 13
+observations received, 13 inserted, 0 existing/updated, 0 failed), and a
+subsequent read-only verification confirmed the real local database
+healthy at schema version `0008` (8 migrations applied) with 1 stored
+`GS10` metadata row and 13 stored `GS10` observation rows covering
+2025-07-01 through 2026-07-01 (0 missing) -- see item 25 below for the
+full record.****
 
 ## Status
 
@@ -2545,6 +2554,59 @@ record.**
     trading signal of any kind, and does not establish a complete,
     gap-free, or research-validated macro dataset for any of the seven
     series.
+
+25. **First authorized live `GS10` ingestion and read-only verification
+    (2026-08-25, documentation update only -- no code, test, migration,
+    configuration, dependency, `.env`, or database change was made as part
+    of recording this entry).** Following item 24 above, `GS10` was
+    requested live for the first time via a separately authorized
+    `scripts/ingest_core_macro_basket.py --execute` run targeting `GS10`.
+
+    The run's reported outcome: mode `execute`, overall status
+    `succeeded`, `series_id: GS10`, `metadata_status: succeeded`,
+    `observation_status: succeeded`, 13 observations received, 13
+    inserted, 0 existing/updated, 0 failed.
+
+    A separate, subsequent read-only verification then reported: the real
+    local database at schema version `0008` (8 migrations applied),
+    `healthy=True`; 1 stored `macro_series_metadata` row for `GS10`; 13
+    stored `macro_observations` rows for `GS10`, covering 2025-07-01
+    through 2026-07-01, with 0 missing observations; and the latest
+    `macro_series_metadata`/`macro_observations` ingestion runs for `GS10`
+    both recorded `succeeded` with no `error_category`. The working tree
+    was clean before this documentation update was made, and no live
+    request of any kind (FRED, OpenAI, or otherwise) was made as part of
+    producing this documentation entry itself.
+
+    **Migration `0008` status superseded:** earlier entries in this
+    document (see the "Macro series-metadata pipeline" item above and the
+    Status section) correctly recorded that migration `0008` had not been
+    applied and the real database remained at schema version `0007` as of
+    2026-08-24. Since `scripts/ingest_core_macro_basket.py --execute`
+    requires the real database to already be healthy at exactly schema
+    version `0008` before making any network request (see
+    [docs/CORE_MACRO_BASKET.md](docs/CORE_MACRO_BASKET.md)), and the
+    `GS10` execute run above succeeded, migration `0008` must have been
+    applied to the real database prior to that run; the read-only
+    verification above independently confirms the database is now at
+    schema version `0008`, healthy. Those earlier `0007`/"not applied"
+    statements are preserved above as honest, correctly time-scoped
+    diagnostic records and are not retracted -- they describe the state
+    truthfully as of 2026-08-24, before this change.
+
+    **This confirms one bounded, controlled live ingestion for one series
+    (`GS10`) and its corresponding read-only storage verification. It does
+    not establish a complete, gap-free, or research-validated macro
+    dataset for `GS10` or for any other series in the Core Macro Basket**
+    -- the other six series' live status is recorded separately above
+    (items 23-24) and is unchanged by this entry. Stored coverage and a
+    zero missing-observation count describe what is present in local
+    storage; they do not establish economic-data correctness or
+    predictive/analytical usefulness of any kind. **No forecasting,
+    market-direction assessment, options recommendation, or trading
+    execution was performed or implied as part of this run or this
+    documentation update, and no live request of any kind was made while
+    producing this documentation update itself.**
 
 ## Notes
 
