@@ -2608,6 +2608,75 @@ full record.**
     documentation update, and no live request of any kind was made while
     producing this documentation update itself.**
 
+26. **Frequency-aware macro-evidence staleness policy (2026-08-25, code/tests/docs
+    only -- no live FRED/OpenAI request, no migration, no configuration/dependency/
+    `.env` change, and no write to the real local database as part of this
+    change).** A previously reported read-only dry run of the Macro Analyst
+    against the seven-series Core Macro Basket abstained with
+    `series_stale` for `GDPC1` only, while its underlying stored data was, on
+    inspection, a legitimate current quarterly release: `frequency_short: "Q"`,
+    `observation_date: 2026-04-01`, value present and not missing,
+    `realtime_end: 9999-12-31` (FRED's currently valid, non-superseded
+    vintage). The prior fixed 90-day staleness rule in
+    `MacroEvidenceBuilder` (`market_intelligence/market_features/macro_evidence.py`)
+    applied the same threshold to every series regardless of its official
+    reporting frequency, which is appropriate for a monthly series like
+    `FEDFUNDS`/`GS10` but falsely classified this normal ~3-4-month
+    quarterly inter-release gap as stale.
+
+    In response, `MacroEvidenceBuilder`'s staleness check was made
+    frequency-aware, narrowly: `frequency_short == "M"` keeps the existing
+    90-day threshold (`STALE_AFTER_DAYS`); `frequency_short == "Q"` now uses
+    a separate, conservative 180-day threshold
+    (`STALE_AFTER_DAYS_QUARTERLY`), comfortably exceeding a quarterly
+    series' reporting cadence including normal release lag. Every other
+    case -- no stored series metadata at all, a stored metadata row whose
+    `frequency_short` is `null`/blank, or any `frequency_short` value other
+    than `"M"`/`"Q"` -- has **no defined threshold** and **fails closed**:
+    `freshness.stale_after_days` is `null` and `freshness.stale` is always
+    `true`, regardless of how recent the observation is; no default
+    threshold is ever silently assigned. The applied threshold (or `null`)
+    is now reported on every series' `freshness.stale_after_days` field, not
+    only implied by a module-level constant. `freshness` continues to be
+    computed only from the chosen row's already-stored `observation_date`
+    (never from FRED's `last_updated` metadata field, which describes when a
+    revision was recorded, not observation recency), and the existing
+    missing-observation/future-date behavior (including the one-day
+    future-date tolerance) is unchanged. Because the Macro Analyst's
+    deterministic preflight (`market_intelligence/agents/macro_analyst.py`)
+    already consumes `MacroEvidenceBuilder`'s `freshness.stale` field as-is
+    and performs no staleness computation of its own, this fix required no
+    change to the Macro Analyst's preflight logic itself -- it now simply
+    consumes the corrected, frequency-aware result.
+
+    New boundary tests were added to
+    `market_intelligence/tests/test_macro_evidence.py`: a monthly series
+    exactly at 90 and at 91 elapsed days; a quarterly series exactly at 180
+    and at 181 elapsed days; a GDPC1-shaped reproduction (an April 1
+    quarterly observation evaluated at an August 25 as-of date, 146 elapsed
+    days, correctly not stale); a series with no stored metadata at all
+    failing closed; and a series with stored metadata but an unrecognized
+    `frequency_short` (e.g. `"W"`) also failing closed. Two pre-existing
+    generic freshness tests that stored no series metadata were updated to
+    store monthly (`"M"`) metadata, since a missing `frequency_short` now
+    fails closed rather than implicitly defaulting to the monthly
+    threshold. `python -m pytest` (1990 passed), `python -m ruff check .`
+    (all checks passed), and `git diff --check` (no whitespace errors) were
+    all run as part of this change and pass.
+
+    **As of this item, this is a narrow, deterministic threshold fix only.**
+    It does not add FRED-release-calendar awareness for any frequency, does
+    not add a threshold for any `frequency_short` other than `"M"`/`"Q"`
+    (a series reported at any other official frequency, e.g. weekly or
+    annual, was already unsupported by this project's macro basket and
+    continues to fail closed rather than receive a guessed threshold), does
+    not change the migration, connector, repository, or macro basket
+    configuration, and does not run any live provider or model request. It
+    does not by itself confirm that `GDPC1` (or any other quarterly series)
+    now passes the Macro Analyst's live preflight against the real
+    database -- that would require a separately authorized live dry run,
+    not yet performed as part of this change.
+
 ## Notes
 
 - This file should be updated as phases progress. Treat entries here as

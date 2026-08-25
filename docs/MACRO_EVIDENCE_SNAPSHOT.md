@@ -331,18 +331,41 @@ preceding chronological stored observation (i.e. the first two items of
 
 ### Freshness
 
-- **`freshness.stale_after_days`** -- a fixed, documented threshold (`90`
-  elapsed days), chosen as a conservative default suitable for monthly
-  macro observations: it comfortably exceeds a series like FEDFUNDS's
-  monthly reporting cadence without flagging a normal inter-release gap as
-  stale. This is a plain elapsed-time signal, not an economic judgment --
-  **a series reported under this threshold is not thereby claimed to be
-  economically current**, only "not yet flagged stale by this fixed
-  clock."
+- **`freshness.stale_after_days`** -- the fixed, documented elapsed-day
+  threshold **actually applied** for this series, chosen deterministically
+  from its stored `frequency_short` -- **never a single flat default across
+  every series**:
+  - `frequency_short == "M"` (monthly) -> `90` elapsed days (`STALE_AFTER_DAYS`),
+    a conservative default suitable for monthly macro observations: it
+    comfortably exceeds a series like FEDFUNDS's monthly reporting cadence
+    without flagging a normal inter-release gap as stale.
+  - `frequency_short == "Q"` (quarterly) -> `180` elapsed days
+    (`STALE_AFTER_DAYS_QUARTERLY`), a separate, conservative threshold sized
+    for quarterly release timing (e.g. GDPC1): it comfortably exceeds a
+    quarterly series' ~3-month reporting cadence, including normal release
+    lag, without flagging a normal inter-release gap as stale. A single flat
+    (monthly-sized) threshold previously misclassified a legitimately fresh
+    quarterly release as stale -- e.g. a GDPC1 observation dated the first
+    day of the current calendar quarter, evaluated partway through the
+    following quarter -- which motivated this split.
+  - Any other case -- no stored metadata for the series
+    (`metadata_available: false`), a stored metadata row whose
+    `frequency_short` is `null`/blank, or any `frequency_short` value other
+    than `"M"`/`"Q"` -- has **no defined threshold**: `stale_after_days` is
+    `null` and the series **fails closed**, i.e. `freshness.stale` is always
+    `true` for it, regardless of how recent its `observation_date` is. This
+    is deliberate: the module never silently assigns a default threshold to
+    a series whose actual official reporting frequency is unknown or
+    unrecognized.
+
+  This is a plain elapsed-time signal, not an economic judgment -- **a
+  series reported under its threshold is not thereby claimed to be
+  economically current**, only "not yet flagged stale by this fixed clock."
 - **`freshness.stale`** -- `true` if `missing` is `true`, if
-  `future_date_detected` is `true`, or if the chosen row's
-  `observation_date` is more than `stale_after_days` before the snapshot's
-  `as_of` date.
+  `future_date_detected` is `true`, if `stale_after_days` is `null` (see
+  above -- fail closed for missing/unrecognized frequency metadata), or if
+  the chosen row's `observation_date` is more than `stale_after_days`
+  before the snapshot's `as_of` date.
 - **`freshness.future_date_detected`** -- `true` only when the chosen row's
   `observation_date` is more than a small, fixed, documented tolerance
   (`FUTURE_DATE_TOLERANCE_DAYS`, `1` day) ahead of the snapshot's `as_of`
@@ -433,7 +456,13 @@ sanitized error is what the caller sees. The connection opened by
 - The freshness/future-date thresholds are simple, fixed, documented
   heuristics for data bookkeeping -- they are not trading signals, are not
   validated forecasts, and must not be treated as such (see
-  [DECISION_RULES.md](../DECISION_RULES.md)).
+  [DECISION_RULES.md](../DECISION_RULES.md)). The staleness threshold is
+  frequency-aware but deliberately narrow: only `frequency_short` `"M"`
+  (90 days) and `"Q"` (180 days) have a defined threshold; a series with no
+  stored metadata or an unrecognized `frequency_short` fails closed
+  (`stale_after_days: null`, `freshness.stale: true`) rather than reusing
+  either threshold as a silent default. This is not a FRED-release-
+  calendar-aware system for any other reporting frequency.
 - This module performs **no** transformation, interpolation,
   forward-filling, or seasonal adjustment of any kind -- every value in
   `recent_observations` is reported exactly as stored, unmodified. The
