@@ -515,12 +515,12 @@ committed configuration file,
 `market_intelligence/config/core_macro_series.json`, and its loader/
 validator, `market_intelligence/config/macro_basket.py`, define a fixed,
 reviewed universe of exactly seven approved FRED series -- `FEDFUNDS`
-(`policy_rate`), `DGS10` (`long_term_rate`), `CPIAUCSL` (`inflation`),
+(`policy_rate`), `GS10` (`long_term_rate`), `CPIAUCSL` (`inflation`),
 `PCEPI` (`inflation`), `UNRATE` (`labor`), `INDPRO` (`growth`), `GDPC1`
 (`growth`) -- each with a strictly validated `enabled`/
 `observation_lookback_days`/`recent_observations_limit` contract and a
 conservative, per-series lookback ceiling (`FEDFUNDS`/`CPIAUCSL`/`PCEPI`/
-`UNRATE`/`INDPRO`: 400 days; `GDPC1`: 1,100 days; `DGS10`: 180 days) that
+`UNRATE`/`INDPRO`/`GS10`: 400 days; `GDPC1`: 1,100 days) that
 prevents an unbounded historical request. **No series title, unit,
 frequency, seasonal adjustment, note, or observation value is hardcoded
 anywhere in this configuration or its loader** -- only the series ID,
@@ -552,6 +552,23 @@ docs only** -- no live FRED request has been made using this script, and no
 row has been written to `macro_series_metadata`/`macro_observations` by it.
 This is explicitly a first, bounded basket of seven series, not a complete
 macro model and not proof of predictive usefulness of any kind.
+
+**`DGS10` → `GS10` replacement (2026-08-24).** The first authorized live
+core-macro-basket run succeeded for the other six series (`FEDFUNDS`,
+`CPIAUCSL`, `PCEPI`, `UNRATE`, `INDPRO`, `GDPC1`) but failed for `DGS10`
+observations only, sanitized error category `provider_error`; `DGS10`'s
+metadata request succeeded. Only that sanitized category was recorded, so
+the exact provider-side cause is not known -- this diagnostic record is
+preserved, not rewritten or deleted. `DGS10` was then replaced in the
+committed configuration by the official monthly FRED series `GS10`
+("Market Yield on U.S. Treasury Securities at 10-Year Constant Maturity,
+Quoted on an Investment Basis" -- monthly, percent, not seasonally
+adjusted), kept under the same `long_term_rate` category and now using the
+existing monthly `observation_lookback_days` policy (400 days) with
+`recent_observations_limit` unchanged at `6`. **`GS10` is a proposed,
+bounded, monthly replacement only -- it has not yet been requested live.**
+See [docs/CORE_MACRO_BASKET.md](docs/CORE_MACRO_BASKET.md) and
+[PROJECT_STATE.md](PROJECT_STATE.md) for full detail.
 
 No forecast or trade table has been created — each requires its own
 reviewed data contract and a corresponding versioned migration before it

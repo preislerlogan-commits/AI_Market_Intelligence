@@ -28,7 +28,7 @@ The seven approved series and their fixed, committed categories:
 | series_id | category | reporting frequency (official, per FRED) |
 | --- | --- | --- |
 | `FEDFUNDS` | `policy_rate` | Monthly |
-| `DGS10` | `long_term_rate` | Daily |
+| `GS10` | `long_term_rate` | Monthly |
 | `CPIAUCSL` | `inflation` | Monthly |
 | `PCEPI` | `inflation` | Monthly |
 | `UNRATE` | `labor` | Monthly |
@@ -39,6 +39,32 @@ No other series ID may ever appear in the committed configuration, and no
 series may be filed under any category other than the one shown above --
 both are enforced by `market_intelligence/config/macro_basket.py`, never by
 the configuration file alone.
+
+### `DGS10` → `GS10` replacement (2026-08-24)
+
+The `long_term_rate` slot originally held the daily series `DGS10`. **The
+first authorized live core-macro-basket run succeeded for the other six
+series (`FEDFUNDS`, `CPIAUCSL`, `PCEPI`, `UNRATE`, `INDPRO`, `GDPC1`) but
+failed for `DGS10` observations only, with sanitized error category
+`provider_error`; `DGS10`'s metadata request succeeded.** Only that
+sanitized category was recorded -- no raw exception text, URL, query
+parameter, or credential was ever printed or stored, so **the exact
+provider-side cause of the `DGS10` observations failure is not known** and
+this document does not claim otherwise. This diagnostic record is preserved
+here and in [PROJECT_STATE.md](../PROJECT_STATE.md) and is not rewritten or
+deleted.
+
+In response, `DGS10` was replaced in the committed configuration by the
+official monthly FRED series `GS10` ("Market Yield on U.S. Treasury
+Securities at 10-Year Constant Maturity, Quoted on an Investment Basis") --
+monthly, percent, not seasonally adjusted -- kept under the same
+`long_term_rate` category. Because `GS10` is monthly rather than daily, it
+now uses the same conservative monthly `observation_lookback_days` policy
+(400 days) as the other five monthly series, rather than `DGS10`'s former
+180-day daily ceiling; `recent_observations_limit` remains `6`, unchanged.
+**`GS10` is a proposed, bounded, monthly replacement only -- as of this
+document, it has not yet been requested live** (no live FRED request, no
+live database write) -- see PROJECT_STATE.md for the authoritative status.
 
 **No title, unit, frequency, seasonal adjustment, note, or observation value
 is ever hardcoded anywhere in this configuration, the loader, or the
@@ -106,10 +132,9 @@ static input, never sorted or otherwise reordered.
 unbounded historical request -- this is a hard bound enforced by the loader,
 not merely a documented convention the configuration file could ignore:
 
-- `FEDFUNDS`, `CPIAUCSL`, `PCEPI`, `UNRATE`, `INDPRO` (monthly series): up
-  to 400 days.
+- `FEDFUNDS`, `CPIAUCSL`, `PCEPI`, `UNRATE`, `INDPRO`, `GS10` (monthly
+  series): up to 400 days.
 - `GDPC1` (quarterly): up to 1,100 days.
-- `DGS10` (daily): up to 180 days.
 
 The committed configuration currently sets every series'
 `observation_lookback_days` exactly at its ceiling. `recent_observations_limit`

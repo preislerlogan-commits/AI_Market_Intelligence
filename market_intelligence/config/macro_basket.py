@@ -56,9 +56,17 @@ APPROVED_CATEGORIES = frozenset(
 # entry naming any other series ID, or naming one of these seven series
 # under any other category, is rejected -- this mapping is never overridden
 # by the configuration file itself.
+#
+# GS10 ("Market Yield on U.S. Treasury Securities at 10-Year Constant
+# Maturity, Quoted on an Investment Basis") replaced the daily DGS10 series
+# in this slot -- see docs/CORE_MACRO_BASKET.md for the full history: the
+# first authorized live core-macro-basket run succeeded for the other six
+# series but failed for DGS10 observations only (sanitized category
+# `provider_error`; DGS10 metadata succeeded), and GS10 is the proposed
+# bounded monthly replacement. GS10 has not yet been requested live.
 APPROVED_SERIES_CATEGORY: dict[str, str] = {
     "FEDFUNDS": CATEGORY_POLICY_RATE,
-    "DGS10": CATEGORY_LONG_TERM_RATE,
+    "GS10": CATEGORY_LONG_TERM_RATE,
     "CPIAUCSL": CATEGORY_INFLATION,
     "PCEPI": CATEGORY_INFLATION,
     "UNRATE": CATEGORY_LABOR,
@@ -71,8 +79,8 @@ APPROVED_SERIES_IDS = frozenset(APPROVED_SERIES_CATEGORY)
 # hard bounds this module enforces regardless of what the configuration file
 # requests -- they exist specifically to prevent an unbounded historical
 # request, and are not merely documentation. FEDFUNDS/CPIAUCSL/PCEPI/UNRATE/
-# INDPRO (monthly series) are capped at ~400 days; GDPC1 (quarterly) at
-# ~1,100 days; DGS10 (daily) at ~180 days -- see docs/CORE_MACRO_BASKET.md.
+# INDPRO/GS10 (monthly series) are capped at ~400 days; GDPC1 (quarterly) at
+# ~1,100 days -- see docs/CORE_MACRO_BASKET.md.
 MAX_LOOKBACK_DAYS_BY_SERIES_ID: dict[str, int] = {
     "FEDFUNDS": 400,
     "CPIAUCSL": 400,
@@ -80,7 +88,7 @@ MAX_LOOKBACK_DAYS_BY_SERIES_ID: dict[str, int] = {
     "UNRATE": 400,
     "INDPRO": 400,
     "GDPC1": 1100,
-    "DGS10": 180,
+    "GS10": 400,
 }
 MIN_LOOKBACK_DAYS = 1
 

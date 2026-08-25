@@ -242,7 +242,14 @@ basket, not a complete macro model and not proof of predictive
 usefulness.** As of this change it has **not** been run live or against the
 real local database -- it exists in code, tests, and docs only, and does not
 modify `market_intelligence/orchestration/` (no new job type,
-`jobs.json` change, migration, or schema change of any kind).
+`jobs.json` change, migration, or schema change of any kind). **This
+`DGS10`-inclusive list has since been superseded: a separately authorized
+first live run of this basket succeeded for six series but failed for
+`DGS10` observations only (sanitized category `provider_error`; `DGS10`
+metadata succeeded), and `DGS10` was then replaced in the committed
+configuration by the monthly FRED series `GS10`, a proposed bounded
+replacement not yet requested live -- see item 24 below for the full
+record.**
 
 ## Status
 
@@ -2492,6 +2499,52 @@ modify `market_intelligence/orchestration/` (no new job type,
     research-validated macro dataset for any of the seven series, and it
     implies no forecast, regime classification, or trading signal of any
     kind.
+
+24. **`DGS10` → `GS10` replacement in the Core Macro Basket (2026-08-24,
+    code/tests/docs only; no live FRED request or real-database write as
+    part of this change).** A separately authorized first live run of
+    `scripts/ingest_core_macro_basket.py --all --execute` (following item 23
+    above) succeeded for six of the seven approved series -- `FEDFUNDS`,
+    `CPIAUCSL`, `PCEPI`, `UNRATE`, `INDPRO`, `GDPC1` -- but failed for
+    `DGS10`'s **observations** request only, recorded with sanitized error
+    category `provider_error`; `DGS10`'s **metadata** request succeeded.
+    Only this sanitized category was recorded -- no raw exception text, URL,
+    query parameter, or credential was ever printed or stored. **The exact
+    provider-side cause of the `DGS10` observations failure is therefore not
+    known, and this entry does not claim otherwise.** This diagnostic record
+    is preserved here as an honest record and is not rewritten or deleted.
+
+    In response, `DGS10` (daily, `long_term_rate`) was replaced everywhere
+    in the committed Core Macro Basket contract by the official monthly
+    FRED series `GS10` ("Market Yield on U.S. Treasury Securities at
+    10-Year Constant Maturity, Quoted on an Investment Basis" -- monthly,
+    percent, not seasonally adjusted), retained under the same
+    `long_term_rate` category. `market_intelligence/config/macro_basket.py`'s
+    `APPROVED_SERIES_CATEGORY` and `MAX_LOOKBACK_DAYS_BY_SERIES_ID` mappings,
+    the committed `market_intelligence/config/core_macro_series.json` entry,
+    `docs/CORE_MACRO_BASKET.md`, `DATA_CATALOG.md`, and the corresponding
+    tests (`market_intelligence/tests/test_macro_basket_config.py`,
+    `market_intelligence/tests/test_ingest_core_macro_basket.py`) were all
+    updated accordingly. Because `GS10` is monthly rather than daily, it now
+    uses the same existing conservative monthly `observation_lookback_days`
+    policy (400 days, the ceiling already used by `FEDFUNDS`/`CPIAUCSL`/
+    `PCEPI`/`UNRATE`/`INDPRO`) instead of `DGS10`'s former 180-day daily
+    ceiling; `recent_observations_limit` remains unchanged at `6`. No
+    connector, repository, migration, dependency, `.env`, or the real
+    DuckDB database was modified as part of this change, and `--series`/
+    `--all` selection, dry-run planning, execute-mode ordering/failure
+    isolation, and sanitized output remain otherwise unchanged.
+
+    **`GS10` is a proposed, bounded, monthly replacement only -- as of this
+    item, it has not yet been requested live.** No live FRED request has
+    been made for `GS10`, and no row for it has been written to
+    `macro_series_metadata`/`macro_observations`. `python -m pytest` (1985
+    passed), `python -m ruff check .` (all checks passed), and
+    `git diff --check` (no whitespace errors) were all run as part of this
+    change and pass. This implies no forecast, regime classification, or
+    trading signal of any kind, and does not establish a complete,
+    gap-free, or research-validated macro dataset for any of the seven
+    series.
 
 ## Notes
 

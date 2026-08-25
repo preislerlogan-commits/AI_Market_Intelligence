@@ -310,7 +310,7 @@ def test_dry_run_prints_plan_for_all_seven_series(monkeypatch, capsys):
     assert exit_code == 0
     assert "mode: dry_run" in captured.out
     assert "selected series count: 7" in captured.out
-    for series_id in ("FEDFUNDS", "DGS10", "CPIAUCSL", "PCEPI", "UNRATE", "INDPRO", "GDPC1"):
+    for series_id in ("FEDFUNDS", "GS10", "CPIAUCSL", "PCEPI", "UNRATE", "INDPRO", "GDPC1"):
         assert f"series_id: {series_id}" in captured.out
 
 
@@ -350,12 +350,10 @@ def test_dry_run_computes_correct_bounded_windows_for_each_configured_lookback(
     assert exit_code == 0
     # as_of = 2026-08-24 (fixed_clock). end always equals the as_of date.
     assert "planned_observation_window_end: 2026-08-24" in captured.out
-    # FEDFUNDS (monthly, 400-day lookback): start = 2026-08-24 - 400 days.
+    # FEDFUNDS/GS10 (monthly, 400-day lookback): start = 2026-08-24 - 400 days.
     assert "planned_observation_window_start: 2025-07-20" in captured.out
     # GDPC1 (quarterly, 1100-day lookback): start = 2026-08-24 - 1100 days.
     assert "planned_observation_window_start: 2023-08-20" in captured.out
-    # DGS10 (daily, 180-day lookback): start = 2026-08-24 - 180 days.
-    assert "planned_observation_window_start: 2026-02-25" in captured.out
 
 
 def test_shared_clock_is_called_exactly_once_for_the_whole_run(monkeypatch):
