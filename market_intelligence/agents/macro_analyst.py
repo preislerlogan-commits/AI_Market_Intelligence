@@ -93,6 +93,27 @@ availability is deliberately **not** a preflight gate -- a series' plain
 single-observation claim remains fully describable even when a comparison
 is unavailable; the model is simply never permitted to use comparison
 language for that series (see "Comparison claims" above).
+
+**Full-basket coverage.** Since the preflight gate above is already
+all-or-nothing across every requested series, a model response that reaches
+``_validate_coverage`` is always describing a request where every requested
+series was present, fresh, and had recognized metadata. Whenever
+``evidence_quality`` is ``"sufficient"`` or ``"limited"``, the response must
+therefore cover every requested series exactly once: one macro claim per
+requested series_id, no omissions, no duplicated series, and no unrequested
+series -- checked by ``_validate_coverage``/``MacroAnalystCoverageError``.
+The only way to omit any requested series is the existing, distinct,
+code-controlled abstention outcome: a fully empty ``macro_claims`` list
+paired with ``evidence_quality="insufficient"`` (see
+``_validate_claims_quality_consistency`` above). Each ``MacroClaim`` remains
+bound to exactly one ``series_id`` -- this coverage requirement is
+implemented entirely by requiring the right *count and set* of single-series
+claims, never by redesigning the schema into a grouped or cross-series
+claim shape. ``MAX_MACRO_CLAIMS`` is fixed to
+``MacroEvidenceBuilder.MAX_SERIES_IDS`` (the existing bound on how many
+series may be requested in one call at all), so a full-basket response can
+always structurally fit one claim per requested series, however many were
+requested.
 """
 
 from __future__ import annotations
@@ -112,6 +133,7 @@ from market_intelligence.config.settings import Settings
 from market_intelligence.market_features.macro_evidence import (
     DEFAULT_RECENT_OBSERVATIONS_LIMIT,
     DEFAULT_SERIES_IDS,
+    MAX_SERIES_IDS,
     MacroEvidenceBuilder,
     MacroEvidenceValidationError,
     normalize_series_ids,
@@ -132,13 +154,26 @@ MAX_LIMITATION_LENGTH = 300
 MAX_EVIDENCE_ID_LENGTH = 64
 # Zero is a valid, hard-schema-permitted macro_claims count -- it is the only
 # way for the model to truthfully report that none of the requested series
-# could be usefully described from a single stored snapshot. A structurally
-# empty macro_claims list is not itself sufficient to be accepted, though:
+# could be usefully described from stored evidence. A structurally empty
+# macro_claims list is not itself sufficient to be accepted, though:
 # _validate_claims_quality_consistency requires it to be paired with
 # evidence_quality="insufficient", and every nonempty response must still
 # pass the unchanged per-claim citation/series/content-scope/policy checks.
 MIN_MACRO_CLAIMS = 0
-MAX_MACRO_CLAIMS = 6
+# Every MacroClaim is bound to exactly one series_id (see MacroClaimDraft/
+# MacroClaim below -- this task deliberately does not redesign the schema
+# into grouped or cross-series claims), so a "sufficient"/"limited" response
+# covering every requested series needs exactly one claim per requested
+# series (see _validate_coverage). The hard upper bound on macro_claims must
+# therefore be at least as large as the largest basket this agent could ever
+# be asked to cover in one call -- which is exactly
+# MacroEvidenceBuilder.MAX_SERIES_IDS, the existing, already-reviewed bound
+# on how many series may be requested at all (see
+# market_intelligence/market_features/macro_evidence.py). Deliberately tied
+# to that constant, rather than an independent literal, so the two bounds
+# can never silently drift apart and reintroduce this same full-basket
+# coverage gap for some future, larger requested series list.
+MAX_MACRO_CLAIMS = MAX_SERIES_IDS
 MAX_LIMITATIONS = 6
 # A plain single-observation claim cites exactly one evidence_id (the
 # series' latest stored observation). A two-observation comparison claim
@@ -187,14 +222,10 @@ FREQUENCY_SHORT_WORDS: dict[str, str] = {
 ADVISORY_MAX_CLAIM_SUMMARY_LENGTH = 300
 ADVISORY_MAX_CONDITIONAL_MECHANISM_LENGTH = 200
 ADVISORY_MAX_LIMITATION_LENGTH = 200
-ADVISORY_PREFERRED_MIN_MACRO_CLAIMS = 1
-ADVISORY_PREFERRED_MAX_MACRO_CLAIMS = 4
 
 assert ADVISORY_MAX_CLAIM_SUMMARY_LENGTH < MAX_CLAIM_SUMMARY_LENGTH
 assert ADVISORY_MAX_CONDITIONAL_MECHANISM_LENGTH < MAX_CONDITIONAL_MECHANISM_LENGTH
 assert ADVISORY_MAX_LIMITATION_LENGTH < MAX_LIMITATION_LENGTH
-assert ADVISORY_PREFERRED_MAX_MACRO_CLAIMS < MAX_MACRO_CLAIMS
-assert ADVISORY_PREFERRED_MIN_MACRO_CLAIMS >= MIN_MACRO_CLAIMS
 
 # --- Fixed content-basis value ----------------------------------------------
 #
@@ -277,25 +308,33 @@ AGENT_INSTRUCTIONS = (
     "clearly addressed within conditional_mechanism -- never list a channel "
     "your conditional_mechanism does not address, and never select "
     "'other' as a transmission channel, since it cannot be verified. "
+    "You must produce exactly one macro_claim for EVERY series requested of "
+    "you -- never omit a requested series, never produce more than one "
+    "claim for the same series, and never produce a claim for a series that "
+    "was not requested. This full-coverage requirement applies whenever "
+    "evidence_quality is 'sufficient' or 'limited' -- there is no partial "
+    "coverage: you may never describe only some requested series and leave "
+    "others out while using 'sufficient' or 'limited'. The only way to omit "
+    "any requested series is to return a completely empty macro_claims list "
+    "for the ENTIRE response and set evidence_quality to 'insufficient'. "
     "If none of the requested series can be usefully described this way, it "
-    "is valid and correct to return an empty macro_claims list -- never "
-    "fabricate a placeholder claim just to have something to report. If, "
-    "and only if, you return an empty macro_claims list, you must set "
-    "evidence_quality to 'insufficient'; conversely, if you set "
-    "evidence_quality to 'insufficient', macro_claims must be empty -- "
-    "never pair 'insufficient' with a retained claim. If you are instead "
-    "keeping one or more genuinely thin claims, use 'limited' (not "
-    "'insufficient') to describe them. "
+    "is valid and correct to return that empty macro_claims list -- never "
+    "fabricate a placeholder claim just to have something to report, and "
+    "never partially cover the request instead. If, and only if, you return "
+    "an empty macro_claims list, you must set evidence_quality to "
+    "'insufficient'; conversely, if you set evidence_quality to "
+    "'insufficient', macro_claims must be empty -- never pair 'insufficient' "
+    "with a retained claim. If the evidence for every requested series is "
+    "only thin, still produce one claim per requested series and use "
+    "'limited' (not 'insufficient') to describe the overall evidence "
+    "quality. "
     "If the evidence is thin, say so honestly in evidence_quality and via "
     "limitations rather than fabricating detail or false confidence. Use "
     "concise, factual wording only -- no padding, filler, or repetition. "
     f"Keep claim_summary to at most {ADVISORY_MAX_CLAIM_SUMMARY_LENGTH} "
     f"characters. Keep conditional_mechanism, when given, to at most "
     f"{ADVISORY_MAX_CONDITIONAL_MECHANISM_LENGTH} characters. Keep each "
-    f"limitation to at most {ADVISORY_MAX_LIMITATION_LENGTH} characters. "
-    f"Prefer {ADVISORY_PREFERRED_MIN_MACRO_CLAIMS} to "
-    f"{ADVISORY_PREFERRED_MAX_MACRO_CLAIMS} macro claims, and only exceed "
-    "that range if genuinely necessary to cover materially distinct series."
+    f"limitation to at most {ADVISORY_MAX_LIMITATION_LENGTH} characters."
 )
 
 _EvidenceIdStr = Annotated[str, Field(min_length=1, max_length=MAX_EVIDENCE_ID_LENGTH)]
@@ -363,6 +402,7 @@ AGENT_CATEGORY_REFUSAL = "refusal"
 AGENT_CATEGORY_INCOMPLETE = "incomplete"
 AGENT_CATEGORY_CITATION_INVALID = "citation_invalid"
 AGENT_CATEGORY_SERIES_INVALID = "series_invalid"
+AGENT_CATEGORY_COVERAGE_INVALID = "coverage_invalid"
 AGENT_CATEGORY_QUALITY_CONSISTENCY_INVALID = "quality_consistency_invalid"
 AGENT_CATEGORY_CONTENT_SCOPE_INVALID = "content_scope_invalid"
 AGENT_CATEGORY_COMPARISON_INVALID = "comparison_invalid"
@@ -424,6 +464,21 @@ class MacroAnalystSeriesError(MacroAnalystAgentError):
     the one it named."""
 
     category = AGENT_CATEGORY_SERIES_INVALID
+
+
+class MacroAnalystCoverageError(MacroAnalystAgentError):
+    """Raised when a "sufficient"/"limited" response does not cover exactly
+    the requested series -- a requested series is omitted, a series appears
+    in more than one macro claim, or (redundantly, as defense in depth)
+    macro_claims includes a series outside the requested set (see
+    ``_validate_coverage``).
+
+    The "insufficient" zero-claim response is exempt -- that is the existing
+    code-controlled abstention outcome, checked separately by
+    ``_validate_claims_quality_consistency``.
+    """
+
+    category = AGENT_CATEGORY_COVERAGE_INVALID
 
 
 class MacroAnalystQualityConsistencyError(MacroAnalystAgentError):
@@ -555,7 +610,13 @@ class MacroAnalystModelAnalysis(BaseModel):
     paired with ``evidence_quality == EVIDENCE_QUALITY_INSUFFICIENT``, and
     rejects the reverse combination (nonempty claims with
     ``evidence_quality == "insufficient"``) as an incompatible abstention
-    state.
+    state. Conversely, for a nonempty ("sufficient"/"limited") response,
+    ``_validate_coverage`` requires exactly one claim per requested series --
+    no omission, no duplicate series, no unrequested series. ``max_length``
+    is fixed to ``MAX_MACRO_CLAIMS`` (== ``MacroEvidenceBuilder.MAX_SERIES_IDS``,
+    the existing bound on how many series may be requested at all), so a
+    full-basket "sufficient"/"limited" response can always structurally fit
+    one claim per requested series, however many were requested.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -897,6 +958,54 @@ def _validate_citations_and_series(
                     "Model output cited evidence belonging to a different series than "
                     "the one it named."
                 )
+
+
+def _validate_coverage(
+    analysis: MacroAnalystModelAnalysis, requested_series_ids: tuple[str, ...]
+) -> None:
+    """Enforce full, exact per-series coverage for a non-"insufficient" response.
+
+    When ``evidence_quality`` is ``"sufficient"`` or ``"limited"``, every
+    requested series ID must appear in **exactly one** retained macro claim:
+    no requested series may be omitted, no series may appear in more than
+    one claim, and (redundantly, as defense in depth alongside
+    ``_validate_citations_and_series``, which already runs first and would
+    have raised ``MacroAnalystSeriesError`` for it) no unrequested series may
+    appear. The empty-``macro_claims``/``"insufficient"`` case is exempt --
+    that is the existing code-controlled abstention outcome, already
+    enforced separately by ``_validate_claims_quality_consistency``.
+
+    This is a deliberate, code-controlled bound, not merely a preference:
+    the deterministic all-or-nothing preflight gate (``_evaluate_preflight``)
+    already requires every requested series to have a stored observation,
+    stored metadata, be non-stale, non-future-dated, have a non-missing
+    latest value, and a recognized reporting frequency before any OpenAI
+    request is ever made -- so there is never a legitimate per-series reason
+    for a "sufficient"/"limited" response to omit a requested series once the
+    model has actually been called. A model wanting to omit coverage must
+    instead return a fully empty ``macro_claims`` list with
+    ``evidence_quality="insufficient"`` -- the existing, distinct,
+    code-controlled abstention outcome -- rather than silently dropping some
+    requested series while retaining others.
+
+    Raises ``MacroAnalystCoverageError`` (never echoing rejected text, since
+    only series IDs -- fixed, code-known request inputs, never
+    model-authored free text -- are ever referenced).
+    """
+    if analysis.evidence_quality == EVIDENCE_QUALITY_INSUFFICIENT:
+        return
+
+    claimed_series_ids = [claim.series_id for claim in analysis.macro_claims]
+    if len(claimed_series_ids) != len(set(claimed_series_ids)):
+        raise MacroAnalystCoverageError(
+            "Model output claimed the same series in more than one macro claim."
+        )
+    if set(claimed_series_ids) != set(requested_series_ids):
+        raise MacroAnalystCoverageError(
+            "Model output did not cover exactly the requested series -- every "
+            "requested series must appear in exactly one macro claim whenever "
+            "evidence_quality is not 'insufficient'."
+        )
 
 
 # A fixed, deterministic, fail-closed denylist for language describing
@@ -1400,7 +1509,10 @@ class MacroAnalyst:
         ``MacroAnalystCitationError`` for a missing, fabricated, duplicated,
         or excessive evidence-ID citation; ``MacroAnalystSeriesError`` for a
         claimed series not among those requested or evidence cited from the
-        wrong series; ``MacroAnalystComparisonError`` for increase/decrease/
+        wrong series; ``MacroAnalystCoverageError`` (via ``_validate_coverage``)
+        for a "sufficient"/"limited" response that omits a requested series or
+        claims the same series more than once;
+        ``MacroAnalystComparisonError`` for increase/decrease/
         unchanged language that is not a fully validated two-observation
         comparison claim (see ``_validate_comparison_claims``);
         ``MacroAnalystContentScopeError`` for trend/acceleration/surprise/
@@ -1460,6 +1572,7 @@ class MacroAnalyst:
         _validate_claims_quality_consistency(analysis)
         evidence_series_map = _evidence_series_map(preflight.evidence_package)
         _validate_citations_and_series(analysis, preflight.series_ids, evidence_series_map)
+        _validate_coverage(analysis, preflight.series_ids)
         _validate_content_scope(analysis)
         _enforce_output_policy(analysis)
         _validate_comparison_claims(analysis, preflight.evidence_package)

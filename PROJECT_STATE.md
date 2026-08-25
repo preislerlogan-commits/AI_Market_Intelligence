@@ -2677,6 +2677,118 @@ full record.**
     database -- that would require a separately authorized live dry run,
     not yet performed as part of this change.
 
+27. **Seven-series dry-run confirmation and Macro Analyst full-basket
+    coverage fix (2026-08-25, code/tests/docs only -- no live FRED/OpenAI
+    request, no migration, no configuration/dependency/`.env` change, and no
+    write to the real local database as part of this change).**
+
+    Following item 26 above, a read-only dry run of the Macro Analyst
+    (`scripts/run_macro_analyst.py`, no `--execute`) was run against the real
+    local database, requesting the complete, approved seven-series Core
+    Macro Basket: `FEDFUNDS`, `GS10`, `CPIAUCSL`, `PCEPI`, `UNRATE`,
+    `INDPRO`, `GDPC1`. It succeeded: `eligible: true`, all seven series
+    echoed back in `series_ids`, `series_count: 7`, and every flag list
+    (`missing_series`, `stale_series`, `future_dated_series`,
+    `missing_metadata_series`, `latest_missing_series`,
+    `no_evidence_id_series`, `frequency_unrecognized_series`) empty. Dry-run
+    mode makes **zero** OpenAI requests -- this confirms only that the
+    deterministic, all-or-nothing preflight gate now passes for the full
+    seven-series basket against the real database; it is not a claim that
+    any full-basket model response has ever been requested or evaluated.
+
+    This dry-run pass exposed a contract mismatch that had not previously
+    been reachable: `MacroAnalyst` already accepted up to ten requested
+    series (`MacroEvidenceBuilder.MAX_SERIES_IDS`), but its model-facing
+    schema (`MacroAnalystModelAnalysis.macro_claims`) was hard-bounded by a
+    **separate**, independent literal (`MAX_MACRO_CLAIMS = 6`) -- so a fully
+    eligible seven-series request could never have structurally retained one
+    claim per series in a `"sufficient"`/`"limited"` response. Since every
+    `MacroClaim` is bound to exactly one `series_id` (unchanged by this
+    fix -- the schema was not redesigned into grouped or cross-series
+    claims), covering seven series always requires seven claims, one over
+    the old bound.
+
+    The fix, made entirely in
+    `market_intelligence/agents/macro_analyst.py` and its tests/docs:
+
+    - `MAX_MACRO_CLAIMS` is now fixed directly to
+      `MacroEvidenceBuilder.MAX_SERIES_IDS` (imported, not duplicated) --
+      the two bounds can no longer silently drift apart and reintroduce this
+      same gap for a future, larger requested series list (up to the
+      existing 10-series cap).
+    - A new deterministic, code-controlled check,
+      `_validate_coverage`/`MacroAnalystCoverageError`
+      (`category = "coverage_invalid"`), now runs on every model response
+      before `MacroAnalystReport` is built: whenever `evidence_quality` is
+      `"sufficient"` or `"limited"`, every requested `series_id` must appear
+      in **exactly one** retained macro claim -- no omission, no series
+      claimed twice, no unrequested series. The existing `"insufficient"`/
+      zero-claims code-controlled abstention outcome is explicitly exempted
+      (checked first, unchanged, by the pre-existing
+      `_validate_claims_quality_consistency` biconditional) -- it remains
+      the only way to omit series coverage, and it still never fabricates a
+      placeholder claim.
+    - `AGENT_INSTRUCTIONS` was updated to state this as a mandatory
+      requirement -- every requested series must get exactly one claim
+      whenever the response is not `"insufficient"` -- replacing the
+      previous "prefer 1 to 4 macro claims" advisory range, which is no
+      longer accurate now that coverage is mandatory rather than a
+      preference (a fixed numeric "preferred" claim count made no sense
+      once the correct count is exactly the number of requested series,
+      which varies per call).
+    - Every existing hard schema bound (other than the now evidence-layer-
+      tied `MAX_MACRO_CLAIMS`), citation/series validation, content-scope
+      validation, the comparison-claim validator, the frequency-wording
+      validator, the transmission-channel validator, the shared
+      non-directional output policy, the `directional_assessment`/
+      `trade_recommendation` always-`"not_performed"` guarantee, the fixed
+      `content_basis` literal, the one-OpenAI-request maximum with no
+      automatic retry, and the dry-run default were all preserved unchanged
+      and re-verified passing.
+
+    15 new focused tests were added to
+    `market_intelligence/tests/test_macro_analyst.py` (141 tests total
+    across `test_macro_analyst.py`/`test_run_macro_analyst.py`/
+    `test_macro_analyst_eval_fixtures.py`, up from 126), covering: a full
+    seven-series basket response accepted with exactly one claim per series
+    (and no duplicate series); the identical response accepted with claims
+    reordered; a response omitting one requested series rejected; a response
+    claiming one series twice (while omitting another) rejected; an extra
+    claim for an unrequested series rejected (via the pre-existing series
+    check, which runs first); full coverage required and accepted for
+    **both** `"sufficient"` and `"limited"` evidence quality, and partial
+    coverage rejected for **both** (proving `"limited"` never licenses
+    omitting a series); the existing zero-claim `"insufficient"` abstention
+    re-verified unaffected for a full seven-series request; a coverage
+    violation making zero retry model calls; that the coverage error never
+    echoes model-authored claim text; that the coverage error carries the
+    `coverage_invalid` category; that `MAX_MACRO_CLAIMS` equals
+    `MacroEvidenceBuilder.MAX_SERIES_IDS`; and a dedicated test that builds
+    the **real** production `MacroAnalystModelAnalysis`/`MacroClaimDraft`
+    schema (not the fake stand-ins used elsewhere in that test file) with a
+    valid seven-series response and round-trips it through the real
+    `OpenAIStructuredClient` (only its SDK transport faked, never a live
+    network call), proving the schema and client stay compatible for a
+    full-basket response. `python -m pytest` (2005 passed),
+    `python -m ruff check .` (all checks passed), and `git diff --check` (no
+    whitespace errors) were all run as part of this change and pass. See
+    [docs/MACRO_ANALYST.md](docs/MACRO_ANALYST.md) for full detail.
+
+    **As of this item, this fix has not been exercised against a live
+    OpenAI response for the seven-series basket or any other multi-series
+    request -- no paid full-basket (or any other) Macro Analyst `--execute`
+    request has been made as part of this change.** It has been validated
+    only by focused offline tests (fake evidence-builder/model-client
+    stand-ins, plus the one real-schema round-trip test described above,
+    which still never makes a network call) and by the one read-only,
+    zero-OpenAI-request dry run described above. This does not establish
+    that a real model response will correctly cover every requested series,
+    that any described observation is factually accurate, or that the
+    seven-series basket constitutes a complete, gap-free, or
+    research-validated macro dataset -- none of that is claimed here. No
+    connector, repository, migration, dependency, `.env`, or the real
+    DuckDB database was modified as part of this change.
+
 ## Notes
 
 - This file should be updated as phases progress. Treat entries here as
