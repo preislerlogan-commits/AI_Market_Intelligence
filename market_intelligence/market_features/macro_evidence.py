@@ -125,14 +125,35 @@ CHANGE_UNAVAILABLE_LATEST_MISSING = "latest_missing"
 CHANGE_UNAVAILABLE_PREVIOUS_MISSING = "previous_missing"
 CHANGE_UNAVAILABLE_INCOMPARABLE_VINTAGE = "incomparable_vintage"
 
-# A conservative, documented default threshold suitable for monthly macro
-# observations (mirrors MarketContextBuilder's MACRO_STALE_AFTER rationale):
-# comfortably exceeds FEDFUNDS's monthly reporting cadence without flagging
-# a normal inter-release gap as stale. This is a plain elapsed-time signal,
-# not an economic judgment -- a series under this threshold is not thereby
-# claimed to be economically current, only "not yet flagged stale by this
-# fixed clock."
+# Frequency-aware staleness thresholds (elapsed days between the chosen
+# row's observation_date and the snapshot's as_of date). Deliberately
+# narrow: only the two frequency_short codes below have a defined
+# threshold -- see STALE_AFTER_DAYS_BY_FREQUENCY_SHORT and
+# _stale_after_days_for_frequency. A single flat threshold across every
+# frequency previously falsely flagged a legitimately fresh quarterly
+# release as stale (e.g. GDPC1, whose ~3-month inter-release gap regularly
+# exceeds a monthly-sized threshold), which motivated this split.
+#
+# STALE_AFTER_DAYS (monthly, "M") is a conservative, documented default
+# threshold suitable for monthly macro observations (mirrors
+# MarketContextBuilder's MACRO_STALE_AFTER rationale): comfortably exceeds
+# FEDFUNDS's monthly reporting cadence without flagging a normal
+# inter-release gap as stale.
+#
+# STALE_AFTER_DAYS_QUARTERLY ("Q") is a separate, conservative threshold
+# sized for quarterly release timing (e.g. GDPC1): comfortably exceeds a
+# quarterly series' ~3-month reporting cadence, including normal release
+# lag, without flagging a normal inter-release gap as stale.
+#
+# Neither threshold is an economic judgment -- a series under its threshold
+# is not thereby claimed to be economically current, only "not yet flagged
+# stale by this fixed clock."
 STALE_AFTER_DAYS = 90
+STALE_AFTER_DAYS_QUARTERLY = 180
+STALE_AFTER_DAYS_BY_FREQUENCY_SHORT: dict[str, int] = {
+    "M": STALE_AFTER_DAYS,
+    "Q": STALE_AFTER_DAYS_QUARTERLY,
+}
 
 # observation_date is a calendar DATE with no time component, so comparing
 # it directly against as_of's own UTC calendar date could otherwise falsely
@@ -144,6 +165,23 @@ FUTURE_DATE_TOLERANCE_DAYS = 1
 
 _EVIDENCE_ID_PREFIX = "macro_"
 _EVIDENCE_ID_HASH_LENGTH = 16
+
+
+def _stale_after_days_for_frequency(frequency_short: str | None) -> int | None:
+    """Return the applied staleness threshold for a recognized ``frequency_short``.
+
+    Returns ``None`` -- never a silently assigned default -- when
+    ``frequency_short`` is missing (no stored metadata at all, or a stored
+    metadata row whose ``frequency_short`` is ``None``/blank) or is not one
+    of ``STALE_AFTER_DAYS_BY_FREQUENCY_SHORT``'s recognized codes (``"M"``
+    or ``"Q"``). A ``None`` result means the elapsed-time freshness check
+    below cannot support a threshold comparison for this series and fails
+    closed (``freshness.stale`` is forced ``True``) rather than guessing a
+    default.
+    """
+    if not frequency_short:
+        return None
+    return STALE_AFTER_DAYS_BY_FREQUENCY_SHORT.get(frequency_short)
 
 
 class MacroEvidenceError(RuntimeError):
@@ -296,7 +334,7 @@ def _unavailable_change(reason: str) -> dict[str, Any]:
     }
 
 
-def _empty_series(series_id: str) -> dict[str, Any]:
+def _empty_series(series_id: str, frequency_short: str | None = None) -> dict[str, Any]:
     return {
         "series_id": series_id,
         "provider": DEFAULT_PROVIDER,
@@ -318,7 +356,7 @@ def _empty_series(series_id: str) -> dict[str, Any]:
             "missing": True,
             "stale": True,
             "future_date_detected": False,
-            "stale_after_days": STALE_AFTER_DAYS,
+            "stale_after_days": _stale_after_days_for_frequency(frequency_short),
         },
         "recent_observations": [],
         "latest_change_from_previous": _unavailable_change(
@@ -450,17 +488,32 @@ class MacroEvidenceBuilder:
 
                     series_entries = []
                     for series_id in normalized_series_ids:
-                        observation_entry = (
-                            self._read_series(
-                                connection, series_id, as_of, normalized_recent_limit
-                            )
-                            if observations_table_exists
-                            else _empty_series(series_id)
-                        )
                         metadata_entry = (
                             self._read_metadata(connection, series_id)
                             if metadata_table_exists
                             else _empty_metadata()
+                        )
+                        # Freshness must be evaluated using this series' own
+                        # official frequency_short (see
+                        # _stale_after_days_for_frequency), so metadata is
+                        # read first and threaded into observation reading --
+                        # never inferred independently of what is actually
+                        # stored.
+                        frequency_short = (
+                            metadata_entry["frequency_short"]
+                            if metadata_entry["metadata_available"]
+                            else None
+                        )
+                        observation_entry = (
+                            self._read_series(
+                                connection,
+                                series_id,
+                                as_of,
+                                normalized_recent_limit,
+                                frequency_short,
+                            )
+                            if observations_table_exists
+                            else _empty_series(series_id, frequency_short)
                         )
                         series_entries.append({**observation_entry, **metadata_entry})
                 except duckdb.Error:
@@ -548,6 +601,7 @@ class MacroEvidenceBuilder:
         series_id: str,
         as_of: datetime,
         recent_observations_limit: int,
+        frequency_short: str | None,
     ) -> dict[str, Any]:
         # Vintage selection (per observation_date): among any rows sharing a
         # date, break the tie deterministically by the latest realtime_start,
@@ -579,7 +633,7 @@ class MacroEvidenceBuilder:
         ).fetchall()
 
         if not recent_rows:
-            return _empty_series(series_id)
+            return _empty_series(series_id, frequency_short)
 
         observation_date, realtime_start, realtime_end, value, is_missing, retrieved_at = (
             recent_rows[0]
@@ -597,8 +651,15 @@ class MacroEvidenceBuilder:
 
         future_threshold = as_of.date() + timedelta(days=FUTURE_DATE_TOLERANCE_DAYS)
         future_date_detected = observation_date > future_threshold
-        elapsed_days = (as_of.date() - observation_date).days
-        stale = future_date_detected or elapsed_days > STALE_AFTER_DAYS
+        stale_after_days = _stale_after_days_for_frequency(frequency_short)
+        if stale_after_days is None:
+            # Fail closed: missing or unrecognized frequency metadata means
+            # no threshold can be determined for this series, so it is never
+            # silently treated as fresh.
+            stale = True
+        else:
+            elapsed_days = (as_of.date() - observation_date).days
+            stale = future_date_detected or elapsed_days > stale_after_days
 
         recent_observations = [
             {
@@ -635,7 +696,7 @@ class MacroEvidenceBuilder:
                 "missing": False,
                 "stale": stale,
                 "future_date_detected": future_date_detected,
-                "stale_after_days": STALE_AFTER_DAYS,
+                "stale_after_days": stale_after_days,
             },
             "recent_observations": recent_observations,
             "latest_change_from_previous": _compute_latest_change(

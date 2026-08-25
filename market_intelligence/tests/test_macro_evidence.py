@@ -32,6 +32,7 @@ from market_intelligence.market_features.macro_evidence import (
     MAX_SERIES_IDS,
     MIN_RECENT_OBSERVATIONS_LIMIT,
     STALE_AFTER_DAYS,
+    STALE_AFTER_DAYS_QUARTERLY,
     MacroEvidenceBuilder,
     MacroEvidenceError,
     MacroEvidenceValidationError,
@@ -363,11 +364,15 @@ def test_build_snapshot_latest_is_missing_with_null_value(tmp_path, isolated_env
 # --- Freshness / staleness -----------------------------------------------------------
 
 
-def test_build_snapshot_fresh_within_threshold(tmp_path, isolated_env_file):
+def test_build_snapshot_monthly_fresh_at_exactly_90_days(tmp_path, isolated_env_file):
+    """A monthly-frequency series (frequency_short="M") at exactly STALE_AFTER_DAYS
+    (90) elapsed days is not stale -- the boundary itself is inclusive of freshness."""
     settings, builder = initialized_builder(tmp_path, isolated_env_file)
-    repo = MacroObservationRepository(settings=settings)
+    obs_repo = MacroObservationRepository(settings=settings)
     observation_date = (DEFAULT_AS_OF.date() - timedelta(days=STALE_AFTER_DAYS)).isoformat()
-    repo.store_observations([make_observation(observation_date=observation_date)])
+    obs_repo.store_observations([make_observation(observation_date=observation_date)])
+    meta_repo = MacroSeriesMetadataRepository(settings=settings)
+    meta_repo.store_metadata(make_metadata(frequency_short="M"))
 
     snapshot = builder.build_snapshot(["FEDFUNDS"])
 
@@ -376,18 +381,145 @@ def test_build_snapshot_fresh_within_threshold(tmp_path, isolated_env_file):
     assert entry["freshness"]["stale_after_days"] == STALE_AFTER_DAYS
 
 
-def test_build_snapshot_stale_beyond_threshold(tmp_path, isolated_env_file):
+def test_build_snapshot_monthly_stale_at_91_days(tmp_path, isolated_env_file):
+    """A monthly-frequency series one day beyond STALE_AFTER_DAYS (91 elapsed
+    days) is stale."""
     settings, builder = initialized_builder(tmp_path, isolated_env_file)
-    repo = MacroObservationRepository(settings=settings)
+    obs_repo = MacroObservationRepository(settings=settings)
     observation_date = (
         DEFAULT_AS_OF.date() - timedelta(days=STALE_AFTER_DAYS + 1)
     ).isoformat()
-    repo.store_observations([make_observation(observation_date=observation_date)])
+    obs_repo.store_observations([make_observation(observation_date=observation_date)])
+    meta_repo = MacroSeriesMetadataRepository(settings=settings)
+    meta_repo.store_metadata(make_metadata(frequency_short="M"))
 
     snapshot = builder.build_snapshot(["FEDFUNDS"])
 
     entry = snapshot["series"][0]
     assert entry["freshness"]["stale"] is True
+    assert entry["freshness"]["stale_after_days"] == STALE_AFTER_DAYS
+
+
+def test_build_snapshot_quarterly_fresh_at_exactly_180_days(tmp_path, isolated_env_file):
+    """A quarterly-frequency series (frequency_short="Q") at exactly
+    STALE_AFTER_DAYS_QUARTERLY (180) elapsed days is not stale."""
+    settings, builder = initialized_builder(tmp_path, isolated_env_file)
+    obs_repo = MacroObservationRepository(settings=settings)
+    observation_date = (
+        DEFAULT_AS_OF.date() - timedelta(days=STALE_AFTER_DAYS_QUARTERLY)
+    ).isoformat()
+    obs_repo.store_observations(
+        [make_observation(series_id="GDPC1", observation_date=observation_date)]
+    )
+    meta_repo = MacroSeriesMetadataRepository(settings=settings)
+    meta_repo.store_metadata(
+        make_metadata(series_id="GDPC1", frequency="Quarterly", frequency_short="Q")
+    )
+
+    snapshot = builder.build_snapshot(["GDPC1"])
+
+    entry = snapshot["series"][0]
+    assert entry["freshness"]["stale"] is False
+    assert entry["freshness"]["stale_after_days"] == STALE_AFTER_DAYS_QUARTERLY
+
+
+def test_build_snapshot_quarterly_stale_at_181_days(tmp_path, isolated_env_file):
+    """A quarterly-frequency series one day beyond STALE_AFTER_DAYS_QUARTERLY
+    (181 elapsed days) is stale."""
+    settings, builder = initialized_builder(tmp_path, isolated_env_file)
+    obs_repo = MacroObservationRepository(settings=settings)
+    observation_date = (
+        DEFAULT_AS_OF.date() - timedelta(days=STALE_AFTER_DAYS_QUARTERLY + 1)
+    ).isoformat()
+    obs_repo.store_observations(
+        [make_observation(series_id="GDPC1", observation_date=observation_date)]
+    )
+    meta_repo = MacroSeriesMetadataRepository(settings=settings)
+    meta_repo.store_metadata(
+        make_metadata(series_id="GDPC1", frequency="Quarterly", frequency_short="Q")
+    )
+
+    snapshot = builder.build_snapshot(["GDPC1"])
+
+    entry = snapshot["series"][0]
+    assert entry["freshness"]["stale"] is True
+    assert entry["freshness"]["stale_after_days"] == STALE_AFTER_DAYS_QUARTERLY
+
+
+def test_build_snapshot_gdpc1_shaped_quarterly_observation_not_stale(
+    tmp_path, isolated_env_file
+):
+    """Reproduces the reported false-positive: a quarterly GDPC1 observation
+    dated the first day of a calendar quarter, evaluated on August 25 of the
+    following quarter, must not be flagged stale under the 180-day quarterly
+    threshold (elapsed: April 1 -> August 25 is 146 days)."""
+    as_of = datetime(2026, 8, 25, 12, 0, 0, tzinfo=UTC)
+    settings, builder = initialized_builder(tmp_path, isolated_env_file, as_of=as_of)
+    obs_repo = MacroObservationRepository(settings=settings)
+    obs_repo.store_observations(
+        [
+            make_observation(
+                series_id="GDPC1",
+                observation_date="2026-04-01",
+                realtime_start="2026-07-30",
+                retrieved_at="2026-07-30T15:08:06Z",
+            )
+        ]
+    )
+    meta_repo = MacroSeriesMetadataRepository(settings=settings)
+    meta_repo.store_metadata(
+        make_metadata(series_id="GDPC1", frequency="Quarterly", frequency_short="Q")
+    )
+
+    snapshot = builder.build_snapshot(["GDPC1"])
+
+    entry = snapshot["series"][0]
+    assert entry["freshness"]["missing"] is False
+    assert entry["freshness"]["future_date_detected"] is False
+    assert entry["freshness"]["stale"] is False
+    assert entry["freshness"]["stale_after_days"] == STALE_AFTER_DAYS_QUARTERLY
+
+
+def test_build_snapshot_missing_frequency_metadata_fails_closed(tmp_path, isolated_env_file):
+    """No stored series metadata at all means frequency_short is unknown --
+    the series must fail closed (stale=True) even though the observation
+    itself is recent, and no threshold is silently assigned."""
+    settings, builder = initialized_builder(tmp_path, isolated_env_file)
+    obs_repo = MacroObservationRepository(settings=settings)
+    observation_date = (DEFAULT_AS_OF.date() - timedelta(days=1)).isoformat()
+    obs_repo.store_observations([make_observation(observation_date=observation_date)])
+    # Deliberately no metadata stored for FEDFUNDS.
+
+    snapshot = builder.build_snapshot(["FEDFUNDS"])
+
+    entry = snapshot["series"][0]
+    assert entry["metadata_available"] is False
+    assert entry["freshness"]["stale"] is True
+    assert entry["freshness"]["stale_after_days"] is None
+
+
+def test_build_snapshot_unrecognized_frequency_metadata_fails_closed(
+    tmp_path, isolated_env_file
+):
+    """Stored metadata with a frequency_short outside the narrow {"M", "Q"}
+    set (e.g. weekly "W") must also fail closed rather than reuse the
+    monthly or quarterly threshold, even though the observation itself is
+    recent."""
+    settings, builder = initialized_builder(tmp_path, isolated_env_file)
+    obs_repo = MacroObservationRepository(settings=settings)
+    observation_date = (DEFAULT_AS_OF.date() - timedelta(days=1)).isoformat()
+    obs_repo.store_observations([make_observation(observation_date=observation_date)])
+    meta_repo = MacroSeriesMetadataRepository(settings=settings)
+    meta_repo.store_metadata(
+        make_metadata(frequency="Weekly, Ending Friday", frequency_short="W")
+    )
+
+    snapshot = builder.build_snapshot(["FEDFUNDS"])
+
+    entry = snapshot["series"][0]
+    assert entry["metadata_available"] is True
+    assert entry["freshness"]["stale"] is True
+    assert entry["freshness"]["stale_after_days"] is None
 
 
 # --- Future observation dates ---------------------------------------------------------
@@ -395,9 +527,11 @@ def test_build_snapshot_stale_beyond_threshold(tmp_path, isolated_env_file):
 
 def test_build_snapshot_future_date_within_tolerance_not_flagged(tmp_path, isolated_env_file):
     settings, builder = initialized_builder(tmp_path, isolated_env_file)
-    repo = MacroObservationRepository(settings=settings)
+    obs_repo = MacroObservationRepository(settings=settings)
     observation_date = (DEFAULT_AS_OF.date() + timedelta(days=1)).isoformat()
-    repo.store_observations([make_observation(observation_date=observation_date)])
+    obs_repo.store_observations([make_observation(observation_date=observation_date)])
+    meta_repo = MacroSeriesMetadataRepository(settings=settings)
+    meta_repo.store_metadata(make_metadata(frequency_short="M"))
 
     snapshot = builder.build_snapshot(["FEDFUNDS"])
 
