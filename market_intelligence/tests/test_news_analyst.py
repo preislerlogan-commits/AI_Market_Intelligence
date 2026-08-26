@@ -702,6 +702,22 @@ def test_run_rejects_policy_violation_in_limitation():
         agent.run("SPY")
 
 
+def test_run_rejects_negated_directional_language_in_limitation():
+    """The Macro Analyst's narrow, limitations-only negated-directional-
+    prediction disclaimer allowance (see
+    market_intelligence/agents/macro_analyst.py) is specific to that agent
+    only -- the shared non-directional output policy applied here by the
+    News Analyst remains fully unconditional, with no negation exemption of
+    any kind, even for a clearly negated disclaimer."""
+    bad_analysis = completed_analysis(
+        limitations=["These observations do not predict future market direction."]
+    )
+    agent, *_ = make_agent(model_result=completed_result(parsed=bad_analysis))
+
+    with pytest.raises(NewsAnalystPolicyError):
+        agent.run("SPY")
+
+
 def test_run_rejects_options_language_without_leaking_rejected_text():
     secret_options_text = f"The provider reports {FAKE_SECRET_MARKER} call option strike premium."
     bad_analysis = completed_analysis(

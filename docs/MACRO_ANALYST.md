@@ -65,12 +65,20 @@ ever be supported by stored observations alone. This is enforced both by
 fail-closed post-response content-scope check (`_validate_content_scope`/
 `MacroAnalystContentScopeError` -- see "Post-response validation" below).
 **A model-authored `limitation` that clearly negates this same prohibited
-language, or frames it as unavailable/insufficient (e.g. "insufficient
-observations to establish a trend"), is narrowly and separately allowed --
-see "Post-response validation" below -- but `claim_summary` and
-`conditional_mechanism` are never exempted, and an unnegated affirmative
-claim anywhere, including elsewhere in the same `limitation`, is still
-rejected.**
+content-scope language, or frames it as unavailable/insufficient (e.g.
+"insufficient observations to establish a trend"), is narrowly and
+separately allowed -- see "Post-response validation" below -- but
+`claim_summary` and `conditional_mechanism` are never exempted, and an
+unnegated affirmative claim anywhere, including elsewhere in the same
+`limitation`, is still rejected. A second, narrower allowance exists for the
+shared post-response content *policy* check (as distinct from the
+content-scope check above): a model-authored `limitation` that clearly
+negates a directional-prediction match specifically (e.g. "does not predict
+future market direction") is also narrowly allowed -- see "Post-response
+validation" below. `claim_summary`/`conditional_mechanism` are never
+exempted from the policy check either, and bullish/bearish bias, trade
+recommendation/action, and options-related language are never exempted in a
+`limitation` this way, negated or not.**
 
 **Comparison claims.** A claim may additionally state that a series'
 latest stored observation *increased*, *decreased*, or was *unchanged*
@@ -407,6 +415,17 @@ Two strict Pydantic models (`extra="forbid"`, every field bounded):
   the *final report* (see `MacroClaim` below); the model has no way to set
   it to anything else.
 
+  **Limitation-wording guidance.** `AGENT_INSTRUCTIONS` also directly tells
+  the model that every `limitation` must describe a bounded evidence gap
+  directly (what the stored evidence lacks or cannot support), and should
+  not mention predictions, market direction, trades, or options at all, even
+  as a disclaimer -- preferring to describe the evidence gap itself over
+  stating what it does not predict. This is instruction-level guidance only:
+  it reduces the likelihood of a `limitation` needing the narrow negated-
+  directional-prediction allowance described in "Post-response validation"
+  below at all, but does not replace or weaken that check, which still
+  applies deterministically to whatever the model actually returns.
+
   **Advisory output budgets.** `AGENT_INSTRUCTIONS` includes explicit,
   conservative advisory output budgets, each with deliberate margin below
   its corresponding hard Pydantic maximum, mirroring the same mitigation
@@ -587,10 +606,42 @@ Before a model response is accepted as `status="completed"`:
   Market Evidence Agent and News Analyst use (see
   `market_intelligence/agents/non_directional_output_policy.py`), covering
   directional predictions, bullish/bearish bias, trade
-  recommendations/actions, and options-related detail. The first match
-  raises `MacroAnalystPolicyError`; the rejected text is **never** included
-  in the raised error or logged anywhere -- only a fixed, code-authored
-  field name and category name are recorded.
+  recommendations/actions, and options-related detail. For every macro
+  claim's `claim_summary`/`conditional_mechanism`, this check is applied
+  **unconditionally**, via the shared module's own
+  `find_prohibited_content_category`, exactly as for the Market Evidence
+  Agent and News Analyst -- no exemption of any kind, even for clearly
+  negated wording. For every model-supplied `limitation` **only**, a
+  second, narrower, fail-closed allowance
+  (`_limitation_policy_violation_category`, distinct from the content-scope
+  allowance above and reusing its same clause-splitting/adjacent-negation-cue
+  machinery, `_CLAUSE_SPLIT_RE`/`_match_is_negated`, rather than duplicating
+  it) additionally permits a match **only** when its category is
+  `directional_prediction` **and** it is immediately negated by one of the
+  same fixed cue phrases the content-scope allowance uses (`no`/`not`,
+  `cannot`/`can't`, `does not`/`do not`, `insufficient to`, `unavailable`,
+  `limited evidence for`, or the fixed post-match wrap phrases) **and** the
+  same clause contains no other prohibited-policy match at all (an unnegated
+  directional-prediction match, or *any* bullish/bearish-bias, trade-
+  recommendation/action, or options-detail match, negated or not) --
+  e.g. "These observations do not predict future market direction" is
+  allowed, but "These observations do not predict future market direction,
+  but the rate is expected to rise further" is still rejected (for its
+  second clause), and "This is not a recommendation to buy this stock" is
+  still rejected outright (the trade-recommendation/action category is never
+  exempted here, regardless of negation). The first non-exempt match raises
+  `MacroAnalystPolicyError`; the rejected text is **never** included in the
+  raised error or logged anywhere -- only a fixed, code-authored field name
+  and category name are recorded. This allowance motivated a new public
+  constant, `non_directional_output_policy.POLICY_PATTERNS` -- a **read-only**
+  `Mapping` view (`types.MappingProxyType`) over the exact patterns
+  `find_prohibited_content_category` itself iterates, never a duplicate copy
+  and never a mutable alias `MacroAnalyst` (or any other caller) could add
+  to, replace an entry in, or delete from -- so this per-match, per-clause
+  check can reuse the shared module's own patterns; `find_prohibited_content_category`
+  itself, and every other caller's use of it (including this agent's own
+  `claim_summary`/`conditional_mechanism` checks above), is completely
+  unchanged.
 - **Comparison-claim validation (`_validate_comparison_claims`, raises
   `MacroAnalystComparisonError`)** -- runs after content-scope/policy so a
   deliberate policy or content-scope violation is still caught by its own
@@ -742,8 +793,9 @@ exception type, message, or traceback.
 
 `market_intelligence/tests/test_macro_analyst.py`,
 `test_run_macro_analyst.py`, and `test_macro_analyst_eval_fixtures.py` cover
-(147 tests total, up from 141 after the model-facing evidence compaction fix
--- see "Known limitations" below): an eligible FEDFUNDS snapshot; every preflight abstention
+(155 tests total, up from 147 after the narrow negated-directional-prediction
+disclaimer allowance for `limitations` described below -- see "Known
+limitations" below): an eligible FEDFUNDS snapshot; every preflight abstention
 reason with zero model calls (missing, missing metadata, stale, future-
 dated, `latest_is_missing`, no evidence ID, requested-series mismatch, and
 now also `series_frequency_unrecognized`, plus every known
@@ -846,7 +898,32 @@ following the rejection, that the rejection error never echoes rejected
 text, that identical negated wording is still rejected outright in
 `claim_summary` and `conditional_mechanism` (no exemption), and that the
 shared non-directional output policy still fires on a limitation whose
-negated scope language separately passes the content-scope allowance.
+negated scope language separately passes the content-scope allowance; and
+the narrow negated-directional-prediction disclaimer allowance for the
+shared output policy described above -- an accepted "does not predict
+future market direction" limitation, with exactly one model call made; an
+affirmative (unnegated) prediction limitation still rejected
+(`category=directional_prediction` present in the error); a mixed
+disclaimer-then-affirmative-prediction limitation (two clauses) still
+rejected with no retry, and that its error never echoes either clause's
+text; identical negated directional wording still rejected outright in
+`claim_summary` and in `conditional_mechanism` (no exemption there); and
+that a negated bullish/bearish-bias limitation and a negated trade-
+recommendation limitation are each still rejected with their own correct
+category, proving the allowance is scoped to the directional-prediction
+category only. `test_non_directional_output_policy.py` additionally covers:
+the new public `POLICY_PATTERNS` constant covering exactly the same fixed
+categories, in the same fixed order, as `find_prohibited_content_category`;
+and a local reproduction, directly against the shared, unmodified
+`find_prohibited_content_category`, that a clearly negated directional
+disclaimer ("does not predict future market direction") is still flagged
+`CATEGORY_DIRECTIONAL_PREDICTION` by that shared function itself -- proving
+this fix's narrow allowance lives entirely in `MacroAnalyst`'s own
+limitations-only post-processing, never in the shared module every agent
+calls. `test_news_analyst.py` additionally covers that the same negated
+directional disclaimer is still rejected by the News Analyst's own
+`limitations` handling, confirming the shared policy's behavior for other
+agents is unchanged by this fix.
 
 `OpenAIStructuredClient` is always injected as a fake recording calls and
 returning/raising canned `StructuredOutputResult` values (mirroring
@@ -885,6 +962,86 @@ touches only `market_intelligence/agents/macro_analyst.py`,
 `scripts/run_macro_analyst.py`, and their own new tests/docs.
 
 ## Known limitations
+
+- **First live seven-series `--execute` attempt after the model-facing
+  evidence compaction fix, rejected by the shared post-response content
+  policy, and the narrow negated-directional-prediction disclaimer allowance
+  this motivated (2026-08-25).** After the model-facing evidence compaction
+  fix described immediately below, the first authorized post-compaction
+  seven-series Core Macro Basket `--execute` attempt passed the
+  deterministic preflight, and its structured response reached local
+  post-response content policy validation -- **exactly one paid OpenAI
+  request was made and one structured response was received** -- but that
+  response was rejected by the shared non-directional output policy check
+  (`_enforce_output_policy`) at `field=limitations[1]`,
+  `category=policy_violation` (the underlying shared-policy category
+  `directional_prediction`). **No report was accepted, and no retry was
+  made.** Per this agent's sanitization contract, the model-authored text
+  that triggered the rejection was never recorded, so **the exact live
+  wording is not known and is not reproduced anywhere in this repository.**
+
+  Offline analysis found a plausible, locally reproducible false-positive
+  class: the shared policy's `find_prohibited_content_category` (see
+  `market_intelligence/agents/non_directional_output_policy.py`) matches
+  known directional-prediction phrasing (e.g. "predict", "forecast")
+  unconditionally, with no negation awareness of any kind -- so a
+  `limitation` that honestly and explicitly *disclaims* prediction, e.g.
+  "These observations do not predict future market direction," would also
+  be flagged, identically to an affirmative directional claim. This is
+  reproduced directly in
+  `market_intelligence/tests/test_non_directional_output_policy.py`
+  (`test_negated_directional_disclaimer_is_still_flagged_by_the_raw_function`).
+  **This is offline analysis of a plausible failure class reproduced with a
+  locally authored test fixture -- it is not proof of the exact wording
+  rejected in that live run.**
+
+  The fix, in this same change, made entirely in
+  `market_intelligence/agents/macro_analyst.py` and its tests/docs: a new,
+  narrow, fail-closed allowance,
+  `_limitation_policy_violation_category`, applies **only** to
+  model-supplied `limitations`, reusing (never duplicating) the existing
+  content-scope allowance's clause-splitting/adjacent-negation-cue machinery
+  (`_CLAUSE_SPLIT_RE`/`_match_is_negated`) already added for the item below.
+  A `limitations` match is allowed **only** when its category is
+  `directional_prediction` (never bullish/bearish bias, trade
+  recommendation/action, or options detail, negated or not) **and** it is
+  immediately negated by one of the same fixed cue phrases the content-scope
+  allowance uses **and** the same clause contains no other prohibited-policy
+  match at all -- so a mixed clause such as "...but the rate is expected to
+  rise further" still fails closed. `claim_summary`/`conditional_mechanism`
+  are completely unaffected -- they continue to use the shared module's
+  plain, unconditional `find_prohibited_content_category` with zero
+  exemption, exactly as for the Market Evidence Agent and News Analyst.
+  `AGENT_INSTRUCTIONS` was also updated to tell the model that a
+  `limitation` should describe a bounded evidence gap directly and avoid
+  mentioning predictions, market direction, trades, or options at all, even
+  as a disclaimer -- reducing how often the model needs this allowance at
+  all, without weakening or replacing the deterministic check.
+
+  A new public constant, `non_directional_output_policy.POLICY_PATTERNS` --
+  a **read-only** `Mapping` view (`types.MappingProxyType`) over the exact
+  patterns `find_prohibited_content_category` already iterates, never a
+  duplicate copy and never a mutable alias, so no caller can add, replace,
+  or delete an entry through it -- was added so this per-match, per-clause
+  check can reuse the shared module's own fixed patterns.
+  `find_prohibited_content_category` itself is completely unchanged, and
+  every other caller (the Market Evidence Agent, the News Analyst, and this
+  agent's own `claim_summary`/`conditional_mechanism` checks) is unaffected
+  -- confirmed by a dedicated test
+  (`test_run_rejects_negated_directional_language_in_limitation` in
+  `test_news_analyst.py`) that the same negated directional disclaimer is
+  still rejected outright by the News Analyst's unmodified `limitations`
+  handling. No citation, series, full-basket-coverage, comparison-claim,
+  frequency-wording, transmission-channel, or content-scope validation was
+  weakened, and the existing negated content-scope allowance (trend/regime/
+  correlation/causation, described in the item below) is completely
+  unchanged by this fix -- both allowances are narrow, independent, and
+  scoped to different fixed category sets. **As of this change, this fix has
+  not been exercised against a live OpenAI response** -- it has been
+  validated only by offline, deterministic tests using fake evidence-
+  builder/model-client stand-ins, mirroring how the item below was
+  validated. See `PROJECT_STATE.md` for the full sanitized record of both
+  the live failure and this fix.
 
 - **Model-facing evidence compaction fix (2026-08-25), and the failed
   seven-series `--execute` attempt that motivated it.** After the

@@ -1509,6 +1509,167 @@ def test_policy_error_never_echoes_rejected_text():
 
 
 # ---------------------------------------------------------------------------
+# Narrow negated-directional-prediction disclaimer allowance for limitations
+# (shared non-directional output policy) -- this is the fix motivated by the
+# live post-compaction seven-series --execute attempt that was rejected at
+# field=limitations[1], category=directional_prediction, with no report
+# accepted and no retry (see docs/MACRO_ANALYST.md/PROJECT_STATE.md; the
+# exact rejected wording from that live run is not known and is not
+# reproduced here -- these tests instead exercise a plausible, locally
+# reproducible false-positive class: a clearly negated, limitation-only
+# direction/prediction disclaimer).
+#
+# This allowance is deliberately narrower than the existing content-scope
+# negation allowance above: it applies ONLY to
+# non_directional_output_policy.CATEGORY_DIRECTIONAL_PREDICTION matches, and
+# ONLY within `limitations` -- `claim_summary`/`conditional_mechanism` are
+# never exempted, and bullish/bearish bias, trade recommendation/action, and
+# options-related language are never exempted in a limitation either,
+# negated or not.
+# ---------------------------------------------------------------------------
+
+
+def test_negated_directional_disclaimer_limitation_is_accepted():
+    """The plausible false-positive class this change fixes: a limitation
+    that explicitly disclaims prediction is a truthful, bounded evidence-gap
+    statement, not a prohibited affirmative directional claim."""
+    agent, _, model_client = make_agent(
+        model_result=completed_result(
+            parsed=completed_analysis(
+                limitations=[
+                    "These observations do not predict future market direction."
+                ]
+            )
+        )
+    )
+    result = agent.run(["FEDFUNDS"])
+    assert result.report.status == "completed"
+    assert result.report.limitations == [
+        "These observations do not predict future market direction."
+    ]
+    # Exactly one model call was made, and acceptance required no retry.
+    assert len(model_client.calls) == 1
+
+
+def test_affirmative_prediction_limitation_is_still_rejected():
+    """An unnegated affirmative prediction in a limitation is never allowed,
+    even though the negated-disclaimer class above is."""
+    agent, _, model_client = make_agent(
+        model_result=completed_result(
+            parsed=completed_analysis(
+                limitations=["This clearly forecasts future market direction."]
+            )
+        )
+    )
+    with pytest.raises(MacroAnalystPolicyError) as exc_info:
+        agent.run(["FEDFUNDS"])
+    assert "directional_prediction" in str(exc_info.value)
+    # Rejected outright; no retry was attempted after the one model call.
+    assert len(model_client.calls) == 1
+
+
+def test_disclaimer_plus_affirmative_prediction_in_another_clause_is_rejected():
+    """A negated disclaimer clause never shields a separate, unnegated
+    affirmative prediction elsewhere in the same limitation -- mixed
+    sentences fail closed."""
+    agent, _, model_client = make_agent(
+        model_result=completed_result(
+            parsed=completed_analysis(
+                limitations=[
+                    "These observations do not predict future market direction, "
+                    "but the rate is expected to rise further."
+                ]
+            )
+        )
+    )
+    with pytest.raises(MacroAnalystPolicyError) as exc_info:
+        agent.run(["FEDFUNDS"])
+    assert "directional_prediction" in str(exc_info.value)
+    assert len(model_client.calls) == 1
+
+
+def test_disclaimer_plus_affirmative_prediction_error_never_echoes_rejected_text():
+    agent, *_ = make_agent(
+        model_result=completed_result(
+            parsed=completed_analysis(
+                limitations=[
+                    "These observations do not predict future market direction, "
+                    "but the rate is expected to rise further."
+                ]
+            )
+        )
+    )
+    with pytest.raises(MacroAnalystPolicyError) as exc_info:
+        agent.run(["FEDFUNDS"])
+    message = str(exc_info.value)
+    assert "expected to rise" not in message
+    assert "do not predict" not in message
+
+
+def test_negated_directional_disclaimer_still_rejected_in_claim_summary():
+    """The limitations-only negated-directional-prediction allowance never
+    extends to claim_summary -- it stays unconditionally screened."""
+    bad_claim = valid_claim_draft(
+        claim_summary=(
+            "The stored monthly observation dated 2026-07-01 does not predict "
+            "future market direction."
+        )
+    )
+    agent, *_ = make_agent(
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[bad_claim]))
+    )
+    with pytest.raises(MacroAnalystPolicyError) as exc_info:
+        agent.run(["FEDFUNDS"])
+    assert "directional_prediction" in str(exc_info.value)
+
+
+def test_negated_directional_disclaimer_still_rejected_in_conditional_mechanism():
+    """The limitations-only negated-directional-prediction allowance never
+    extends to conditional_mechanism -- it stays unconditionally screened."""
+    bad_claim = valid_claim_draft(
+        transmission_channels=[],
+        conditional_mechanism="This does not predict future market direction.",
+    )
+    agent, *_ = make_agent(
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[bad_claim]))
+    )
+    with pytest.raises(MacroAnalystPolicyError) as exc_info:
+        agent.run(["FEDFUNDS"])
+    assert "directional_prediction" in str(exc_info.value)
+
+
+def test_negated_bias_language_in_limitation_is_still_rejected():
+    """The allowance applies only to the directional-prediction category --
+    negated bullish/bearish-bias language in a limitation is still rejected."""
+    agent, *_ = make_agent(
+        model_result=completed_result(
+            parsed=completed_analysis(
+                limitations=["This is not a bullish or bearish signal."]
+            )
+        )
+    )
+    with pytest.raises(MacroAnalystPolicyError) as exc_info:
+        agent.run(["FEDFUNDS"])
+    assert "bullish_bearish_bias" in str(exc_info.value)
+
+
+def test_negated_trade_action_language_in_limitation_is_still_rejected():
+    """The allowance applies only to the directional-prediction category --
+    negated trade-recommendation language in a limitation is still
+    rejected."""
+    agent, *_ = make_agent(
+        model_result=completed_result(
+            parsed=completed_analysis(
+                limitations=["This is not a recommendation to buy this stock."]
+            )
+        )
+    )
+    with pytest.raises(MacroAnalystPolicyError) as exc_info:
+        agent.run(["FEDFUNDS"])
+    assert "trade_recommendation_or_action" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
 # Refusal / incomplete / provider failure sanitization
 # ---------------------------------------------------------------------------
 

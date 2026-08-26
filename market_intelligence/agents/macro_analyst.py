@@ -76,6 +76,15 @@ model's free-text fields (every macro claim's ``claim_summary``/
 screened by the same deterministic, fail-closed post-response content
 policy check the Market Evidence Agent and News Analyst use (see
 ``market_intelligence/agents/non_directional_output_policy.py``).
+``claim_summary``/``conditional_mechanism`` are always checked
+unconditionally, with no exemption of any kind, even for negated wording. A
+model-supplied ``limitation`` **only** additionally allows one narrow,
+clause-local exemption: an explicitly negated directional-prediction
+disclaimer with no other affirmative violation in the same clause (e.g.
+"These observations do not predict future market direction.") -- see
+``_limitation_policy_violation_category`` below. Bullish/bearish bias, trade
+recommendation/action, and options-related language are never exempted in a
+``limitation`` either, negated or not.
 
 Deterministic preflight (before any OpenAI request is made, see
 ``_evaluate_preflight``): the agent requires that the snapshot's echoed
@@ -127,6 +136,8 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from market_intelligence.agents.non_directional_output_policy import (
+    CATEGORY_DIRECTIONAL_PREDICTION,
+    POLICY_PATTERNS,
     find_prohibited_content_category,
 )
 from market_intelligence.config.settings import Settings
@@ -328,7 +339,13 @@ AGENT_INSTRUCTIONS = (
     "'limited' (not 'insufficient') to describe the overall evidence "
     "quality. "
     "If the evidence is thin, say so honestly in evidence_quality and via "
-    "limitations rather than fabricating detail or false confidence. Use "
+    "limitations rather than fabricating detail or false confidence. Each "
+    "limitation must describe a bounded evidence gap directly -- state what "
+    "the stored evidence lacks or cannot support (e.g. 'only one stored "
+    "observation is available for this series') -- and should not mention "
+    "predictions, market direction, trades, or options at all, even to "
+    "disclaim them: prefer describing the evidence gap itself over stating "
+    "what it does not predict. Use "
     "concise, factual wording only -- no padding, filler, or repetition. "
     f"Keep claim_summary to at most {ADVISORY_MAX_CLAIM_SUMMARY_LENGTH} "
     f"characters. Keep conditional_mechanism, when given, to at most "
@@ -1421,6 +1438,61 @@ def _validate_content_scope(analysis: MacroAnalystModelAnalysis) -> None:
             raise _content_scope_error(f"limitations[{i}]")
 
 
+# --- Narrow negated-disclaimer allowance for the shared output policy ------
+#
+# The shared non-directional output policy (find_prohibited_content_category)
+# is applied unconditionally, with no exemption of any kind, to every
+# claim_summary/conditional_mechanism -- exactly as for the Market Evidence
+# Agent and News Analyst, and unchanged by this allowance.
+#
+# For model-supplied `limitations` ONLY, a narrow, clause-local exemption is
+# additionally permitted, mirroring the existing content-scope allowance's
+# clause-splitting/adjacency machinery above (_CLAUSE_SPLIT_RE/
+# _match_is_negated) rather than duplicating it: a limitations clause whose
+# ONLY prohibited-policy match is a directional-prediction match (e.g. "will
+# rise", "forecast", "outlook is") immediately negated by an adjacent fixed
+# cue (e.g. "These observations do not predict future market direction.") is
+# allowed, since that is a truthful, bounded evidence-gap disclaimer, not an
+# affirmative directional claim.
+#
+# This exemption is deliberately narrower than the content-scope allowance
+# above in one critical way: it applies ONLY to
+# CATEGORY_DIRECTIONAL_PREDICTION matches. A bullish/bearish-bias,
+# trade-recommendation/action, or options-detail match in a limitation is
+# NEVER exempted here, negated or not -- fail closed, per this change's
+# requirement that only a direction/prediction disclaimer may be narrowly
+# allowed. A clause containing both a negated directional-prediction match
+# and any other affirmative violation (an unnegated directional match, or
+# any bias/trade/options match at all) still fails closed for that other
+# violation, since every match in the clause is checked, not just the first.
+def _limitation_policy_violation_category(text: str) -> str | None:
+    """Return the first non-exempt prohibited policy category found in a
+    Macro Analyst ``limitation``, or ``None`` if fully clean/exempted.
+
+    Only ever called for ``limitations`` -- ``claim_summary``/
+    ``conditional_mechanism`` always use the plain, unconditional
+    ``find_prohibited_content_category`` in ``_enforce_output_policy``
+    below, with no exemption of any kind.
+    """
+    for clause in _CLAUSE_SPLIT_RE.split(text):
+        for category, pattern in POLICY_PATTERNS.items():
+            for match in pattern.finditer(clause):
+                if category == CATEGORY_DIRECTIONAL_PREDICTION and _match_is_negated(
+                    clause, match
+                ):
+                    continue
+                return category
+    return None
+
+
+def _policy_error(field_name: str, category: str) -> MacroAnalystPolicyError:
+    return MacroAnalystPolicyError(
+        "Model-authored output failed the post-response content "
+        f"policy check (field={field_name}, category={category}). "
+        "The rejected text is never included in this error."
+    )
+
+
 def _enforce_output_policy(analysis: MacroAnalystModelAnalysis) -> None:
     """Deterministic, fail-closed post-response policy check.
 
@@ -1431,24 +1503,33 @@ def _enforce_output_policy(analysis: MacroAnalystModelAnalysis) -> None:
     rejected text is never included in the error or logged anywhere, only a
     fixed field name and category. See ``MacroAnalystPolicyError`` for the
     scope and limits of this check.
-    """
-    fields: list[tuple[str, str]] = []
-    for i, claim in enumerate(analysis.macro_claims):
-        fields.append((f"macro_claims[{i}].claim_summary", claim.claim_summary))
-        if claim.conditional_mechanism is not None:
-            fields.append((f"macro_claims[{i}].conditional_mechanism", claim.conditional_mechanism))
-    fields.extend(
-        (f"limitations[{i}]", limitation) for i, limitation in enumerate(analysis.limitations)
-    )
 
-    for field_name, text in fields:
+    ``claim_summary``/``conditional_mechanism`` are checked with the plain,
+    unconditional ``find_prohibited_content_category`` -- exactly as for the
+    Market Evidence Agent and News Analyst, with no exemption of any kind,
+    even for clearly negated wording. Every model-supplied ``limitation`` is
+    instead checked by ``_limitation_policy_violation_category``, which
+    additionally allows a narrow, clause-local, explicitly negated
+    directional-prediction disclaimer only -- see that function and the
+    comment above it for the exact, narrow scope of this allowance.
+    """
+    strict_fields: list[tuple[str, str]] = []
+    for i, claim in enumerate(analysis.macro_claims):
+        strict_fields.append((f"macro_claims[{i}].claim_summary", claim.claim_summary))
+        if claim.conditional_mechanism is not None:
+            strict_fields.append(
+                (f"macro_claims[{i}].conditional_mechanism", claim.conditional_mechanism)
+            )
+
+    for field_name, text in strict_fields:
         category = find_prohibited_content_category(text)
         if category is not None:
-            raise MacroAnalystPolicyError(
-                "Model-authored output failed the post-response content "
-                f"policy check (field={field_name}, category={category}). "
-                "The rejected text is never included in this error."
-            )
+            raise _policy_error(field_name, category)
+
+    for i, limitation in enumerate(analysis.limitations):
+        category = _limitation_policy_violation_category(limitation)
+        if category is not None:
+            raise _policy_error(f"limitations[{i}]", category)
 
 
 class MacroAnalyst:
