@@ -2907,6 +2907,159 @@ full record.**
     configuration, dependency, `.env`, or the real DuckDB database was
     modified as part of this change.
 
+29. **First live post-compaction seven-series Macro Analyst `--execute`
+    attempt, rejected by the shared post-response content policy, and the
+    narrow negated-directional-prediction disclaimer allowance this
+    motivated (2026-08-25, code/tests/docs only for the fix itself -- no
+    further live FRED/OpenAI request made as part of the fix, no migration,
+    no configuration/dependency/`.env` change, and no write to the real
+    local database).**
+
+    Following item 28 above (the model-facing evidence compaction fix), a
+    separately authorized live `--execute` attempt against the complete
+    seven-series Core Macro Basket was made. This attempt passed the
+    deterministic, all-or-nothing preflight gate, and **exactly one paid
+    OpenAI request was sent and one structured response was received** --
+    the compaction fix worked as intended for reaching the model. However,
+    that structured response was then rejected by this agent's local
+    post-response content policy validation:
+
+    ```
+    field=limitations[1]
+    category=policy_violation (shared-policy category: directional_prediction)
+    ```
+
+    **No report was accepted from this attempt, and no retry was made.**
+    Per this agent's sanitization contract, the model-authored text that
+    triggered the rejection was deliberately never captured or recorded, so
+    **the exact rejected wording, and its exact cause, are not known and are
+    not claimed anywhere in this repository.**
+
+    Offline analysis identified a plausible, locally reproducible
+    false-positive class: the shared, deterministic
+    `find_prohibited_content_category` check (see
+    `market_intelligence/agents/non_directional_output_policy.py`) matches
+    known directional-prediction phrasing (e.g. "predict", "forecast")
+    unconditionally, with no awareness of negation -- so a `limitation`
+    honestly and explicitly disclaiming prediction, e.g. "These observations
+    do not predict future market direction," would also be flagged,
+    identically to an affirmative directional claim. This is a **hypothesis
+    about a plausible failure class, not a proven account of the exact live
+    wording or cause** -- it is reproduced only with a locally authored test
+    fixture
+    (`test_negated_directional_disclaimer_is_still_flagged_by_the_raw_function`
+    in `market_intelligence/tests/test_non_directional_output_policy.py`),
+    never with the actual rejected text from the live attempt (which was
+    never captured).
+
+    The fix, made entirely in
+    `market_intelligence/agents/macro_analyst.py` and its tests/docs:
+
+    - A new, narrow, fail-closed allowance,
+      `_limitation_policy_violation_category`, applies **only** to
+      model-supplied `limitations` (never `claim_summary`/
+      `conditional_mechanism`, which remain strictly, unconditionally
+      denylisted via the shared module's plain
+      `find_prohibited_content_category`, with no exemption of any kind,
+      even for clearly negated wording -- exactly as for the Market Evidence
+      Agent and News Analyst, unchanged).
+    - Within a `limitation`, a match is allowed if and only if: its category
+      is specifically `directional_prediction` (bullish/bearish bias, trade
+      recommendation/action, and options-related language are **never**
+      exempted this way, negated or not); it is immediately negated by one
+      of the existing fixed negation/insufficiency cue phrases already used
+      by this agent's separate content-scope negation allowance (item 22
+      below); and the same clause contains no other prohibited-policy match
+      at all. A mixed clause containing both a negated disclaimer and a
+      separate affirmative directional/bias/trade/options statement still
+      fails closed for that other statement.
+    - This reuses (never duplicates) the existing clause-splitting/
+      adjacent-negation-cue machinery (`_CLAUSE_SPLIT_RE`/`_match_is_negated`)
+      already added for the item-22 content-scope allowance, per this
+      change's preference to extend existing machinery over adding new
+      independent logic.
+    - A new public constant, `non_directional_output_policy.POLICY_PATTERNS`
+      -- a **read-only** `Mapping` view (`types.MappingProxyType`) over the
+      exact patterns `find_prohibited_content_category` itself already
+      iterates over, never a duplicate copy and never a mutable alias any
+      caller (including `MacroAnalyst`) could add to, replace an entry in,
+      or delete from (attempting any of those raises `TypeError`) -- was
+      added to the shared module so this per-match, per-clause check can
+      reuse the shared module's own fixed patterns without hand-copying
+      them. The module's own internal, mutable `_POLICY_PATTERNS` dict is
+      never itself exported.
+      `find_prohibited_content_category` itself is completely unchanged, and
+      every other caller of it -- the Market Evidence Agent, the News
+      Analyst, and this agent's own `claim_summary`/`conditional_mechanism`
+      checks -- is unaffected. A dedicated test in
+      `market_intelligence/tests/test_news_analyst.py`
+      (`test_run_rejects_negated_directional_language_in_limitation`)
+      confirms the identical negated directional disclaimer used above is
+      still rejected outright by the News Analyst's own, unmodified
+      `limitations` handling -- proving the shared policy was **not**
+      weakened globally.
+    - `AGENT_INSTRUCTIONS` was updated to tell the model that a `limitation`
+      must describe a bounded evidence gap directly (what the stored
+      evidence lacks or cannot support) and should not mention predictions,
+      market direction, trades, or options at all, even as a disclaimer --
+      reducing how often this allowance is needed at all, without replacing
+      or weakening the deterministic check.
+    - Every existing hard schema bound, citation/series validation,
+      full-basket coverage validation, the separate, unchanged item-22
+      content-scope negation allowance (still scoped to trend/regime/
+      correlation/causation/policy-change/historical-extreme language, never
+      directional-prediction/bias/trade/options language), the
+      comparison-claim validator, the frequency-wording validator, the
+      transmission-channel validator, the `directional_assessment`/
+      `trade_recommendation` always-`"not_performed"` guarantee, and the
+      one-OpenAI-request-with-no-automatic-retry behavior were all preserved
+      unchanged and re-verified passing.
+
+    8 new focused tests were added to
+    `market_intelligence/tests/test_macro_analyst.py` (155 tests total, up
+    from 147), plus 2 new tests in
+    `test_non_directional_output_policy.py` and 1 new test in
+    `test_news_analyst.py` (2022 tests total in the full suite, up from
+    2011), covering: a narrow negated directional-prediction disclaimer
+    limitation accepted with exactly one model call made and no retry; an
+    affirmative (unnegated) prediction limitation still rejected; a mixed
+    disclaimer-then-affirmative-prediction limitation (two clauses) still
+    rejected with no retry, and that its rejection error never echoes either
+    clause's text; identical negated directional wording still rejected
+    outright in `claim_summary` and in `conditional_mechanism` (no
+    exemption there, confirming requirement 2's strict-unchanged
+    guarantee); a negated bullish/bearish-bias limitation and a negated
+    trade-recommendation limitation each still rejected with their own
+    correct category (proving the allowance is scoped to
+    directional-prediction only); the new public `POLICY_PATTERNS` constant
+    covering exactly the same fixed categories, in the same fixed order, as
+    `find_prohibited_content_category`; a local reproduction, directly
+    against the shared, unmodified `find_prohibited_content_category`, that
+    a clearly negated directional disclaimer is still flagged
+    `CATEGORY_DIRECTIONAL_PREDICTION` by that shared function itself (proving
+    the fix lives entirely in `MacroAnalyst`'s own limitations-only
+    post-processing, never in the shared module); and that the same negated
+    directional disclaimer is still rejected by the News Analyst's own
+    `limitations` handling, confirming the shared policy's behavior for
+    other agents is unchanged. `python -m pytest` (2022 passed),
+    `python -m ruff check .` (all checks passed), and `git diff --check` (no
+    whitespace errors) were all run as part of this change and pass. See
+    [docs/MACRO_ANALYST.md](docs/MACRO_ANALYST.md)'s "Post-response
+    validation" section and "Known limitations" entry for full detail.
+
+    **As of this item, this fix has not been exercised against a live
+    OpenAI response** -- no further live `--execute` attempt has been made
+    as part of this change. It has been validated only by offline,
+    deterministic tests using fake evidence-builder/model-client stand-ins,
+    mirroring how items 27/28 above were validated. This does not establish
+    that a real model response will phrase a limitation in a way this
+    allowance recognizes, that the exact live rejection from this item's
+    attempt shared the same root cause as the locally reproduced class
+    described above, or that any described observation is factually
+    accurate -- none of that is claimed here. No connector, repository,
+    migration, basket configuration, dependency, `.env`, or the real DuckDB
+    database was modified as part of this change.
+
 ## Notes
 
 - This file should be updated as phases progress. Treat entries here as
