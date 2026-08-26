@@ -2227,6 +2227,188 @@ def test_transmission_channel_error_never_echoes_rejected_text():
 
 
 # ---------------------------------------------------------------------------
+# Transmission-channel addressing -- offline false-positive reproduction and
+# narrow synonym/word-boundary hardening (2026-08-25).
+#
+# A live seven-series `--execute` attempt was rejected with
+# MacroAnalystTransmissionChannelError (category=transmission_channel_invalid)
+# after passing preflight and receiving exactly one structured response. The
+# rejected model text was never captured (per this agent's sanitization
+# contract), so the exact live channel/mechanism is NOT known. The tests
+# below reproduce plausible, locally authored false-positive cases -- ordinary,
+# economically accurate synonym wording for an allowed channel that the prior,
+# narrower _TRANSMISSION_CHANNEL_PATTERNS tokens missed -- and confirm the
+# narrow synonym/word-boundary fix addresses them, without proving any of
+# them is the exact live cause. See docs/MACRO_ANALYST.md/PROJECT_STATE.md.
+# ---------------------------------------------------------------------------
+
+_CHANNEL_BASELINE_MECHANISMS = [
+    ("rates", "Changes in this policy rate can influence broader borrowing costs."),
+    ("inflation", "This series reflects inflation pressures across the broader economy."),
+    ("growth", "This series reflects the pace of economic growth in the broader economy."),
+    ("liquidity", "This series reflects overall liquidity conditions in the financial system."),
+    ("risk_appetite", "This series can reflect shifts in investor risk appetite."),
+    (
+        "credit_conditions",
+        "This series can reflect broader credit conditions for households and firms.",
+    ),
+    ("currency", "This series can relate to currency valuation in international markets."),
+    ("housing", "This series can relate to general conditions in the housing market."),
+    ("energy", "This series can relate to energy costs across the broader economy."),
+]
+
+_CHANNEL_SYNONYM_MECHANISMS = [
+    ("rates", "This series can relate to shifts in broader government bond yields."),
+    (
+        "inflation",
+        "This series reflects the general price of goods and services purchased by "
+        "households.",
+    ),
+    ("growth", "This series can reflect the pace of broader economic expansion."),
+    ("liquidity", "This series can reflect easier funding conditions for banks."),
+    (
+        "risk_appetite",
+        "This series can reflect broader risk aversion among investors.",
+    ),
+    (
+        "credit_conditions",
+        "This series can reflect a change in the cost of credit for households.",
+    ),
+    (
+        "currency",
+        "This series can relate to movements in exchange rates between currencies.",
+    ),
+    ("housing", "This series can relate to conditions in the broader real estate market."),
+    ("energy", "This series can relate to petroleum costs across the broader economy."),
+]
+
+
+@pytest.mark.parametrize("channel,mechanism", _CHANNEL_BASELINE_MECHANISMS)
+def test_every_allowed_channel_accepts_its_baseline_mechanism(channel, mechanism):
+    """Every allowed TransmissionChannel value has at least one accepted,
+    explicit mechanism -- the tokens already present before this change."""
+    claim = valid_claim_draft(
+        transmission_channels=[channel], conditional_mechanism=mechanism
+    )
+    agent, *_ = make_agent(
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[claim]))
+    )
+    result = agent.run(["FEDFUNDS"])
+    assert result.report.status == "completed"
+
+
+@pytest.mark.parametrize("channel,mechanism", _CHANNEL_SYNONYM_MECHANISMS)
+def test_every_allowed_channel_accepts_a_representative_economic_synonym(channel, mechanism):
+    """Reproduces the plausible false-positive class this change fixes:
+    ordinary, economically accurate synonym wording for an allowed channel
+    (e.g. "yields" for rates, singular "price" for inflation, "expansion"
+    for growth, plural "exchange rates" for currency, "real estate" for
+    housing) is now accepted, where the prior, narrower tokens would have
+    rejected it."""
+    claim = valid_claim_draft(
+        transmission_channels=[channel], conditional_mechanism=mechanism
+    )
+    agent, *_ = make_agent(
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[claim]))
+    )
+    result = agent.run(["FEDFUNDS"])
+    assert result.report.status == "completed"
+
+
+def test_transmission_channel_generic_language_is_still_rejected():
+    """Generic language ("affects markets", "has economic effects") must
+    never satisfy any channel -- this change adds only specific, reviewed
+    synonym tokens, never a generic catch-all."""
+    claim = valid_claim_draft(
+        transmission_channels=["rates"],
+        conditional_mechanism=(
+            "This series can in general affect markets and has broad economic effects."
+        ),
+    )
+    agent, *_ = make_agent(
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[claim]))
+    )
+    with pytest.raises(MacroAnalystTransmissionChannelError):
+        agent.run(["FEDFUNDS"])
+
+
+def test_transmission_channel_unrelated_mechanism_is_rejected():
+    claim = valid_claim_draft(
+        transmission_channels=["energy"],
+        conditional_mechanism="This series reflects the pace of economic growth.",
+    )
+    agent, *_ = make_agent(
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[claim]))
+    )
+    with pytest.raises(MacroAnalystTransmissionChannelError):
+        agent.run(["FEDFUNDS"])
+
+
+def test_transmission_channel_word_boundary_rejects_substring_matches():
+    """"rate" appearing only as a substring of unrelated words ("moderate",
+    "corporate") must never satisfy the "rates" channel token -- proving
+    the word-boundary regex, not a substring match, is what is enforced."""
+    claim = valid_claim_draft(
+        transmission_channels=["rates"],
+        conditional_mechanism=(
+            "Moderate corporate spending patterns can shift with broader economic growth."
+        ),
+    )
+    agent, *_ = make_agent(
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[claim]))
+    )
+    with pytest.raises(MacroAnalystTransmissionChannelError):
+        agent.run(["FEDFUNDS"])
+
+
+def test_transmission_channel_multiple_channels_one_synonym_addressed_one_not():
+    """Multiple listed channels where one is addressed (via a synonym) and
+    the other is not -- still rejected, proving synonym support does not
+    weaken the per-channel requirement."""
+    claim = valid_claim_draft(
+        transmission_channels=["rates", "housing"],
+        conditional_mechanism="Shifts in broader government bond yields can move quickly.",
+    )
+    agent, *_ = make_agent(
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[claim]))
+    )
+    with pytest.raises(MacroAnalystTransmissionChannelError):
+        agent.run(["FEDFUNDS"])
+
+
+def test_transmission_channel_violation_makes_exactly_one_model_call_with_no_retry():
+    claim = valid_claim_draft(
+        transmission_channels=["rates", "inflation"],
+        conditional_mechanism="Policy interest rates can in general affect borrowing costs.",
+    )
+    agent, _, model_client = make_agent(
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[claim]))
+    )
+    with pytest.raises(MacroAnalystTransmissionChannelError):
+        agent.run(["FEDFUNDS"])
+
+    assert len(model_client.calls) == 1
+
+
+def test_transmission_channel_synonym_error_never_echoes_rejected_text():
+    claim = valid_claim_draft(
+        transmission_channels=["housing"],
+        conditional_mechanism="This series can relate to shifts in broader bond yields.",
+    )
+    agent, *_ = make_agent(
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[claim]))
+    )
+    with pytest.raises(MacroAnalystTransmissionChannelError) as exc_info:
+        agent.run(["FEDFUNDS"])
+    assert "bond yields" not in str(exc_info.value)
+
+
+def test_agent_instructions_tell_model_to_omit_unexplained_channels():
+    assert "OMIT it from transmission_channels" in AGENT_INSTRUCTIONS
+    assert "affects markets" in AGENT_INSTRUCTIONS
+
+
+# ---------------------------------------------------------------------------
 # recent_observations_limit forwarding
 # ---------------------------------------------------------------------------
 
