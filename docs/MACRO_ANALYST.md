@@ -22,15 +22,21 @@ series IDs, it:
    stored metadata (title, frequency, frequency_short, units, seasonal
    adjustment) when available, a bounded `recent_observations` excerpt, and
    (when precisely supported) one exact `latest_change_from_previous`
-   comparison.
+   comparison. **This full snapshot -- including `recent_observations` --
+   is retained unchanged for local deterministic evidence and audits; it is
+   not what is sent to the model (see item 3 and "Model-facing evidence
+   compaction" below).**
 2. Evaluates a fixed, deterministic, **all-or-nothing** preflight gate
    against that snapshot (see "Deterministic preflight" below). If the gate
    fails for *any* requested series, the agent returns a truthful
    `status="abstained"` report and makes **zero OpenAI requests**.
-3. If the gate passes, builds a bounded, model-facing evidence package from
-   the snapshot's official stored observation/metadata fields only (never a
-   database path, SQL text, ingestion ID, credential, or raw audit/internal
-   field) and makes **exactly one** structured-output request via the
+3. If the gate passes, builds a bounded, **compacted**, model-facing
+   evidence package from the snapshot's official stored observation/metadata
+   fields only -- deliberately **excluding** the snapshot's
+   `recent_observations` history (see "Model-facing evidence compaction"
+   below) -- never a database path, SQL text, ingestion ID, credential, or
+   raw audit/internal field, and makes **exactly one** structured-output
+   request via the
    existing [`OpenAIStructuredClient`](OPENAI_PROVIDER_BOUNDARY.md), asking
    the model to describe, factually and without interpretation, the single
    latest stored observation for each requested series using only its
@@ -215,24 +221,6 @@ that series (see "Comparison claims" above).
         "latest_observation_date": "2026-07-01",
         "missing_observation_count": 0
       },
-      "recent_observations": [
-        {
-          "observation_date": "2026-07-01",
-          "value": "5.330000",
-          "is_missing": false,
-          "realtime_start": "1776-07-04",
-          "realtime_end": "9999-12-31",
-          "evidence_id": "macro_3f2a9c1d4e5b6789"
-        },
-        {
-          "observation_date": "2026-06-01",
-          "value": "5.000000",
-          "is_missing": false,
-          "realtime_start": "1776-07-04",
-          "realtime_end": "9999-12-31",
-          "evidence_id": "macro_7a1b2c3d4e5f6081"
-        }
-      ],
       "latest_change_from_previous": {
         "available": true,
         "unavailable_reason": null,
@@ -250,6 +238,9 @@ that series (see "Comparison claims" above).
 }
 ```
 
+**Note there is deliberately no `recent_observations` key above** -- see
+"Model-facing evidence compaction" below.
+
 - Every `series` key is the series entry's existing, **stable,
   code-generated** `evidence_id` from `MacroEvidenceBuilder` -- never chosen
   or supplied by the model. This same key always equals
@@ -258,11 +249,10 @@ that series (see "Comparison claims" above).
 - Only `series_id`, `title`, `frequency`, `frequency_short`,
   `seasonal_adjustment`, `observation_date` (the chosen row's
   `latest_observation_date`), `latest_value`, `realtime_start`,
-  `realtime_end`, `coverage`, `recent_observations`, and
-  `latest_change_from_previous` are preserved -- **no database path, SQL
-  text, ingestion ID, credential, or raw audit/internal field is ever
-  included** (none of those exist on the snapshot to begin with, so there
-  is nothing to filter out).
+  `realtime_end`, `coverage`, and `latest_change_from_previous` are
+  preserved -- **no database path, SQL text, ingestion ID, credential, or
+  raw audit/internal field is ever included** (none of those exist on the
+  snapshot to begin with, so there is nothing to filter out).
 - A series entry with no stable evidence ID (`evidence_id is None`, i.e. no
   stored observation at all) is never added to the evidence package -- the
   model is never given a fact to cite that doesn't correspond to real,
@@ -290,6 +280,79 @@ that series (see "Comparison claims" above).
 - No tool, web search, or additional data retrieval of any kind occurs --
   the evidence package is built entirely from data `MacroEvidenceBuilder`
   already read from local storage before this agent runs.
+
+## Model-facing evidence compaction
+
+**`_build_model_evidence()` deliberately omits the snapshot's
+`recent_observations` excerpt from the payload sent to OpenAI.**
+`MacroEvidenceBuilder`'s own snapshot -- used for local deterministic
+evidence and audits (see [docs/MACRO_EVIDENCE_SNAPSHOT.md](MACRO_EVIDENCE_SNAPSHOT.md))
+-- is unchanged and still retains up to `recent_observations_limit` recent
+rows per series. Only the model-facing subset above excludes it.
+
+This is narrow and behavior-preserving: every claim this agent can validate
+is scoped to either the single latest stored observation
+(`observation_date`/`latest_value`, both still sent) or one exact
+two-observation comparison against the immediately preceding stored
+observation (`latest_change_from_previous`, which already carries both
+observations' dates, values, and evidence IDs, and is still sent
+unchanged) -- see "Comparison claims" above. No post-response validator
+(`_validate_citations_and_series`, `_validate_coverage`,
+`_validate_content_scope`, `_validate_comparison_claims`,
+`_validate_frequency_wording`, `_validate_transmission_channels`, the
+shared non-directional output policy) ever reads or needs a multi-row
+observation history, so sending `recent_observations` to the model was
+always redundant with respect to what this agent can actually check.
+
+**This fixes a real, live failure.** The first authorized seven-series
+Core Macro Basket `--execute` attempt (`FEDFUNDS`, `GS10`, `CPIAUCSL`,
+`PCEPI`, `UNRATE`, `INDPRO`, `GDPC1`, `recent_observations_limit=6`) passed
+the deterministic preflight but failed locally, before any request was
+sent, with `OpenAIInvalidRequestError`
+(`category=request_invalid`, `"Invalid evidence: exceeds the maximum node
+count."` -- see
+[docs/OPENAI_PROVIDER_BOUNDARY.md](OPENAI_PROVIDER_BOUNDARY.md)'s
+`MAX_EVIDENCE_NODES` (500) bound). This is a local, pre-request validation
+failure raised entirely inside `OpenAIStructuredClient.generate()`'s
+input-validation step (see `_validate_evidence_shape`) -- **zero provider
+requests were sent and zero tokens were spent for that attempt.**
+
+Offline analysis reproduced the exact failure: with `recent_observations`
+included, each series entry's six-row excerpt alone contributed 43 of the
+evidence tree's nodes (`OpenAIStructuredClient`'s node counter counts every
+dict, every list, and every scalar leaf it recurses into), and across seven
+series plus the payload's own wrapping structure the total reached 501 nodes
+-- one over the 500-node cap -- reproducing
+`"exceeds the maximum node count"` exactly. Removing `recent_observations`
+from the model-facing payload (this change) reduces the real seven-series
+Core Macro Basket evidence package to 200 nodes / 5,643 serialized bytes,
+comfortably under both `MAX_EVIDENCE_NODES` (500) and `MAX_EVIDENCE_BYTES`
+(32,000) -- and, notably, this reduction is now independent of
+`recent_observations_limit` entirely, since that field is no longer sent to
+the model at all regardless of the limit requested. A synthetic worst-case
+ten-series request (`MAX_SERIES_IDS`, the largest this agent ever accepts),
+built with conservative, deliberately oversized placeholder metadata
+strings (a title, frequency, units, and seasonal-adjustment string each
+longer than any real Core Macro Basket series' actual metadata), still
+measures only 284 nodes / 11,495 bytes -- comfortably under both limits
+with substantial margin. These exact figures are measured directly in
+`market_intelligence/tests/test_macro_analyst.py` (see "Testing" below),
+not merely asserted in this document.
+
+**No global limit was raised to fix this.** `OpenAIStructuredClient`'s
+`MAX_EVIDENCE_NODES`/`MAX_EVIDENCE_DEPTH`/`MAX_EVIDENCE_BYTES` constants
+(see [docs/OPENAI_PROVIDER_BOUNDARY.md](OPENAI_PROVIDER_BOUNDARY.md)) are
+unchanged, and no comparison validation, citation validation, full-series
+coverage requirement, frequency wording, channel validation, content-scope
+policy, or non-directional policy was weakened -- only redundant history
+data was removed from what is sent to the model. **This fix has not yet
+been exercised against a live OpenAI response for the seven-series basket
+or any other request** -- it has been validated only by the offline,
+deterministic tests described below (including one dedicated test that
+sends the real, production seven-series evidence package through the real
+`OpenAIStructuredClient`'s evidence-size validation, with only its SDK
+transport faked). See `PROJECT_STATE.md` for the full sanitized record of
+both the live failure and this fix.
 
 ## Structured output
 
@@ -679,7 +742,8 @@ exception type, message, or traceback.
 
 `market_intelligence/tests/test_macro_analyst.py`,
 `test_run_macro_analyst.py`, and `test_macro_analyst_eval_fixtures.py` cover
-(141 tests total): an eligible FEDFUNDS snapshot; every preflight abstention
+(147 tests total, up from 141 after the model-facing evidence compaction fix
+-- see "Known limitations" below): an eligible FEDFUNDS snapshot; every preflight abstention
 reason with zero model calls (missing, missing metadata, stale, future-
 dated, `latest_is_missing`, no evidence ID, requested-series mismatch, and
 now also `series_frequency_unrecognized`, plus every known
@@ -740,8 +804,22 @@ is deliberately no "preferred claim count" advisory left to test, since
 coverage is now mandatory rather than a preference); that the model-facing
 schemas contain no sentiment/probability/confidence/forecast/
 `directional_assessment`/`trade_recommendation`/`content_basis` field at
-all; that `recent_observations`/`latest_change_from_previous`/
-`frequency_short` are present in the built evidence package; a fully
+all; that `latest_change_from_previous`/`frequency_short` are present in the
+built evidence package **and that `recent_observations` is deliberately
+absent from it entirely** (see "Model-facing evidence compaction" above),
+including a dedicated test asserting the exact preserved field set for a
+series entry; that a real seven-series production evidence package (the
+same request shape that failed live) passes the real
+`OpenAIStructuredClient`'s node/byte evidence-size validation end to end
+(only its SDK transport faked), with the measured node/byte counts asserted
+against the client's own `MAX_EVIDENCE_NODES`/`MAX_EVIDENCE_BYTES`; that a
+synthetic worst-case ten-series request (`MAX_SERIES_IDS`, conservative
+oversized placeholder metadata) also fits those same limits; that a full
+seven-series response mixing plain-latest and fully supported
+two-observation comparison claims still passes every post-response
+validator after the compaction; and that a future evidence package that
+would still exceed the client's size limits is rejected locally by the real
+`OpenAIStructuredClient` with zero SDK calls; a fully
 supported two-observation comparison claim accepted, and rejection of a
 one-citation comparison attempt, a wrong evidence-ID pair, an unavailable
 comparison, a missing date, a mismatched value, a wrong stated direction,
@@ -807,6 +885,44 @@ touches only `market_intelligence/agents/macro_analyst.py`,
 `scripts/run_macro_analyst.py`, and their own new tests/docs.
 
 ## Known limitations
+
+- **Model-facing evidence compaction fix (2026-08-25), and the failed
+  seven-series `--execute` attempt that motivated it.** After the
+  full-basket coverage fix described immediately below, the first
+  authorized seven-series Core Macro Basket `--execute` attempt (`FEDFUNDS`,
+  `GS10`, `CPIAUCSL`, `PCEPI`, `UNRATE`, `INDPRO`, `GDPC1`,
+  `recent_observations_limit=6`) passed the deterministic preflight but
+  failed locally, before any provider request was sent, with
+  `OpenAIInvalidRequestError` (`category=request_invalid`, `"Invalid
+  evidence: exceeds the maximum node count."`) -- **zero provider requests
+  and zero tokens were spent for this attempt; no analysis was accepted.**
+  Offline analysis found the root cause: the model-facing evidence payload
+  included every `recent_observations` row for every requested series, even
+  though no post-response validator ever reads that field -- every claim
+  this agent can validate is scoped to either the single latest stored
+  observation or one exact two-observation comparison, both already fully
+  covered by fields already sent independently of `recent_observations`
+  (`observation_date`/`latest_value`/`latest_change_from_previous`). Across
+  seven series this redundant history pushed the serialized evidence tree to
+  501 nodes -- one over `OpenAIStructuredClient`'s existing, unchanged
+  500-node `MAX_EVIDENCE_NODES` cap. The fix, in this same change:
+  `MacroAnalyst._build_model_evidence` now omits `recent_observations` from
+  the model-facing payload entirely (see "Model-facing evidence compaction"
+  above) -- `MacroEvidenceBuilder`'s own snapshot, used for local
+  deterministic evidence and audits, is unchanged and still retains it. This
+  reduces the real seven-series evidence package to 200 nodes / 5,643 bytes
+  and a synthetic worst-case ten-series request to 284 nodes / 11,495
+  bytes -- both comfortably under `MAX_EVIDENCE_NODES` (500) and
+  `MAX_EVIDENCE_BYTES` (32,000), with no global limit raised and no
+  comparison, citation, coverage, frequency-wording, channel, content-scope,
+  or non-directional-policy validation weakened. **As of this change, this
+  fix has not been exercised against a live OpenAI response for the
+  seven-series basket or any other multi-series request** -- it has been
+  validated only by offline, deterministic tests, including one that sends
+  the real, production seven-series evidence package through the real
+  `OpenAIStructuredClient`'s evidence-size validation (only its SDK
+  transport faked, never a live network call). See `PROJECT_STATE.md` for
+  the full sanitized record.
 
 - **Full-basket coverage fix (2026-08-25), and the seven-series dry run that
   motivated it.** After the frequency-aware macro-evidence staleness fix

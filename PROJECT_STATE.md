@@ -2789,6 +2789,124 @@ full record.**
     connector, repository, migration, dependency, `.env`, or the real
     DuckDB database was modified as part of this change.
 
+28. **Failed seven-series Macro Analyst `--execute` attempt, and the
+    model-facing evidence compaction fix (2026-08-25, code/tests/docs only --
+    no live FRED/OpenAI request made as part of this fix itself, no
+    migration, no configuration/dependency/`.env` change, and no write to
+    the real local database).**
+
+    Following item 27 above, the first authorized live `--execute` attempt
+    against the complete seven-series Core Macro Basket (`FEDFUNDS`, `GS10`,
+    `CPIAUCSL`, `PCEPI`, `UNRATE`, `INDPRO`, `GDPC1`,
+    `recent_observations_limit=6`) passed the deterministic, all-or-nothing
+    preflight gate but then failed locally with:
+
+    ```json
+    {"error": "agent_error",
+     "detail": "Invalid evidence: exceeds the maximum node count.",
+     "category": "request_invalid"}
+    ```
+
+    This `request_invalid` error is raised entirely by
+    `OpenAIStructuredClient`'s local evidence-shape validation
+    (`_validate_evidence_shape`, before any SDK client is built or any
+    request is sent -- see
+    [docs/OPENAI_PROVIDER_BOUNDARY.md](docs/OPENAI_PROVIDER_BOUNDARY.md)).
+    **This was a zero-provider-request, zero-token failure: no OpenAI
+    request was sent, no tokens were spent, and no analysis was accepted.**
+
+    Offline diagnosis found the root cause: the model-facing evidence
+    payload built by `MacroAnalyst._build_model_evidence` included every
+    `recent_observations` row for every requested series (as well as
+    `latest_change_from_previous` and the single-latest-observation fields),
+    even though no post-response validator ever reads `recent_observations`
+    -- every claim this agent can validate is scoped to either the single
+    latest stored observation or one exact two-observation comparison, both
+    already fully covered without it. Reconstructing the exact pre-fix
+    seven-series, `recent_observations_limit=6` payload offline and running
+    it through the same local validation reproduced the identical failure at
+    501 nodes -- one over `OpenAIStructuredClient`'s existing, unchanged
+    500-node `MAX_EVIDENCE_NODES` cap.
+
+    The fix, made entirely in
+    `market_intelligence/agents/macro_analyst.py` (`_build_model_evidence`)
+    and its tests/docs: the model-facing evidence payload no longer includes
+    `recent_observations` at all. `MacroEvidenceBuilder`'s own snapshot --
+    used for local deterministic evidence and audits -- is unchanged and
+    still retains up to `recent_observations_limit` recent rows per series;
+    only the subset actually sent to OpenAI was narrowed.
+    `AGENT_INSTRUCTIONS` was updated to stop telling the model it would
+    receive a `recent_observations` excerpt. No global
+    `OpenAIStructuredClient` limit (`MAX_EVIDENCE_NODES`/
+    `MAX_EVIDENCE_DEPTH`/`MAX_EVIDENCE_BYTES`) was raised, and no comparison,
+    citation, series, full-basket-coverage, frequency-wording,
+    transmission-channel, content-scope, or non-directional-policy
+    validation was weakened -- confirmed by the full existing test suite
+    re-passing unchanged.
+
+    Measured evidence-package sizes after the fix (via
+    `OpenAIStructuredClient`'s own node-counting/serialization logic, as
+    asserted in new tests):
+
+    - **Seven-series Core Macro Basket** (the exact request shape that
+      failed live): **200 nodes / 5,643 serialized bytes** -- comfortably
+      under `MAX_EVIDENCE_NODES` (500) and `MAX_EVIDENCE_BYTES` (32,000).
+    - **Ten-series worst case** (`MAX_SERIES_IDS`, the largest basket this
+      agent ever accepts, built with conservative, deliberately oversized
+      placeholder title/frequency/units/seasonal-adjustment strings, each
+      longer than any real Core Macro Basket series' actual metadata):
+      **284 nodes / 11,495 serialized bytes** -- still comfortably under
+      both limits. (FRED-metadata `VARCHAR` columns carry no hard database
+      length bound, so this is a conservative, practical worst case, not a
+      proven upper bound on FRED's actual metadata lengths.)
+
+    Since the model-facing payload no longer includes `recent_observations`
+    at all, evidence-package size is now independent of
+    `recent_observations_limit` entirely -- a caller may still request any
+    value in `MacroEvidenceBuilder`'s existing `[2, 24]` bound without it
+    affecting the size of what is sent to OpenAI.
+
+    New tests were added to `market_intelligence/tests/test_macro_analyst.py`
+    (147 tests total across `test_macro_analyst.py`/
+    `test_run_macro_analyst.py`/`test_macro_analyst_eval_fixtures.py`, up
+    from 141), covering: the model-facing payload containing no
+    `recent_observations` field for any series, for a full seven-series
+    request; a dedicated test asserting the exact preserved field set for a
+    series entry (proving every field required by existing citation,
+    frequency-wording, and comparison-claim validation survives the
+    compaction); the real, production seven-series Core Macro Basket
+    evidence package passing the real `OpenAIStructuredClient`'s node/byte
+    evidence-size validation end to end (only its SDK transport faked),
+    with the measured node/byte counts above asserted directly against the
+    client's own `MAX_EVIDENCE_NODES`/`MAX_EVIDENCE_BYTES`; the synthetic
+    worst-case ten-series request fitting the same limits; a full
+    seven-series response mixing plain-latest and fully supported
+    two-observation comparison claims still passing every post-response
+    validator after the compaction; and a future, deliberately oversized
+    evidence package still being rejected locally by the real
+    `OpenAIStructuredClient`, via the real (non-fake) client, with zero SDK
+    calls made. `python -m pytest` (2011 passed), `python -m ruff check .`
+    (all checks passed), and `git diff --check` (no whitespace errors) were
+    all run as part of this change and pass. See
+    [docs/MACRO_ANALYST.md](docs/MACRO_ANALYST.md)'s "Model-facing evidence
+    compaction" section and "Known limitations" entry for full detail.
+
+    **As of this item, this fix has not been exercised against a live
+    OpenAI response for the seven-series basket, the ten-series worst case,
+    or any other request** -- no further live `--execute` attempt has been
+    made as part of this change. It has been validated only by offline,
+    deterministic tests (fake evidence-builder/model-client stand-ins for
+    the agent-level behavior tests, and the real, production
+    `OpenAIStructuredClient` with only its SDK transport faked for the
+    size-validation tests -- never a live network call). This does not
+    establish that a real seven-series (or ten-series) model response will
+    complete successfully, that any described observation is factually
+    accurate, or that the Core Macro Basket constitutes a complete,
+    gap-free, or research-validated macro dataset -- none of that is
+    claimed here. No connector, repository, migration, basket
+    configuration, dependency, `.env`, or the real DuckDB database was
+    modified as part of this change.
+
 ## Notes
 
 - This file should be updated as phases progress. Treat entries here as
