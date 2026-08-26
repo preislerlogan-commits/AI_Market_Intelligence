@@ -671,18 +671,28 @@ Before a model response is accepted as `status="completed"`:
   `"other"` has no such pattern and is always rejected if listed (fail
   closed on a clearly unsupported channel). **As of 2026-08-25, each
   channel's pattern also recognizes a small, carefully reviewed set of
-  ordinary, economically accurate synonym tokens** (e.g. "yield(s)" for
-  `rates`; singular or plural "price(s)", "purchasing power", "cost of
-  living" for `inflation`; "expansion", "GDP" for `growth`; "funding
-  conditions" for `liquidity`; "risk aversion", "risk-taking" for
-  `risk_appetite`; "cost of credit" for `credit_conditions`; plural
-  "exchange rates" for `currency`; "real estate" for `housing`;
-  "petroleum", "gasoline" for `energy`) -- see "Known limitations" below
-  for the live failure and offline false-positive analysis that motivated
-  this. Every added token remains channel-specific, word-boundary-safe
-  (`\b...\b`), and still rejects generic language such as "affects
-  markets" or "has economic effects"; no semantic judging, fuzzy matching,
-  or substring matching was added, and `"other"` is still always rejected.
+  ordinary, economically accurate synonym tokens**: bare `rate`/`rates`,
+  `interest rate(s)`, `bond yield(s)`, `Treasury yield(s)`, or `government
+  bond yield(s)` for `rates`; `inflation`, `price level(s)`, `consumer
+  price(s)`, `prices of goods and services`, `purchasing power`, or `cost
+  of living` for `inflation`; `growth`, `economic activity`, `output`,
+  `economic expansion`, or `GDP` for `growth`; "funding conditions" for
+  `liquidity`; "risk aversion", "risk-taking" for `risk_appetite`; "cost of
+  credit" for `credit_conditions`; plural "exchange rates" for `currency`;
+  "real estate" for `housing`; "petroleum", "gasoline" for `energy` -- see
+  "Known limitations" below for the live failure and offline
+  false-positive analysis that motivated this. Every added token remains
+  channel-specific, word-boundary-safe (`\b...\b`), and still rejects
+  generic language such as "affects markets" or "has economic effects"; no
+  semantic judging, fuzzy matching, or substring matching was added, and
+  `"other"` is still always rejected. **Bare `price`/`prices`, bare
+  `yield`/`yields`, and bare `expansion` are deliberately NOT accepted
+  synonyms** -- a 2026-08-25 code-review correction found each too
+  contextually ambiguous (e.g. "stock price"/"house price"/"energy
+  prices" for `inflation`; dividend/earnings/crop "yield" for `rates`;
+  "credit expansion"/"balance-sheet expansion" for `growth`) and replaced
+  them with the explicit phrases listed above; see the first "Known
+  limitations" entry below.
 - **Refusal** -- if OpenAI reports `status="refusal"`,
   `MacroAnalystRefusalError` is raised. The refusal explanation text is
   never read anywhere.
@@ -986,6 +996,57 @@ touches only `market_intelligence/agents/macro_analyst.py`,
 `scripts/run_macro_analyst.py`, and their own new tests/docs.
 
 ## Known limitations
+
+- **Code-review correction: three ambiguous bare transmission-channel
+  synonym tokens narrowed to explicit economic phrases (2026-08-25, code/
+  tests/docs only -- no live FRED/OpenAI request, no migration, no
+  configuration/dependency/`.env` change, and no write to the real local
+  database).** A review of the synonym expansion described in the entry
+  immediately below found that three of its bare tokens were themselves
+  too permissive: bare `\bprices?\b` (added for `inflation`) also matches
+  "stock price," "house price," and "energy prices," none of which is an
+  inflation concept; bare `\byields?\b` (added for `rates`) also matches
+  dividend yield, earnings yield, and crop yield, none of which is a rates
+  concept; and bare `\bexpansion\b` (added for `growth`) also matches
+  "credit expansion" and "balance-sheet expansion," neither of which is a
+  growth concept on its own. Each of these three tokens was replaced in
+  `_TRANSMISSION_CHANNEL_PATTERNS` with the explicit phrases it should have
+  required from the start: `price level(s)`, `consumer price(s)`, `prices
+  of goods and services` (alongside the already-specific `purchasing
+  power`/`cost of living`) for `inflation`; `bond yield(s)`, `Treasury
+  yield(s)`, `government bond yield(s)` (alongside the already-accepted
+  bare `rate`/`rates` and `interest rate(s)`, neither of which was
+  ambiguous) for `rates`; and `economic expansion` (alongside the
+  already-specific `growth`/`economic activity`/`output`/`GDP`) for
+  `growth`. `AGENT_INSTRUCTIONS` was updated to match exactly. Every other
+  synonym token added by the prior change (e.g. "funding conditions",
+  "risk aversion", "risk-taking", "cost of credit", plural "exchange
+  rates", "real estate", "petroleum", "gasoline") was reviewed for the same
+  ambiguity and found to already be a channel-specific phrase, so it is
+  unchanged. This is strictly a narrowing: no previously rejected mechanism
+  is newly accepted, and every mechanism that relied only on an
+  intentionally-retained token (e.g. bare `rate`/`rates`, `growth`,
+  `inflation`) is unaffected. 21 new focused tests were added to
+  `market_intelligence/tests/test_macro_analyst.py` (176 tests in that
+  file, up from 155; 2074 in the full repository suite, up from 2053),
+  covering: explicit inflation phrases (`price level`, `consumer prices`,
+  `prices of goods and services`, `purchasing power`, `cost of living`,
+  bare `inflation`) accepted; "stock price," "house price," and "energy
+  prices" rejected for `inflation`; explicit `rates` phrases (`rate`,
+  `interest rate`, `bond yield`, `Treasury yield`, `government bond
+  yield`) accepted; dividend yield, earnings yield, and crop yield rejected
+  for `rates`; "economic expansion" accepted for `growth`; "credit
+  expansion" and "balance-sheet expansion" rejected for `growth`; and that
+  `AGENT_INSTRUCTIONS` no longer advertises the removed bare synonyms and
+  does state the replacement explicit phrases. `python -m pytest` (2074
+  passed), `python -m ruff check .` (all checks passed), and `git diff
+  --check` (no whitespace errors) were all run as part of this change and
+  pass. The existing generic-language-rejected, unrelated-mechanism-
+  rejected, multi-channel-partial-coverage, word-boundary, `"other"`-
+  always-rejected, exactly-one-model-call-with-no-retry, and
+  never-echoes-rejected-text tests from the entry below were re-run
+  unchanged and still pass, confirming this correction touches only the
+  three flagged tokens and `AGENT_INSTRUCTIONS`' wording.
 
 - **Live seven-series `--execute` attempt rejected as
   `transmission_channel_invalid`, and the narrow synonym/word-boundary

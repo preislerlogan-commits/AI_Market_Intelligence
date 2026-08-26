@@ -316,10 +316,13 @@ AGENT_INSTRUCTIONS = (
     "transmission_channels should list ONLY the channels that "
     "conditional_mechanism explicitly names or directly describes using "
     "concrete, specific economic wording for that exact channel concept -- "
-    "for example: interest rates or yields for 'rates'; inflation, prices, "
-    "or purchasing power for 'inflation'; economic growth, output, or GDP "
-    "for 'growth'; liquidity, money supply, or funding conditions for "
-    "'liquidity'; risk appetite, risk sentiment, or risk aversion for "
+    "for example: rate, interest rate, bond yield, Treasury yield, or "
+    "government bond yield for 'rates'; inflation, the price level, "
+    "consumer prices, prices of goods and services, purchasing power, or "
+    "cost of living for 'inflation'; economic growth, economic activity, "
+    "output, economic expansion, or GDP for 'growth'; liquidity, money "
+    "supply, or funding conditions for 'liquidity'; risk appetite, risk "
+    "sentiment, or risk aversion for "
     "'risk_appetite'; credit conditions, lending, or borrowing costs for "
     "'credit_conditions'; currency or exchange rates for 'currency'; "
     "housing, mortgages, or real estate for 'housing'; and energy, oil, or "
@@ -1309,14 +1312,38 @@ def _validate_frequency_wording(
 # plural bug; it does not add semantic judging, fuzzy matching, substring
 # matching, or any generic "affects markets"-style wording, and "other"
 # remains always rejected.
+#
+# **Code-review correction (2026-08-25).** The three bare tokens the fix
+# above added -- bare `\bprices?\b` for `inflation`, bare `\byields?\b` for
+# `rates`, and bare `\bexpansion\b` for `growth` -- were themselves too
+# permissive: each is an ordinary word in unrelated economic contexts
+# ("stock price", "house price", "energy prices"; dividend/earnings/crop
+# "yield"; "credit expansion", "balance-sheet expansion"), so a
+# `conditional_mechanism` could satisfy one of these three channels without
+# actually addressing it. All three bare tokens were replaced with the
+# explicit economic phrases enumerated in `AGENT_INSTRUCTIONS` (e.g. "price
+# level", "consumer prices", "prices of goods and services" for
+# `inflation`; "bond yield", "Treasury yield", "government bond yield" for
+# `rates`, alongside the still-accepted bare `rate`/`rates`; "economic
+# expansion" for `growth`) -- narrower, not broader, than the tokens this
+# correction replaces. Every other channel's tokens added by the fix above
+# were reviewed for the same ambiguity and found to already be
+# channel-specific phrases (e.g. "funding conditions", "cost of credit",
+# "real estate", "petroleum", "gasoline"), so they are unchanged.
 _TRANSMISSION_CHANNEL_PATTERNS: dict[str, re.Pattern[str]] = {
-    "rates": re.compile(r"\brates?\b|\byields?\b", re.IGNORECASE),
+    "rates": re.compile(
+        r"\brates?\b|\binterest\s+rates?\b|\bbond\s+yields?\b|"
+        r"\btreasury\s+yields?\b|\bgovernment\s+bond\s+yields?\b",
+        re.IGNORECASE,
+    ),
     "inflation": re.compile(
-        r"\binflation\b|\bprices?\b|\bpurchasing\s+power\b|\bcost\s+of\s+living\b",
+        r"\binflation\b|\bprice\s+levels?\b|\bconsumer\s+prices?\b|"
+        r"\bprices?\s+of\s+goods\s+and\s+services\b|\bpurchasing\s+power\b|"
+        r"\bcost\s+of\s+living\b",
         re.IGNORECASE,
     ),
     "growth": re.compile(
-        r"\bgrowth\b|\beconomic\s+activity\b|\boutput\b|\bexpansion\b|\bgdp\b",
+        r"\bgrowth\b|\beconomic\s+activity\b|\boutput\b|\beconomic\s+expansion\b|\bgdp\b",
         re.IGNORECASE,
     ),
     "liquidity": re.compile(

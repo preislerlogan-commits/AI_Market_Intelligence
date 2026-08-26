@@ -3175,6 +3175,78 @@ full record.**
     repository, migration, basket configuration, dependency, `.env`, or
     the real DuckDB database was modified as part of this change.
 
+31. **Code-review correction: three ambiguous bare transmission-channel
+    synonym tokens narrowed to explicit economic phrases (2026-08-25,
+    code/tests/docs only -- no live FRED/OpenAI request, no migration, no
+    configuration/dependency/`.env` change, and no write to the real local
+    database).**
+
+    A review of the synonym expansion in item 30 above found that three of
+    its bare tokens were themselves too permissive: bare `\bprices?\b`
+    (added for `inflation`) also matches "stock price," "house price," and
+    "energy prices," none of which is an inflation concept; bare
+    `\byields?\b` (added for `rates`) also matches dividend yield, earnings
+    yield, and crop yield, none of which is a rates concept; and bare
+    `\bexpansion\b` (added for `growth`) also matches "credit expansion"
+    and "balance-sheet expansion," neither of which is a growth concept on
+    its own.
+
+    Each of these three tokens was replaced in
+    `_TRANSMISSION_CHANNEL_PATTERNS`
+    (`market_intelligence/agents/macro_analyst.py`) with explicit phrases:
+
+    - `inflation`: `price level(s)`, `consumer price(s)`, `prices of goods
+      and services`, alongside the already-specific `purchasing power`/
+      `cost of living` (bare `prices?` removed).
+    - `rates`: `bond yield(s)`, `Treasury yield(s)`, `government bond
+      yield(s)`, alongside the already-accepted bare `rate`/`rates` and
+      `interest rate(s)` (neither of which was ambiguous; bare `yields?`
+      removed).
+    - `growth`: `economic expansion`, alongside the already-specific
+      `growth`/`economic activity`/`output`/`GDP` (bare `expansion`
+      removed).
+
+    `AGENT_INSTRUCTIONS` was updated to match exactly. Every other synonym
+    token added by item 30 (e.g. "funding conditions", "risk aversion",
+    "risk-taking", "cost of credit", plural "exchange rates", "real
+    estate", "petroleum", "gasoline") was reviewed for the same ambiguity
+    and found to already be a channel-specific phrase, so it is unchanged.
+    This is strictly a narrowing: no previously rejected mechanism is
+    newly accepted, and every mechanism that relied only on an
+    intentionally-retained token (e.g. bare `rate`/`rates`, `growth`,
+    `inflation`) is unaffected.
+
+    21 new focused tests were added to
+    `market_intelligence/tests/test_macro_analyst.py` (176 tests in that
+    file, up from 155; 2074 in the full repository suite, up from 2053),
+    covering: explicit inflation phrases (`price level`, `consumer
+    prices`, `prices of goods and services`, `purchasing power`, `cost of
+    living`, bare `inflation`) accepted; "stock price," "house price," and
+    "energy prices" rejected for `inflation`; explicit `rates` phrases
+    (`rate`, `interest rate`, `bond yield`, `Treasury yield`, `government
+    bond yield`) accepted; dividend yield, earnings yield, and crop yield
+    rejected for `rates`; "economic expansion" accepted for `growth`;
+    "credit expansion" and "balance-sheet expansion" rejected for
+    `growth`; and that `AGENT_INSTRUCTIONS` no longer advertises the
+    removed bare synonyms and does state the replacement explicit phrases.
+    `python -m pytest` (2074 passed), `python -m ruff check .` (all checks
+    passed), and `git diff --check` (no whitespace errors) were all run as
+    part of this change and pass. The existing generic-language-rejected,
+    unrelated-mechanism-rejected, multi-channel-partial-coverage,
+    word-boundary, `"other"`-always-rejected, exactly-one-model-call-with-
+    no-retry, and never-echoes-rejected-text tests from item 30 were
+    re-run unchanged and still pass, confirming this correction touches
+    only the three flagged tokens and `AGENT_INSTRUCTIONS`' wording. See
+    [docs/MACRO_ANALYST.md](docs/MACRO_ANALYST.md)'s "Transmission-channel
+    addressing" and "Known limitations" sections for full detail.
+
+    **This correction has not been exercised against a live OpenAI
+    response** -- no live `--execute` attempt was made as part of this
+    change. It has been validated only by offline, deterministic tests
+    using fake evidence-builder/model-client stand-ins. No connector,
+    repository, migration, basket configuration, dependency, `.env`, or
+    the real DuckDB database was modified as part of this change.
+
 ## Notes
 
 - This file should be updated as phases progress. Treat entries here as

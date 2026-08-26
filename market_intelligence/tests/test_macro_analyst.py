@@ -2301,10 +2301,15 @@ def test_every_allowed_channel_accepts_its_baseline_mechanism(channel, mechanism
 def test_every_allowed_channel_accepts_a_representative_economic_synonym(channel, mechanism):
     """Reproduces the plausible false-positive class this change fixes:
     ordinary, economically accurate synonym wording for an allowed channel
-    (e.g. "yields" for rates, singular "price" for inflation, "expansion"
-    for growth, plural "exchange rates" for currency, "real estate" for
-    housing) is now accepted, where the prior, narrower tokens would have
-    rejected it."""
+    (e.g. "government bond yields" for rates, "price of goods and services"
+    for inflation, "economic expansion" for growth, plural "exchange rates"
+    for currency, "real estate" for housing) is now accepted, where the
+    prior, narrower tokens would have rejected it. A later code-review
+    correction removed the bare `\\bprices?\\b`, `\\byields?\\b`, and
+    `\\bexpansion\\b` tokens this class originally relied on for
+    inflation/rates/growth as too ambiguous -- see the dedicated
+    "bare-token ambiguity correction" tests below, which use explicit
+    phrases instead."""
     claim = valid_claim_draft(
         transmission_channels=[channel], conditional_mechanism=mechanism
     )
@@ -2406,6 +2411,140 @@ def test_transmission_channel_synonym_error_never_echoes_rejected_text():
 def test_agent_instructions_tell_model_to_omit_unexplained_channels():
     assert "OMIT it from transmission_channels" in AGENT_INSTRUCTIONS
     assert "affects markets" in AGENT_INSTRUCTIONS
+
+
+# ---------------------------------------------------------------------------
+# Transmission-channel bare-token ambiguity correction (2026-08-25).
+#
+# A code review of the synonym expansion above found that three of its bare
+# tokens -- bare `\bprices?\b` for `inflation`, bare `\byields?\b` for
+# `rates`, and bare `\bexpansion\b` for `growth` -- were contextually
+# ambiguous: each is an ordinary word used in unrelated economic contexts
+# ("stock price", "house price", "energy prices"; dividend/earnings/crop
+# "yield"; "credit expansion", "balance-sheet expansion"). These tests prove
+# the narrower, explicit-phrase replacement accepts only the intended
+# concepts and continues to reject the ambiguous unrelated usages.
+# ---------------------------------------------------------------------------
+
+_VALID_INFLATION_PHRASES = [
+    "This series reflects broader inflation across the economy.",
+    "This series reflects changes in the general price level.",
+    "This series reflects changes in consumer prices paid by households.",
+    "This series reflects the price of goods and services purchased by "
+    "households.",
+    "This series can relate to households' purchasing power.",
+    "This series can relate to the broader cost of living.",
+]
+
+_AMBIGUOUS_INFLATION_PHRASES = [
+    "A higher stock price can reflect broader investor optimism.",
+    "A higher house price can reflect local housing demand.",
+    "Higher energy prices can reflect global supply conditions.",
+]
+
+_VALID_RATES_PHRASES = [
+    "This series reflects changes in the policy rate set by the central bank.",
+    "This series reflects broader interest rates across the economy.",
+    "This series can relate to movements in broader bond yields.",
+    "This series can relate to movements in Treasury yields.",
+    "This series can relate to movements in government bond yields.",
+]
+
+_AMBIGUOUS_RATES_PHRASES = [
+    "A higher dividend yield can reflect a firm's payout policy.",
+    "A higher earnings yield can reflect a firm's valuation.",
+    "A higher crop yield can reflect favorable growing conditions.",
+]
+
+_VALID_GROWTH_PHRASES = [
+    "This series reflects the pace of broader economic expansion.",
+]
+
+_AMBIGUOUS_GROWTH_PHRASES = [
+    "Faster credit expansion can reflect looser lending standards.",
+    "Balance-sheet expansion by a central bank can affect market liquidity.",
+]
+
+
+@pytest.mark.parametrize("mechanism", _VALID_INFLATION_PHRASES)
+def test_inflation_channel_accepts_explicit_phrases(mechanism):
+    claim = valid_claim_draft(transmission_channels=["inflation"], conditional_mechanism=mechanism)
+    agent, *_ = make_agent(
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[claim]))
+    )
+    result = agent.run(["FEDFUNDS"])
+    assert result.report.status == "completed"
+
+
+@pytest.mark.parametrize("mechanism", _AMBIGUOUS_INFLATION_PHRASES)
+def test_inflation_channel_rejects_ambiguous_bare_price_usage(mechanism):
+    """"stock price," "house price," and "energy prices" must never satisfy
+    'inflation' -- bare price/prices was removed as too ambiguous."""
+    claim = valid_claim_draft(transmission_channels=["inflation"], conditional_mechanism=mechanism)
+    agent, *_ = make_agent(
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[claim]))
+    )
+    with pytest.raises(MacroAnalystTransmissionChannelError):
+        agent.run(["FEDFUNDS"])
+
+
+@pytest.mark.parametrize("mechanism", _VALID_RATES_PHRASES)
+def test_rates_channel_accepts_explicit_phrases(mechanism):
+    claim = valid_claim_draft(transmission_channels=["rates"], conditional_mechanism=mechanism)
+    agent, *_ = make_agent(
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[claim]))
+    )
+    result = agent.run(["FEDFUNDS"])
+    assert result.report.status == "completed"
+
+
+@pytest.mark.parametrize("mechanism", _AMBIGUOUS_RATES_PHRASES)
+def test_rates_channel_rejects_ambiguous_bare_yield_usage(mechanism):
+    """Dividend yield, earnings yield, and crop yield must never satisfy
+    'rates' -- bare yield/yields was removed as too ambiguous."""
+    claim = valid_claim_draft(transmission_channels=["rates"], conditional_mechanism=mechanism)
+    agent, *_ = make_agent(
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[claim]))
+    )
+    with pytest.raises(MacroAnalystTransmissionChannelError):
+        agent.run(["FEDFUNDS"])
+
+
+@pytest.mark.parametrize("mechanism", _VALID_GROWTH_PHRASES)
+def test_growth_channel_accepts_economic_expansion(mechanism):
+    claim = valid_claim_draft(transmission_channels=["growth"], conditional_mechanism=mechanism)
+    agent, *_ = make_agent(
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[claim]))
+    )
+    result = agent.run(["FEDFUNDS"])
+    assert result.report.status == "completed"
+
+
+@pytest.mark.parametrize("mechanism", _AMBIGUOUS_GROWTH_PHRASES)
+def test_growth_channel_rejects_ambiguous_bare_expansion_usage(mechanism):
+    """Credit expansion and balance-sheet expansion must never satisfy
+    'growth' -- bare expansion was removed as too ambiguous."""
+    claim = valid_claim_draft(transmission_channels=["growth"], conditional_mechanism=mechanism)
+    agent, *_ = make_agent(
+        model_result=completed_result(parsed=completed_analysis(macro_claims=[claim]))
+    )
+    with pytest.raises(MacroAnalystTransmissionChannelError):
+        agent.run(["FEDFUNDS"])
+
+
+def test_agent_instructions_no_longer_offer_bare_ambiguous_synonyms():
+    """AGENT_INSTRUCTIONS must align with the exact accepted concepts --
+    never advertise bare "yields", bare "prices", or bare "expansion" as
+    sufficient for 'rates'/'inflation'/'growth'."""
+    assert "interest rates or yields for 'rates'" not in AGENT_INSTRUCTIONS
+    assert "inflation, prices," not in AGENT_INSTRUCTIONS
+    assert "output, or GDP for 'growth'" not in AGENT_INSTRUCTIONS
+    assert "bond yield" in AGENT_INSTRUCTIONS
+    assert "Treasury yield" in AGENT_INSTRUCTIONS
+    assert "government bond yield" in AGENT_INSTRUCTIONS
+    assert "price level" in AGENT_INSTRUCTIONS
+    assert "consumer prices" in AGENT_INSTRUCTIONS
+    assert "economic expansion" in AGENT_INSTRUCTIONS
 
 
 # ---------------------------------------------------------------------------
