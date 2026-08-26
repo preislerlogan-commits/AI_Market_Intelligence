@@ -3060,6 +3060,193 @@ full record.**
     migration, basket configuration, dependency, `.env`, or the real DuckDB
     database was modified as part of this change.
 
+30. **Live seven-series `--execute` attempt rejected as
+    `transmission_channel_invalid`, and the narrow synonym/word-boundary
+    hardening this motivated (2026-08-25, code/tests/docs only for the fix
+    itself -- no further live FRED/OpenAI request made as part of the fix,
+    no migration, no configuration/dependency/`.env` change, and no write
+    to the real local database).**
+
+    A separately authorized seven-series Core Macro Basket dry run against
+    the real local database passed the deterministic preflight: `eligible:
+    true`, all seven series echoed back, and every flag list (`missing`,
+    `stale`, `future_dated`, `missing_metadata`, `latest_missing`,
+    `no_evidence_id`, `frequency_unrecognized`) empty. A separately
+    authorized `--execute` attempt was then made against the same basket.
+    It passed preflight and **exactly one paid OpenAI request was sent and
+    one structured response was received**, but that response was rejected
+    locally by `_validate_transmission_channels`:
+
+    ```
+    error: agent_error
+    detail: Model output listed a transmission_channel that
+      conditional_mechanism did not clearly and verifiably address.
+    category: transmission_channel_invalid
+    ```
+
+    **No report was accepted from this attempt, and no retry was made.**
+    Per this agent's sanitization contract, the model-authored
+    `transmission_channels`/`conditional_mechanism` text that triggered the
+    rejection was never captured or recorded, so **the exact live channel,
+    mechanism wording, and root cause are not known and are not reproduced
+    anywhere in this repository.**
+
+    Offline analysis of `_TRANSMISSION_CHANNEL_PATTERNS`
+    (`market_intelligence/agents/macro_analyst.py`) as it existed at the
+    time found several plausible, locally reproducible false-positive
+    classes -- ordinary, economically accurate ways of describing an
+    allowed channel that the prior, narrower tokens did not match:
+    "yield(s)" for `rates`; singular "price" for `inflation` (the prior
+    pattern required plural "prices" or the exact phrase "price level");
+    "expansion" for `growth`; "real estate" for `housing`;
+    "risk aversion"/"risk-taking" for `risk_appetite`; "cost of credit" for
+    `credit_conditions`; "funding conditions" for `liquidity`; and
+    "petroleum"/"gasoline" for `energy`. Offline analysis also found a
+    genuine word-boundary bug, independent of vocabulary breadth: the
+    `currency` channel's pattern required the literal singular
+    `\bexchange\s+rate\b`, which never matched the equally common plural
+    "exchange rates" (the trailing "s" sits immediately after "rate" with
+    no intervening non-word character, so the required word boundary right
+    after "rate" was never satisfied there). **Each of these is offline
+    analysis of a plausible failure class, reproduced only with locally
+    authored test fixtures -- none of it is proof of the exact wording,
+    channel, or cause rejected in the live attempt.**
+
+    The fix, made entirely in `market_intelligence/agents/macro_analyst.py`
+    and its tests/docs:
+
+    - `_TRANSMISSION_CHANNEL_PATTERNS` gained a small, carefully reviewed
+      set of additional word-boundary-safe synonym tokens per channel (the
+      exact list above), and the `currency` pattern was corrected to
+      `\bexchange\s+rates?\b` so both singular and plural match. Every
+      added token remains a fixed, case-insensitive, word-boundary regex
+      alternative checked by the same unchanged
+      `_validate_transmission_channels` function -- no semantic model
+      judging, retry, truncation, or fuzzy/substring matching was added,
+      and `"other"` is still always rejected.
+    - `AGENT_INSTRUCTIONS` was strengthened to enumerate the concrete
+      economic wording that addresses each specific channel, state
+      explicitly that generic language such as "affects markets" or "has
+      economic effects" does not count as addressing any channel, and
+      instruct the model to omit a channel entirely (never guess or
+      include it anyway) when it cannot explicitly and directly explain
+      that channel this way.
+    - Every other validator -- citation, series, full-basket coverage,
+      content-scope, comparison-claim, frequency-wording, and the shared
+      non-directional output policy -- and the one-OpenAI-request-with-
+      no-automatic-retry behavior are completely unchanged and re-verified
+      passing.
+
+    25 new focused tests were added to
+    `market_intelligence/tests/test_macro_analyst.py` (155 tests in that
+    file, up from 130; 180 across the three Macro Analyst test files, up
+    from 155; 2053 in the full repository suite, up from 2028), covering:
+    every allowed channel accepted via its pre-existing baseline mechanism;
+    every allowed channel accepted via a representative economic synonym
+    (reproducing the plausible false-positive classes above, now fixed);
+    generic language ("affects markets"/"has economic effects") and an
+    unrelated mechanism still rejected; a word-boundary safety case proving
+    "rate" appearing only as a substring of unrelated words ("moderate",
+    "corporate") never satisfies the `rates` token; multiple listed
+    channels where one is addressed via a synonym and the other is not,
+    still rejected; exactly one model call with no automatic retry after a
+    transmission-channel rejection; a dedicated case that a synonym-based
+    rejection still never echoes the rejected mechanism text; and that
+    `AGENT_INSTRUCTIONS` states both the omit-if-unaddressed instruction
+    and the generic-language exclusion. `python -m pytest` (2053 passed),
+    `python -m ruff check .` (all checks passed), and `git diff --check`
+    (no whitespace errors) were all run as part of this change and pass.
+    The existing Market Evidence Agent, News Analyst, and shared
+    `non_directional_output_policy` test suites were re-run unchanged and
+    still pass, confirming this fix touches only the Macro Analyst's own
+    transmission-channel patterns and instructions. See
+    [docs/MACRO_ANALYST.md](docs/MACRO_ANALYST.md)'s "Transmission-channel
+    addressing" and "Known limitations" sections for full detail.
+
+    **As of this item, this fix has not been exercised against a live
+    OpenAI response** -- no further live `--execute` attempt has been made
+    as part of this change. It has been validated only by offline,
+    deterministic tests using fake evidence-builder/model-client
+    stand-ins. This does not establish that a real model response will
+    phrase a mechanism using one of these newly recognized tokens, that
+    the live rejection above shared the same root cause as any locally
+    reproduced class described here, or that any described observation is
+    factually accurate -- none of that is claimed here. No connector,
+    repository, migration, basket configuration, dependency, `.env`, or
+    the real DuckDB database was modified as part of this change.
+
+31. **Code-review correction: three ambiguous bare transmission-channel
+    synonym tokens narrowed to explicit economic phrases (2026-08-25,
+    code/tests/docs only -- no live FRED/OpenAI request, no migration, no
+    configuration/dependency/`.env` change, and no write to the real local
+    database).**
+
+    A review of the synonym expansion in item 30 above found that three of
+    its bare tokens were themselves too permissive: bare `\bprices?\b`
+    (added for `inflation`) also matches "stock price," "house price," and
+    "energy prices," none of which is an inflation concept; bare
+    `\byields?\b` (added for `rates`) also matches dividend yield, earnings
+    yield, and crop yield, none of which is a rates concept; and bare
+    `\bexpansion\b` (added for `growth`) also matches "credit expansion"
+    and "balance-sheet expansion," neither of which is a growth concept on
+    its own.
+
+    Each of these three tokens was replaced in
+    `_TRANSMISSION_CHANNEL_PATTERNS`
+    (`market_intelligence/agents/macro_analyst.py`) with explicit phrases:
+
+    - `inflation`: `price level(s)`, `consumer price(s)`, `prices of goods
+      and services`, alongside the already-specific `purchasing power`/
+      `cost of living` (bare `prices?` removed).
+    - `rates`: `bond yield(s)`, `Treasury yield(s)`, `government bond
+      yield(s)`, alongside the already-accepted bare `rate`/`rates` and
+      `interest rate(s)` (neither of which was ambiguous; bare `yields?`
+      removed).
+    - `growth`: `economic expansion`, alongside the already-specific
+      `growth`/`economic activity`/`output`/`GDP` (bare `expansion`
+      removed).
+
+    `AGENT_INSTRUCTIONS` was updated to match exactly. Every other synonym
+    token added by item 30 (e.g. "funding conditions", "risk aversion",
+    "risk-taking", "cost of credit", plural "exchange rates", "real
+    estate", "petroleum", "gasoline") was reviewed for the same ambiguity
+    and found to already be a channel-specific phrase, so it is unchanged.
+    This is strictly a narrowing: no previously rejected mechanism is
+    newly accepted, and every mechanism that relied only on an
+    intentionally-retained token (e.g. bare `rate`/`rates`, `growth`,
+    `inflation`) is unaffected.
+
+    21 new focused tests were added to
+    `market_intelligence/tests/test_macro_analyst.py` (176 tests in that
+    file, up from 155; 2074 in the full repository suite, up from 2053),
+    covering: explicit inflation phrases (`price level`, `consumer
+    prices`, `prices of goods and services`, `purchasing power`, `cost of
+    living`, bare `inflation`) accepted; "stock price," "house price," and
+    "energy prices" rejected for `inflation`; explicit `rates` phrases
+    (`rate`, `interest rate`, `bond yield`, `Treasury yield`, `government
+    bond yield`) accepted; dividend yield, earnings yield, and crop yield
+    rejected for `rates`; "economic expansion" accepted for `growth`;
+    "credit expansion" and "balance-sheet expansion" rejected for
+    `growth`; and that `AGENT_INSTRUCTIONS` no longer advertises the
+    removed bare synonyms and does state the replacement explicit phrases.
+    `python -m pytest` (2074 passed), `python -m ruff check .` (all checks
+    passed), and `git diff --check` (no whitespace errors) were all run as
+    part of this change and pass. The existing generic-language-rejected,
+    unrelated-mechanism-rejected, multi-channel-partial-coverage,
+    word-boundary, `"other"`-always-rejected, exactly-one-model-call-with-
+    no-retry, and never-echoes-rejected-text tests from item 30 were
+    re-run unchanged and still pass, confirming this correction touches
+    only the three flagged tokens and `AGENT_INSTRUCTIONS`' wording. See
+    [docs/MACRO_ANALYST.md](docs/MACRO_ANALYST.md)'s "Transmission-channel
+    addressing" and "Known limitations" sections for full detail.
+
+    **This correction has not been exercised against a live OpenAI
+    response** -- no live `--execute` attempt was made as part of this
+    change. It has been validated only by offline, deterministic tests
+    using fake evidence-builder/model-client stand-ins. No connector,
+    repository, migration, basket configuration, dependency, `.env`, or
+    the real DuckDB database was modified as part of this change.
+
 ## Notes
 
 - This file should be updated as phases progress. Treat entries here as

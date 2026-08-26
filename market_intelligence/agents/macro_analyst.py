@@ -313,11 +313,26 @@ AGENT_INSTRUCTIONS = (
     "general type of series could in principle relate to markets -- never a "
     "prediction, forecast, or directional statement for any specific "
     "symbol, and never increase/decrease/unchanged language. "
-    "transmission_channels should list the general channels, if any, that "
-    "plausibly apply, but every channel you list must be explicitly and "
-    "clearly addressed within conditional_mechanism -- never list a channel "
-    "your conditional_mechanism does not address, and never select "
-    "'other' as a transmission channel, since it cannot be verified. "
+    "transmission_channels should list ONLY the channels that "
+    "conditional_mechanism explicitly names or directly describes using "
+    "concrete, specific economic wording for that exact channel concept -- "
+    "for example: rate, interest rate, bond yield, Treasury yield, or "
+    "government bond yield for 'rates'; inflation, the price level, "
+    "consumer prices, prices of goods and services, purchasing power, or "
+    "cost of living for 'inflation'; economic growth, economic activity, "
+    "output, economic expansion, or GDP for 'growth'; liquidity, money "
+    "supply, or funding conditions for 'liquidity'; risk appetite, risk "
+    "sentiment, or risk aversion for "
+    "'risk_appetite'; credit conditions, lending, or borrowing costs for "
+    "'credit_conditions'; currency or exchange rates for 'currency'; "
+    "housing, mortgages, or real estate for 'housing'; and energy, oil, or "
+    "fuel for 'energy'. Generic language such as 'affects markets' or 'has "
+    "economic effects' does NOT count as addressing any channel. If you "
+    "cannot explicitly and directly explain a channel this way, you must "
+    "OMIT it from transmission_channels entirely -- never list a channel "
+    "your conditional_mechanism does not concretely address this way, and "
+    "never select 'other' as a transmission channel, since it cannot be "
+    "verified. "
     "You must produce exactly one macro_claim for EVERY series requested of "
     "you -- never omit a requested series, never produce more than one "
     "claim for the same series, and never produce a claim for a series that "
@@ -1272,22 +1287,87 @@ def _validate_frequency_wording(
 # Deterministic, word-boundary token checks per TransmissionChannel value.
 # "other" is deliberately excluded -- it can never be verified, so any claim
 # listing it fails closed (see _validate_transmission_channels).
+#
+# A live seven-series `--execute` attempt (2026-08-25) passed the
+# deterministic preflight and received exactly one structured response, but
+# that response was rejected here (MacroAnalystTransmissionChannelError,
+# category=transmission_channel_invalid) -- no report was accepted and no
+# retry was made. Per this agent's sanitization contract, the rejected
+# model text was never captured, so the exact live channel/mechanism/wording
+# is NOT known and is not reproduced anywhere in this repository. Offline
+# analysis of the patterns as they existed at the time found several
+# plausible, locally reproducible false-positive classes: ordinary,
+# economically accurate synonyms for an allowed channel concept that the
+# prior, narrower tokens did not match (e.g. "yield" for "rates", singular
+# "price" for "inflation", "expansion" for "growth", "real estate" for
+# "housing"), plus a genuine word-boundary bug -- `\bexchange\s+rate\b`
+# required the literal singular "rate" and so never matched the equally
+# common plural "exchange rates" (the trailing "s" in "rates" sits directly
+# after "rate" with no intervening non-word character, so `\b` right after
+# "rate" never matches there). These are reproduced with locally authored
+# test fixtures in `test_macro_analyst.py` -- they are plausible
+# explanations for the live rejection category, never proof of the exact
+# live cause. The fix below only adds carefully reviewed, still
+# channel-specific, still word-boundary-safe synonym tokens and fixes the
+# plural bug; it does not add semantic judging, fuzzy matching, substring
+# matching, or any generic "affects markets"-style wording, and "other"
+# remains always rejected.
+#
+# **Code-review correction (2026-08-25).** The three bare tokens the fix
+# above added -- bare `\bprices?\b` for `inflation`, bare `\byields?\b` for
+# `rates`, and bare `\bexpansion\b` for `growth` -- were themselves too
+# permissive: each is an ordinary word in unrelated economic contexts
+# ("stock price", "house price", "energy prices"; dividend/earnings/crop
+# "yield"; "credit expansion", "balance-sheet expansion"), so a
+# `conditional_mechanism` could satisfy one of these three channels without
+# actually addressing it. All three bare tokens were replaced with the
+# explicit economic phrases enumerated in `AGENT_INSTRUCTIONS` (e.g. "price
+# level", "consumer prices", "prices of goods and services" for
+# `inflation`; "bond yield", "Treasury yield", "government bond yield" for
+# `rates`, alongside the still-accepted bare `rate`/`rates`; "economic
+# expansion" for `growth`) -- narrower, not broader, than the tokens this
+# correction replaces. Every other channel's tokens added by the fix above
+# were reviewed for the same ambiguity and found to already be
+# channel-specific phrases (e.g. "funding conditions", "cost of credit",
+# "real estate", "petroleum", "gasoline"), so they are unchanged.
 _TRANSMISSION_CHANNEL_PATTERNS: dict[str, re.Pattern[str]] = {
-    "rates": re.compile(r"\brates?\b", re.IGNORECASE),
-    "inflation": re.compile(r"\binflation\b|\bprice\s+level\b|\bprices\b", re.IGNORECASE),
-    "growth": re.compile(r"\bgrowth\b|\beconomic\s+activity\b|\boutput\b", re.IGNORECASE),
+    "rates": re.compile(
+        r"\brates?\b|\binterest\s+rates?\b|\bbond\s+yields?\b|"
+        r"\btreasury\s+yields?\b|\bgovernment\s+bond\s+yields?\b",
+        re.IGNORECASE,
+    ),
+    "inflation": re.compile(
+        r"\binflation\b|\bprice\s+levels?\b|\bconsumer\s+prices?\b|"
+        r"\bprices?\s+of\s+goods\s+and\s+services\b|\bpurchasing\s+power\b|"
+        r"\bcost\s+of\s+living\b",
+        re.IGNORECASE,
+    ),
+    "growth": re.compile(
+        r"\bgrowth\b|\beconomic\s+activity\b|\boutput\b|\beconomic\s+expansion\b|\bgdp\b",
+        re.IGNORECASE,
+    ),
     "liquidity": re.compile(
-        r"\bliquidity\b|\bmoney\s+supply\b|\bcredit\s+availab\w*\b", re.IGNORECASE
+        r"\bliquidity\b|\bmoney\s+supply\b|\bcredit\s+availab\w*\b|"
+        r"\bfunding\s+conditions?\b",
+        re.IGNORECASE,
     ),
     "risk_appetite": re.compile(
-        r"\brisk\s+appetite\b|\brisk\s+sentiment\b|\binvestor\s+risk\b", re.IGNORECASE
+        r"\brisk\s+appetite\b|\brisk\s+sentiment\b|\binvestor\s+risk\b|"
+        r"\brisk\s+avers(?:e|ion)\b|\brisk[- ]taking\b",
+        re.IGNORECASE,
     ),
     "credit_conditions": re.compile(
-        r"\bcredit\s+conditions?\b|\blending\b|\bborrowing\s+costs?\b", re.IGNORECASE
+        r"\bcredit\s+conditions?\b|\blending\b|\bborrowing\s+costs?\b|"
+        r"\bcost\s+of\s+credit\b",
+        re.IGNORECASE,
     ),
-    "currency": re.compile(r"\bcurrency\b|\bexchange\s+rate\b|\bdollar\b", re.IGNORECASE),
-    "housing": re.compile(r"\bhousing\b|\bmortgages?\b|\bhomes?\b", re.IGNORECASE),
-    "energy": re.compile(r"\benergy\b|\boil\b|\bgas\b|\bfuel\b", re.IGNORECASE),
+    "currency": re.compile(r"\bcurrency\b|\bexchange\s+rates?\b|\bdollar\b", re.IGNORECASE),
+    "housing": re.compile(
+        r"\bhousing\b|\bmortgages?\b|\bhomes?\b|\breal\s+estate\b", re.IGNORECASE
+    ),
+    "energy": re.compile(
+        r"\benergy\b|\boil\b|\bgas\b|\bfuel\b|\bpetroleum\b|\bgasoline\b", re.IGNORECASE
+    ),
 }
 
 

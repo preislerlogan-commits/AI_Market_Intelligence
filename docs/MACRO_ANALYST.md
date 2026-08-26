@@ -666,10 +666,33 @@ Before a model response is accepted as `status="completed"`:
 - **Transmission-channel addressing (`_validate_transmission_channels`,
   raises `MacroAnalystTransmissionChannelError`)** -- every
   `transmission_channels` entry a claim lists must be explicitly and
-  verifiably addressed (a fixed, word-boundary token pattern per channel)
-  by that claim's `conditional_mechanism`; `"other"` has no such pattern
-  and is always rejected if listed (fail closed on a clearly unsupported
-  channel).
+  verifiably addressed (a fixed, word-boundary token pattern per channel,
+  `_TRANSMISSION_CHANNEL_PATTERNS`) by that claim's `conditional_mechanism`;
+  `"other"` has no such pattern and is always rejected if listed (fail
+  closed on a clearly unsupported channel). **As of 2026-08-25, each
+  channel's pattern also recognizes a small, carefully reviewed set of
+  ordinary, economically accurate synonym tokens**: bare `rate`/`rates`,
+  `interest rate(s)`, `bond yield(s)`, `Treasury yield(s)`, or `government
+  bond yield(s)` for `rates`; `inflation`, `price level(s)`, `consumer
+  price(s)`, `prices of goods and services`, `purchasing power`, or `cost
+  of living` for `inflation`; `growth`, `economic activity`, `output`,
+  `economic expansion`, or `GDP` for `growth`; "funding conditions" for
+  `liquidity`; "risk aversion", "risk-taking" for `risk_appetite`; "cost of
+  credit" for `credit_conditions`; plural "exchange rates" for `currency`;
+  "real estate" for `housing`; "petroleum", "gasoline" for `energy` -- see
+  "Known limitations" below for the live failure and offline
+  false-positive analysis that motivated this. Every added token remains
+  channel-specific, word-boundary-safe (`\b...\b`), and still rejects
+  generic language such as "affects markets" or "has economic effects"; no
+  semantic judging, fuzzy matching, or substring matching was added, and
+  `"other"` is still always rejected. **Bare `price`/`prices`, bare
+  `yield`/`yields`, and bare `expansion` are deliberately NOT accepted
+  synonyms** -- a 2026-08-25 code-review correction found each too
+  contextually ambiguous (e.g. "stock price"/"house price"/"energy
+  prices" for `inflation`; dividend/earnings/crop "yield" for `rates`;
+  "credit expansion"/"balance-sheet expansion" for `growth`) and replaced
+  them with the explicit phrases listed above; see the first "Known
+  limitations" entry below.
 - **Refusal** -- if OpenAI reports `status="refusal"`,
   `MacroAnalystRefusalError` is raised. The refusal explanation text is
   never read anywhere.
@@ -793,9 +816,9 @@ exception type, message, or traceback.
 
 `market_intelligence/tests/test_macro_analyst.py`,
 `test_run_macro_analyst.py`, and `test_macro_analyst_eval_fixtures.py` cover
-(155 tests total, up from 147 after the narrow negated-directional-prediction
-disclaimer allowance for `limitations` described below -- see "Known
-limitations" below): an eligible FEDFUNDS snapshot; every preflight abstention
+(180 tests total across the three files, up from 155 after the narrow
+transmission-channel synonym/word-boundary hardening described below -- see
+"Known limitations" below): an eligible FEDFUNDS snapshot; every preflight abstention
 reason with zero model calls (missing, missing metadata, stale, future-
 dated, `latest_is_missing`, no evidence ID, requested-series mismatch, and
 now also `series_frequency_unrecognized`, plus every known
@@ -883,7 +906,18 @@ error never echoes rejected text; a transmission channel addressed by
 `conditional_mechanism` accepted, an unaddressed channel rejected
 (reproducing the manual-review finding described in `PROJECT_STATE.md`), a
 missing `conditional_mechanism` rejected, `"other"` always rejected, and
-that the error never echoes rejected text; `recent_observations_limit`
+that the error never echoes rejected text; every allowed channel accepted
+via both its pre-existing baseline mechanism and a representative
+economically accurate synonym (reproducing the plausible false-positive
+classes described in "Known limitations" below, now fixed), generic
+language ("affects markets"/"has economic effects") and an unrelated
+mechanism still rejected, a word-boundary safety case proving a "rate"
+substring inside unrelated words never satisfies the `rates` token,
+multiple channels where one is addressed via a synonym and the other is
+not still rejected, exactly one model call with no automatic retry after a
+transmission-channel rejection, a synonym-based rejection never echoing
+rejected text, and `AGENT_INSTRUCTIONS` stating both the
+omit-if-unaddressed instruction and the generic-language exclusion; `recent_observations_limit`
 forwarding from the agent to the evidence builder and from the CLI to the
 agent (both dry-run and `--execute`, including the CLI default); and the
 narrow negated-limitation content-scope allowance described above -- an
@@ -962,6 +996,144 @@ touches only `market_intelligence/agents/macro_analyst.py`,
 `scripts/run_macro_analyst.py`, and their own new tests/docs.
 
 ## Known limitations
+
+- **Code-review correction: three ambiguous bare transmission-channel
+  synonym tokens narrowed to explicit economic phrases (2026-08-25, code/
+  tests/docs only -- no live FRED/OpenAI request, no migration, no
+  configuration/dependency/`.env` change, and no write to the real local
+  database).** A review of the synonym expansion described in the entry
+  immediately below found that three of its bare tokens were themselves
+  too permissive: bare `\bprices?\b` (added for `inflation`) also matches
+  "stock price," "house price," and "energy prices," none of which is an
+  inflation concept; bare `\byields?\b` (added for `rates`) also matches
+  dividend yield, earnings yield, and crop yield, none of which is a rates
+  concept; and bare `\bexpansion\b` (added for `growth`) also matches
+  "credit expansion" and "balance-sheet expansion," neither of which is a
+  growth concept on its own. Each of these three tokens was replaced in
+  `_TRANSMISSION_CHANNEL_PATTERNS` with the explicit phrases it should have
+  required from the start: `price level(s)`, `consumer price(s)`, `prices
+  of goods and services` (alongside the already-specific `purchasing
+  power`/`cost of living`) for `inflation`; `bond yield(s)`, `Treasury
+  yield(s)`, `government bond yield(s)` (alongside the already-accepted
+  bare `rate`/`rates` and `interest rate(s)`, neither of which was
+  ambiguous) for `rates`; and `economic expansion` (alongside the
+  already-specific `growth`/`economic activity`/`output`/`GDP`) for
+  `growth`. `AGENT_INSTRUCTIONS` was updated to match exactly. Every other
+  synonym token added by the prior change (e.g. "funding conditions",
+  "risk aversion", "risk-taking", "cost of credit", plural "exchange
+  rates", "real estate", "petroleum", "gasoline") was reviewed for the same
+  ambiguity and found to already be a channel-specific phrase, so it is
+  unchanged. This is strictly a narrowing: no previously rejected mechanism
+  is newly accepted, and every mechanism that relied only on an
+  intentionally-retained token (e.g. bare `rate`/`rates`, `growth`,
+  `inflation`) is unaffected. 21 new focused tests were added to
+  `market_intelligence/tests/test_macro_analyst.py` (176 tests in that
+  file, up from 155; 2074 in the full repository suite, up from 2053),
+  covering: explicit inflation phrases (`price level`, `consumer prices`,
+  `prices of goods and services`, `purchasing power`, `cost of living`,
+  bare `inflation`) accepted; "stock price," "house price," and "energy
+  prices" rejected for `inflation`; explicit `rates` phrases (`rate`,
+  `interest rate`, `bond yield`, `Treasury yield`, `government bond
+  yield`) accepted; dividend yield, earnings yield, and crop yield rejected
+  for `rates`; "economic expansion" accepted for `growth`; "credit
+  expansion" and "balance-sheet expansion" rejected for `growth`; and that
+  `AGENT_INSTRUCTIONS` no longer advertises the removed bare synonyms and
+  does state the replacement explicit phrases. `python -m pytest` (2074
+  passed), `python -m ruff check .` (all checks passed), and `git diff
+  --check` (no whitespace errors) were all run as part of this change and
+  pass. The existing generic-language-rejected, unrelated-mechanism-
+  rejected, multi-channel-partial-coverage, word-boundary, `"other"`-
+  always-rejected, exactly-one-model-call-with-no-retry, and
+  never-echoes-rejected-text tests from the entry below were re-run
+  unchanged and still pass, confirming this correction touches only the
+  three flagged tokens and `AGENT_INSTRUCTIONS`' wording.
+
+- **Live seven-series `--execute` attempt rejected as
+  `transmission_channel_invalid`, and the narrow synonym/word-boundary
+  hardening this motivated (2026-08-25).** A separately authorized
+  seven-series Core Macro Basket dry run against the real local database
+  passed the deterministic preflight (`eligible: true`, every flag list
+  empty). A separately authorized `--execute` attempt was then made: it
+  passed preflight and reached OpenAI, and **exactly one paid OpenAI
+  request was sent and one structured response was received**, but that
+  response was rejected by `_validate_transmission_channels` with
+  `MacroAnalystTransmissionChannelError`
+  (`category=transmission_channel_invalid`) -- `"Model output listed a
+  transmission_channel that conditional_mechanism did not clearly and
+  verifiably address."` **No report was accepted from this attempt, and no
+  retry was made.** Per this agent's sanitization contract, the
+  model-authored `transmission_channels`/`conditional_mechanism` text that
+  triggered the rejection was never captured or recorded, so **the exact
+  live channel, mechanism wording, and root cause are not known and are
+  not reproduced anywhere in this repository.**
+
+  Offline analysis of `_TRANSMISSION_CHANNEL_PATTERNS` as it existed at the
+  time found several plausible, locally reproducible false-positive
+  classes -- ordinary, economically accurate ways of describing an allowed
+  channel that the prior, narrower tokens did not match: "yield(s)" for
+  `rates` (e.g. "shifts in government bond yields"); singular "price" for
+  `inflation` (the prior pattern required plural "prices" or the exact
+  phrase "price level"); "expansion" for `growth`; "real estate" for
+  `housing`; "risk aversion"/"risk-taking" for `risk_appetite`; "cost of
+  credit" for `credit_conditions`; "funding conditions" for `liquidity`;
+  and "petroleum"/"gasoline" for `energy`. Offline analysis also found a
+  genuine word-boundary bug, independent of vocabulary breadth: the
+  `currency` channel's pattern required the literal singular
+  `\bexchange\s+rate\b`, which never matches the equally common plural
+  "exchange rates" -- the trailing "s" sits immediately after "rate" with
+  no intervening non-word character, so the word boundary required right
+  after "rate" is never satisfied there. **Each of these is offline
+  analysis of a plausible failure class, reproduced only with locally
+  authored test fixtures in `test_macro_analyst.py` -- none of it is proof
+  of the exact wording, channel, or cause rejected in the live attempt.**
+
+  The fix, made entirely in `_TRANSMISSION_CHANNEL_PATTERNS` and
+  `AGENT_INSTRUCTIONS` in `market_intelligence/agents/macro_analyst.py`:
+  each channel's existing pattern gained a small, carefully reviewed set of
+  additional word-boundary-safe synonym tokens (listed in
+  "Transmission-channel addressing" above), and the `currency` pattern was
+  corrected to `\bexchange\s+rates?\b` so both singular and plural match.
+  `AGENT_INSTRUCTIONS` was also strengthened to enumerate the concrete
+  economic wording that addresses each specific channel, state explicitly
+  that generic language such as "affects markets" or "has economic
+  effects" does not count as addressing any channel, and instruct the
+  model to omit a channel entirely (never guess or include it anyway) when
+  it cannot explicitly and directly explain that channel this way. **No
+  semantic model judging, retry, truncation, or fuzzy/substring matching
+  was added anywhere** -- every added token is still a fixed,
+  case-insensitive, word-boundary regex alternative checked deterministically
+  by the same unchanged `_validate_transmission_channels` function;
+  `"other"` is still always rejected; and every other validator (citation,
+  series, full-basket coverage, content-scope, comparison-claim,
+  frequency-wording, and the shared non-directional output policy) is
+  completely unchanged and re-verified passing. 25 new focused tests were
+  added to `market_intelligence/tests/test_macro_analyst.py` (155 tests in
+  that file, up from 130; 180 across the three Macro Analyst test files,
+  up from 155; 2053 in the full repository suite, up from 2028), covering:
+  every allowed channel accepted via its pre-existing baseline mechanism;
+  every allowed channel accepted via a representative economic synonym
+  (reproducing the plausible false-positive classes above, now fixed);
+  generic language ("affects markets"/"has economic effects") still
+  rejected; an unrelated mechanism still rejected; a word-boundary safety
+  case proving "rate" appearing only as a substring of unrelated words
+  ("moderate", "corporate") never satisfies the `rates` token; multiple
+  listed channels where one is addressed via a synonym and the other is
+  not, still rejected; exactly one model call with no automatic retry after
+  a transmission-channel rejection; a dedicated case that a synonym-based
+  rejection still never echoes the rejected mechanism text; and that
+  `AGENT_INSTRUCTIONS` states both the omit-if-unaddressed instruction and
+  the generic-language exclusion. The existing Market Evidence Agent, News
+  Analyst, and shared `non_directional_output_policy` test suites were
+  re-run unchanged and still pass, confirming this fix touches only the
+  Macro Analyst's own transmission-channel patterns and instructions. **As
+  of this change, this fix has not been exercised against a live OpenAI
+  response** -- no further live `--execute` attempt has been made. It does
+  not establish that a real model response will phrase a mechanism using
+  one of these newly recognized tokens, that the live rejection above
+  shared the same root cause as any locally reproduced class described
+  here, or that any described observation is factually accurate. See
+  `PROJECT_STATE.md` for the full sanitized record of both the live
+  attempt and this fix.
 
 - **First live seven-series `--execute` attempt after the model-facing
   evidence compaction fix, rejected by the shared post-response content
