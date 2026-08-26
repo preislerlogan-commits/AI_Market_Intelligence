@@ -56,10 +56,14 @@ from market_intelligence.agents.macro_analyst import (
 )
 from market_intelligence.market_features.macro_evidence import MAX_SERIES_IDS
 from market_intelligence.model_clients.openai_structured import (
+    MAX_EVIDENCE_BYTES,
+    MAX_EVIDENCE_NODES,
+    OpenAIInvalidRequestError,
     OpenAIParseFailureError,
     OpenAIStructuredClient,
     OpenAITimeoutError,
     StructuredOutputResult,
+    _validate_evidence_shape,
 )
 
 # ---------------------------------------------------------------------------
@@ -943,6 +947,212 @@ def test_real_schema_round_trips_through_openai_structured_client(monkeypatch, t
 
 
 # ---------------------------------------------------------------------------
+# Compact model evidence fits OpenAIStructuredClient's real node/depth/byte
+# limits -- the seven-series Core Macro Basket (the exact request shape that
+# failed live with "exceeds the maximum node count" before this change) and
+# the maximum supported ten-series request, using conservative, practical
+# worst-case field sizes (FRED's VARCHAR metadata columns are not
+# hard-length-bounded in the schema, so these are deliberately generous
+# placeholders, not a proven database maximum).
+# ---------------------------------------------------------------------------
+
+_MINIMAL_VALID_MODEL_ANALYSIS = MacroAnalystModelAnalysis(
+    evidence_quality="insufficient", macro_claims=[], limitations=[]
+)
+
+# Conservative, practical worst-case FRED metadata string lengths -- longer
+# than any real Core Macro Basket series' actual metadata, used only to
+# prove the compacted evidence package still fits comfortably even under
+# generous field sizes. Not a claim that FRED (or this project's VARCHAR
+# columns, which carry no hard length constraint) cannot report something
+# longer.
+_WORST_CASE_TITLE = (
+    "Nonfarm Business Sector: Real Output Per Hour of All Persons, Chained "
+    "2017 Dollars, Quarterly Percent Change from Preceding Period at a "
+    "Seasonally Adjusted Annual Rate"
+)
+_WORST_CASE_FREQUENCY = "Quarterly, Seasonally Adjusted Annual Rate"
+_WORST_CASE_UNITS = "Percent Change from Preceding Period, Seasonally Adjusted Annual Rate"
+_WORST_CASE_SEASONAL_ADJUSTMENT = "Seasonally Adjusted Annual Rate"
+_WORST_CASE_VALUE = "-123456789012345.123456"
+
+TEN_SERIES_IDS: tuple[str, ...] = FULL_BASKET_SERIES_IDS + ("DGS10", "M2SL", "PAYEMS")
+
+
+def make_worst_case_snapshot(series_ids: tuple[str, ...]) -> dict:
+    entries = [
+        make_series_entry(
+            series_id,
+            title=_WORST_CASE_TITLE,
+            frequency=_WORST_CASE_FREQUENCY,
+            frequency_short="Q",
+            units=_WORST_CASE_UNITS,
+            seasonal_adjustment=_WORST_CASE_SEASONAL_ADJUSTMENT,
+            latest_value=_WORST_CASE_VALUE,
+            latest_change_from_previous=make_available_change(
+                series_id=series_id,
+                latest_value=_WORST_CASE_VALUE,
+                previous_value=_WORST_CASE_VALUE,
+                absolute_change_native_units="0.000000",
+                direction="unchanged",
+            ),
+        )
+        for series_id in series_ids
+    ]
+    return make_snapshot(entries, series_ids=series_ids)
+
+
+def _assert_evidence_fits_openai_limits(evidence: dict) -> tuple[int, int]:
+    """Measure and assert the same node/byte bounds
+    ``OpenAIStructuredClient`` enforces before any SDK call is made. Returns
+    ``(node_count, serialized_byte_count)`` for callers that want the exact
+    measured figures."""
+    import json
+
+    node_count = [0]
+    _validate_evidence_shape(evidence, depth=0, node_count=node_count)
+    assert node_count[0] <= MAX_EVIDENCE_NODES
+
+    serialized = json.dumps(evidence, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
+    serialized_bytes = len(serialized.encode("utf-8"))
+    assert serialized_bytes <= MAX_EVIDENCE_BYTES
+
+    return node_count[0], serialized_bytes
+
+
+def test_real_seven_series_evidence_package_passes_openai_size_validation(monkeypatch, tmp_path):
+    """The exact seven-series Core Macro Basket evidence package this agent
+    would have sent to OpenAI must now pass ``OpenAIStructuredClient``'s real
+    node/byte validation end to end -- this is the exact request shape that
+    previously failed live with a local ``request_invalid``/"exceeds the
+    maximum node count" error (see docs/MACRO_ANALYST.md's "Known
+    limitations")."""
+    from market_intelligence.config.settings import Settings
+
+    monkeypatch.setenv("OPENAI_API_KEY", "unit-test-openai-key-should-never-leak")
+    settings = Settings(_env_file=tmp_path / "does-not-exist.env")
+
+    snapshot = make_full_basket_snapshot()
+    agent, *_ = make_agent(snapshot=snapshot)
+    preflight = agent.build_preflight(list(FULL_BASKET_SERIES_IDS))
+
+    node_count, byte_count = _assert_evidence_fits_openai_limits(preflight.evidence_package)
+    assert node_count > 0
+    assert byte_count > 0
+
+    fake_sdk = _FakeSDKClientForRoundTrip(
+        result=_make_sdk_response_for_round_trip(_MINIMAL_VALID_MODEL_ANALYSIS)
+    )
+    client = OpenAIStructuredClient(settings, sdk_client=fake_sdk)
+    result = client.generate(
+        instructions=AGENT_INSTRUCTIONS,
+        evidence=preflight.evidence_package,
+        output_model=MacroAnalystModelAnalysis,
+    )
+
+    assert result.status == "completed"
+    assert len(fake_sdk.responses.calls) == 1
+
+
+def test_ten_series_worst_case_evidence_package_fits_openai_size_limits(monkeypatch, tmp_path):
+    """The maximum supported ten-series request (``MAX_SERIES_IDS``), built
+    with conservative worst-case bounded metadata string lengths, must still
+    fit ``OpenAIStructuredClient``'s node/depth/byte limits after
+    compaction."""
+    from market_intelligence.config.settings import Settings
+
+    monkeypatch.setenv("OPENAI_API_KEY", "unit-test-openai-key-should-never-leak")
+    settings = Settings(_env_file=tmp_path / "does-not-exist.env")
+
+    assert len(TEN_SERIES_IDS) == MAX_SERIES_IDS
+    snapshot = make_worst_case_snapshot(TEN_SERIES_IDS)
+    agent, *_ = make_agent(snapshot=snapshot)
+    preflight = agent.build_preflight(list(TEN_SERIES_IDS))
+
+    node_count, byte_count = _assert_evidence_fits_openai_limits(preflight.evidence_package)
+    assert node_count > 0
+    assert byte_count > 0
+
+    fake_sdk = _FakeSDKClientForRoundTrip(
+        result=_make_sdk_response_for_round_trip(_MINIMAL_VALID_MODEL_ANALYSIS)
+    )
+    client = OpenAIStructuredClient(settings, sdk_client=fake_sdk)
+    result = client.generate(
+        instructions=AGENT_INSTRUCTIONS,
+        evidence=preflight.evidence_package,
+        output_model=MacroAnalystModelAnalysis,
+    )
+
+    assert result.status == "completed"
+    assert len(fake_sdk.responses.calls) == 1
+
+
+def test_seven_series_comparison_claims_still_validate_after_compaction():
+    """A full seven-series response mixing plain latest claims and a fully
+    supported two-observation comparison per series must still pass every
+    post-response validator (citation, series, coverage, comparison,
+    frequency wording, transmission channel) now that recent_observations
+    has been removed from the evidence the model sees -- none of those
+    validators ever read that field."""
+    changes = {
+        series_id: make_available_change(series_id=series_id)
+        for series_id in FULL_BASKET_SERIES_IDS
+    }
+    entries = [
+        make_series_entry(series_id, latest_change_from_previous=changes[series_id])
+        for series_id in FULL_BASKET_SERIES_IDS
+    ]
+    snapshot = make_snapshot(entries, series_ids=FULL_BASKET_SERIES_IDS)
+    claims = [
+        valid_claim_draft(
+            series_id=series_id,
+            claim_summary=COMPARISON_CLAIM_SUMMARY,
+            evidence_ids=[
+                changes[series_id]["latest_evidence_id"],
+                changes[series_id]["previous_evidence_id"],
+            ],
+        )
+        for series_id in FULL_BASKET_SERIES_IDS
+    ]
+    agent, *_ = make_agent(
+        snapshot=snapshot,
+        model_result=completed_result(parsed=completed_analysis(macro_claims=claims)),
+    )
+
+    result = agent.run(list(FULL_BASKET_SERIES_IDS))
+
+    assert result.report.status == "completed"
+    assert len(result.report.macro_claims) == len(FULL_BASKET_SERIES_IDS)
+
+
+def test_oversized_future_evidence_makes_zero_provider_requests(monkeypatch, tmp_path):
+    """If a future evidence package somehow still exceeds
+    ``OpenAIStructuredClient``'s size limits, ``generate()`` must reject it
+    locally, via the real client (not a fake), before any SDK call --
+    zero-provider-request, zero-token, mirroring the local, pre-request
+    nature of the live ``request_invalid`` failure this change fixes."""
+    from market_intelligence.config.settings import Settings
+
+    monkeypatch.setenv("OPENAI_API_KEY", "unit-test-openai-key-should-never-leak")
+    settings = Settings(_env_file=tmp_path / "does-not-exist.env")
+
+    huge_title = "x" * (MAX_EVIDENCE_BYTES + 1)
+    snapshot = make_snapshot([make_series_entry(title=huge_title)])
+    fake_sdk = _FakeSDKClientForRoundTrip(
+        result=_make_sdk_response_for_round_trip(_MINIMAL_VALID_MODEL_ANALYSIS)
+    )
+    real_client = OpenAIStructuredClient(settings, sdk_client=fake_sdk)
+    agent = MacroAnalyst(
+        evidence_builder=FakeEvidenceBuilder(snapshot), model_client=real_client
+    )
+
+    with pytest.raises(OpenAIInvalidRequestError):
+        agent.run(["FEDFUNDS"])
+
+    assert fake_sdk.responses.calls == []
+
+
+# ---------------------------------------------------------------------------
 # Unsupported trend/change/regime language is rejected
 # ---------------------------------------------------------------------------
 
@@ -1461,17 +1671,80 @@ def test_preflight_flags_report_frequency_unrecognized_series():
 
 
 # ---------------------------------------------------------------------------
-# Evidence package includes recent_observations / latest_change_from_previous
+# Evidence package includes frequency_short / latest_change_from_previous,
+# and deliberately EXCLUDES the snapshot's recent_observations history (see
+# _build_model_evidence's compaction rationale).
 # ---------------------------------------------------------------------------
 
 
-def test_evidence_package_includes_recent_observations_and_frequency_short():
+def test_evidence_package_includes_frequency_short():
     agent, *_ = make_agent()
     preflight = agent.build_preflight(["FEDFUNDS"])
 
     fact = preflight.evidence_package["series"]["macro_fedfundsevidence0001"]
     assert fact["frequency_short"] == "M"
-    assert fact["recent_observations"][0]["observation_date"] == "2026-07-01"
+
+
+def test_model_evidence_excludes_recent_observations_field():
+    """The model-facing evidence payload must not include recent_observations
+    at all -- not an empty list, the key must be entirely absent -- since no
+    validator ever reads it and its per-series row list was the dominant
+    contributor to the node count that caused the live seven-series
+    ``request_invalid``/"exceeds the maximum node count" failure (see
+    docs/MACRO_ANALYST.md's "Known limitations")."""
+    snapshot = make_full_basket_snapshot()
+    agent, *_ = make_agent(snapshot=snapshot)
+    preflight = agent.build_preflight(list(FULL_BASKET_SERIES_IDS))
+
+    assert preflight.evidence_package["series"], "fixture produced no series facts"
+    for fact in preflight.evidence_package["series"].values():
+        assert "recent_observations" not in fact
+
+
+def test_model_evidence_preserves_fields_required_for_latest_and_comparison_claims():
+    """Every field actually required by existing post-response validation
+    (citation/series checks, frequency-aware wording, and a fully supported
+    two-observation comparison) must survive the compaction -- exactly this
+    set, no more, no less."""
+    change = make_available_change()
+    snapshot = make_snapshot([make_series_entry(latest_change_from_previous=change)])
+    agent, *_ = make_agent(snapshot=snapshot)
+    preflight = agent.build_preflight(["FEDFUNDS"])
+
+    fact = preflight.evidence_package["series"]["macro_fedfundsevidence0001"]
+    assert set(fact.keys()) == {
+        "series_id",
+        "title",
+        "frequency",
+        "frequency_short",
+        "units",
+        "seasonal_adjustment",
+        "observation_date",
+        "latest_value",
+        "realtime_start",
+        "realtime_end",
+        "coverage",
+        "latest_change_from_previous",
+    }
+    assert fact["series_id"] == "FEDFUNDS"
+    assert fact["title"] == "Federal Funds Effective Rate"
+    assert fact["frequency"] == "Monthly"
+    assert fact["frequency_short"] == "M"
+    assert fact["units"] == "Percent"
+    assert fact["seasonal_adjustment"] == "Not Seasonally Adjusted"
+    assert fact["observation_date"] == "2026-07-01"
+    assert fact["latest_value"] == "5.330000"
+    assert fact["realtime_start"] == "1776-07-04"
+    assert fact["realtime_end"] == "9999-12-31"
+    comparison = fact["latest_change_from_previous"]
+    assert comparison["available"] is True
+    assert comparison["latest_evidence_id"] == change["latest_evidence_id"]
+    assert comparison["previous_evidence_id"] == change["previous_evidence_id"]
+    assert comparison["latest_observation_date"] == change["latest_observation_date"]
+    assert comparison["previous_observation_date"] == change["previous_observation_date"]
+    assert comparison["latest_value"] == change["latest_value"]
+    assert comparison["previous_value"] == change["previous_value"]
+    assert comparison["direction"] == change["direction"]
 
 
 def test_evidence_package_includes_unavailable_latest_change_by_default():
