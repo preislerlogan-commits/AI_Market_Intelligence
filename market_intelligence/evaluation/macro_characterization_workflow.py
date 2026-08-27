@@ -218,8 +218,21 @@ def complete_macro_characterization(
 ) -> EvaluationRunRecord:
     """Attach completed human adjudications to a characterization scaffold.
 
-    Validates that ``adjudications`` contains **exactly one** entry for **every**
-    expected ``(claim_id, citation_id)`` pair in ``run_record.expected_pairs``:
+    The ``run_record`` must be an unadjudicated Macro scaffold:
+
+    - ``run_record.agent`` must be ``AgentIdentifier.MACRO_ANALYST`` -- this
+      workflow only completes Macro characterizations;
+    - ``run_record.adjudications`` must be empty -- completion attaches the human
+      adjudications exactly once; it never appends to or re-completes a record
+      that already carries any.
+
+    A record that fails either check raises a fixed, sanitized
+    ``MacroCharacterizationError`` that reproduces no record content, identifier,
+    classification, reviewer note, or path.
+
+    It then validates that ``adjudications`` contains **exactly one** entry for
+    **every** expected ``(claim_id, citation_id)`` pair in
+    ``run_record.expected_pairs``:
 
     - a pair adjudicated more than once -> ``MacroCharacterizationError``;
     - an adjudication for a pair that was not expected -> ``MacroCharacterizationError``;
@@ -231,6 +244,15 @@ def complete_macro_characterization(
     ``EvaluationRunRecord`` is fully re-validated. Completion does **not** imply
     the agent is validated (see :data:`COMPLETION_IS_NOT_VALIDATION`).
     """
+    if run_record.agent is not AgentIdentifier.MACRO_ANALYST:
+        raise MacroCharacterizationError(
+            "run record is not a Macro Analyst characterization scaffold"
+        )
+    if run_record.adjudications:
+        raise MacroCharacterizationError(
+            "run record already carries adjudications; it is not an unadjudicated scaffold"
+        )
+
     expected = [pair.as_tuple() for pair in run_record.expected_pairs]
     expected_set = set(expected)
     provided_counts = Counter(adj.as_pair() for adj in adjudications)

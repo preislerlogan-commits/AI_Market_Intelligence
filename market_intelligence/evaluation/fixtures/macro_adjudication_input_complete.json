@@ -1,0 +1,50 @@
+{
+  "adjudications": [
+    {
+      "adjudicated_at": "2031-05-02T00:00:00Z",
+      "citation_id": "cite-a",
+      "claim_id": "claim-single-match",
+      "classification": "supported",
+      "reason": "value_matches_evidence",
+      "reviewer": "synthetic-reviewer",
+      "reviewer_note": null
+    },
+    {
+      "adjudicated_at": "2031-05-02T00:00:00Z",
+      "citation_id": "cite-b",
+      "claim_id": "claim-single-mismatch",
+      "classification": "unsupported",
+      "reason": "value_conflicts_with_evidence",
+      "reviewer": "synthetic-reviewer",
+      "reviewer_note": null
+    },
+    {
+      "adjudicated_at": "2031-05-02T00:00:00Z",
+      "citation_id": "cite-c",
+      "claim_id": "claim-unrecognized",
+      "classification": "unable_to_determine",
+      "reason": "sanitized_material_insufficient",
+      "reviewer": "synthetic-reviewer",
+      "reviewer_note": null
+    },
+    {
+      "adjudicated_at": "2031-05-02T00:00:00Z",
+      "citation_id": "cite-d-prev",
+      "claim_id": "claim-comparison-match",
+      "classification": "partially_supported",
+      "reason": "claim_adds_unsupported_characterization",
+      "reviewer": "synthetic-reviewer",
+      "reviewer_note": null
+    },
+    {
+      "adjudicated_at": "2031-05-02T00:00:00Z",
+      "citation_id": "cite-d-latest",
+      "claim_id": "claim-comparison-match",
+      "classification": "supported",
+      "reason": "value_matches_evidence",
+      "reviewer": "synthetic-reviewer",
+      "reviewer_note": null
+    }
+  ],
+  "run_id": "evalrun-5a650383d52eaf5126f953c4"
+}

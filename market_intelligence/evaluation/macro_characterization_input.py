@@ -23,6 +23,13 @@ model reasoning -- there is simply nowhere to put those, and the free-text
 fields additionally reject a few obvious leak shapes (inherited from
 ``TranscriptionEvidenceFact`` / ``contracts._reject_leaky_text``).
 
+This module also defines :class:`MacroAdjudicationInput` -- the strict local
+input for *completing* a characterization: only the scaffold's deterministic
+``run_id`` and a bounded list of completed human
+:class:`~market_intelligence.evaluation.contracts.CitationAdjudication` records,
+and nothing else (same ``extra="forbid"``, no credential / URL / response ID /
+path / raw evidence / model-reasoning / metadata field).
+
 Nothing here imports a connector, the model client, the storage layer, an
 agent, or the orchestration layer, and nothing makes a network request (see
 ``market_intelligence/tests/test_evaluation_offline.py``).
@@ -37,7 +44,12 @@ from typing import Annotated
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
-from market_intelligence.evaluation.contracts import ClaimCitationPair, _reject_leaky_text
+from market_intelligence.evaluation.contracts import (
+    _RUN_ID_RE,
+    CitationAdjudication,
+    ClaimCitationPair,
+    _reject_leaky_text,
+)
 from market_intelligence.evaluation.macro_factual_transcription import MacroTranscriptionInput
 from market_intelligence.evaluation.serialization import (
     MAX_RECORD_BYTES,
@@ -46,6 +58,7 @@ from market_intelligence.evaluation.serialization import (
 
 MAX_CLAIMS = 50
 MAX_EXPECTED_PAIRS = 100
+MAX_ADJUDICATIONS = 500
 
 _Label = Annotated[
     str, Field(min_length=1, max_length=200), AfterValidator(_reject_leaky_text)
@@ -105,6 +118,36 @@ class MacroCharacterizationInput(BaseModel):
         if covered != set(claim_ids):
             raise ValueError("every claim must be covered by at least one expected pair")
         return self
+
+
+class MacroAdjudicationInput(BaseModel):
+    """Strict local input for completing a Macro characterization scaffold.
+
+    Carries **only**:
+
+    - ``run_id`` -- the scaffold ``EvaluationRunRecord``'s deterministic local
+      id (``evalrun-<24 hex>``, a digest of agent + label + created_at; never a
+      provider response id). The completion CLI refuses to proceed unless this
+      matches the scaffold it was handed.
+    - ``adjudications`` -- a bounded list of completed human
+      :class:`~market_intelligence.evaluation.contracts.CitationAdjudication`
+      records, exactly as the reviewer recorded them.
+
+    It has **no** field for a credential, a URL, a provider response id, a raw
+    provider payload, an unrestricted metadata dictionary, a database path, raw
+    evidence text, or any model reasoning. Whether the adjudications actually
+    cover every expected pair (with no missing, duplicate, or unexpected pair)
+    is **not** checked here -- that is
+    ``macro_characterization_workflow.complete_macro_characterization``'s job,
+    which raises a sanitized error. This contract only bounds the shape.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: Annotated[str, Field(pattern=_RUN_ID_RE.pattern)]
+    adjudications: Annotated[
+        list[CitationAdjudication], Field(min_length=1, max_length=MAX_ADJUDICATIONS)
+    ]
 
 
 def input_to_json_str(model: MacroCharacterizationInput) -> str:
@@ -168,3 +211,63 @@ def read_characterization_input(
     except (OSError, UnicodeDecodeError):
         raise EvaluationSerializationError("failed to read characterization input") from None
     return input_from_json_str(raw)
+
+
+def adjudication_input_to_json_str(model: MacroAdjudicationInput) -> str:
+    """Serialize a ``MacroAdjudicationInput`` to deterministic, sorted JSON.
+
+    Mirrors ``input_to_json_str`` / ``serialization.to_json_str``: sorted keys,
+    two-space indent, a single trailing newline.
+    """
+    payload = model.model_dump(mode="json")
+    return json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+
+
+def adjudication_input_from_json_str(text: str) -> MacroAdjudicationInput:
+    """Parse and validate a ``MacroAdjudicationInput`` from a JSON string."""
+    try:
+        payload = json.loads(text)
+    except (ValueError, TypeError):
+        raise EvaluationSerializationError(
+            "adjudication input is not valid JSON"
+        ) from None
+    if not isinstance(payload, dict):
+        raise EvaluationSerializationError("adjudication input must be a JSON object")
+    try:
+        return MacroAdjudicationInput.model_validate(payload)
+    except Exception:
+        raise EvaluationSerializationError(
+            "adjudication input failed schema validation"
+        ) from None
+
+
+def read_adjudication_input(
+    path: str | os.PathLike[str],
+) -> MacroAdjudicationInput:
+    """Read and validate a ``MacroAdjudicationInput`` from a local file.
+
+    Reuses the serialization boundary's safety rules: refuses a symlinked file
+    or parent, and refuses a file larger than ``MAX_RECORD_BYTES`` before
+    reading it. Every failure raises a sanitized ``EvaluationSerializationError``
+    that never contains the path, the file bytes, or the input content.
+    """
+    source = Path(path)
+    if source.parent.is_symlink():
+        raise EvaluationSerializationError("parent directory is a symlink")
+    if source.is_symlink():
+        raise EvaluationSerializationError("target path is a symlink")
+    if not source.exists():
+        raise EvaluationSerializationError("adjudication input file does not exist")
+    if not source.is_file():
+        raise EvaluationSerializationError("adjudication input path is not a file")
+    try:
+        size = source.stat().st_size
+    except OSError:
+        raise EvaluationSerializationError("failed to stat adjudication input") from None
+    if size > MAX_RECORD_BYTES:
+        raise EvaluationSerializationError("adjudication input file is too large")
+    try:
+        raw = source.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        raise EvaluationSerializationError("failed to read adjudication input") from None
+    return adjudication_input_from_json_str(raw)

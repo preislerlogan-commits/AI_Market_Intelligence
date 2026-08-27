@@ -5,9 +5,11 @@ characterization inputs and outputs.
 
 ## Boundary
 
-- **`local/` is gitignored.** Real `MacroCharacterizationInput` JSON files and
-  the `EvaluationRunRecord` outputs produced from them must live under
-  `data/evaluations/local/` and must **never** be committed. See
+- **`local/` is gitignored.** Real `MacroCharacterizationInput` JSON files, the
+  scaffold and completed `EvaluationRunRecord` files, and the
+  `MacroAdjudicationInput` JSON holding the completed human citation
+  adjudications must all live under `data/evaluations/local/` and must **never**
+  be committed. See
   [`docs/AGENT_EVALUATION_HARNESS.md`](../../docs/AGENT_EVALUATION_HARNESS.md),
   "Data-handling boundary (binding)".
 - **Only synthetic fixtures are committed**, and they live under
@@ -19,12 +21,23 @@ characterization inputs and outputs.
   Real sanitized facts may be used only by the local characterization workflow
   here in `data/evaluations/local/`, which is gitignored; real inputs and
   outputs must never be committed.
-- The offline workflow CLI (`scripts/characterize_macro_report.py`) **only**
-  writes a `--write` output whose resolved path is inside
-  `data/evaluations/local/`. Any path outside that directory — the repository
-  root, `docs/`, `tests/`, `fixtures/`, `data/evaluations/` itself, an
-  outside-repo path, or one reached via `..` traversal or a symlink — is
-  refused. Point its `--output` at `data/evaluations/local/`.
+- The offline build CLI (`scripts/characterize_macro_report.py`) **only** writes
+  a `--write` output whose resolved path is inside `data/evaluations/local/`.
+  Any path outside that directory — the repository root, `docs/`, `tests/`,
+  `fixtures/`, `data/evaluations/` itself, an outside-repo path, or one reached
+  via `..` traversal or a symlink — is refused. Point its `--output` at
+  `data/evaluations/local/`.
+- The offline completion CLI (`scripts/complete_macro_characterization.py`)
+  records the completed human citation adjudications onto a scaffold. It is
+  dry-run / validate by default (`--write` required to serialize the completed
+  record) and requires the adjudication `run_id` to match the scaffold. **All
+  three** of its `--record`, `--adjudications`, and `--output` paths must
+  resolve strictly inside `data/evaluations/local/`; the same repository-root /
+  tracked / `data/evaluations/`-itself / outside-repo / `..` / symlink-escape
+  paths are refused. It records human decisions only — no classification is
+  generated or recommended, there is no LLM judge, and its output is sanitized
+  counts and classification tallies only (no reviewer notes, IDs, paths, or
+  record text). Completion is not validation.
 - Committing any real characterization capture would require separate, explicit
   review and is not done by any automated step.
 
