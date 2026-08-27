@@ -6,6 +6,21 @@ repository, and updated whenever the project's status materially changes.
 
 Last updated: 2026-08-26
 
+## Current State at a Glance
+
+| Area | Status |
+|---|---|
+| Phase | **Phase 0 — Infrastructure Foundation. Not closed.** |
+| Storage | Local DuckDB, healthy at schema version `0008` (8 migrations). |
+| Data connectors | Read-only Alpaca (bars, news, market-data snapshot) and FRED (observations, series metadata). No order/account/execution methods exist. |
+| Ingested data | SPY 5-minute IEX bars (~3 trading days); ~20 SPY news articles; 7 FRED macro series (FEDFUNDS, GS10, CPIAUCSL, PCEPI, UNRATE, INDPRO, GDPC1) observations + metadata. Each is one bounded ingestion run with limited coverage — none is complete, gap-free, or validated. |
+| Orchestration | Deterministic, manually invoked ingestion path: dry-run-first CLI over the three reviewed jobs, per-job failure isolation, fail-closed overlap lock, persistent audit trail; one authorized `--execute` run. Meets the Phase 0 ingestion criterion (with limited-verification caveats). Scheduling, unattended operation, automatic stale-lock recovery, and freshness monitoring are Phase 1 / later and unimplemented. |
+| Model boundary | One OpenAI structured-output client (no tools, no retry, `store=False`); live-connectivity-verified. |
+| Agents | Market Evidence Agent, News Analyst, seven-series Macro Analyst. Each has exactly one accepted live run. Non-directional guarantee is structurally enforced. |
+| Trust layer | **None.** No repeatable agent-evaluation methodology exists — only one manual read per agent, and no citation-support rubric. Once this documentation change merges, building one (deterministic factual-transcription checks where the claim structure permits them, plus recorded citation-support adjudication using a human-review rubric; lexical overlap is advisory triage only) is the **only remaining blocker to closing Phase 0** (see [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md) and [docs/AGENT_EVALUATION_HARNESS.md](docs/AGENT_EVALUATION_HARNESS.md)). |
+| Test baseline | 2,136 passing tests (`python -m pytest`). |
+| Not built | Predictive/forecast model, forecast records, agent orchestrator / combined brief, dashboard, trade journal, options-data pipeline, scheduler, brokerage execution. |
+
 ## Current Phase
 
 **Phase 0 — Infrastructure Foundation**
@@ -1886,7 +1901,12 @@ accurate** -- see item 34 below for the full sanitized record.
   regime label, change/delta calculation, trade recommendation, or
   options/execution logic was added.
 
-## Next Planned Work
+## Completed Work Log
+
+This section is a historical, append-only record of work already done. It is
+not a forward plan — see "Next Planned Work" below for that. Every numbered
+entry describes something that has already been built, ingested, or attempted;
+"done" and supersession notes throughout reflect that.
 
 1. Data connector design — read-only Alpaca market-data, Alpaca news,
    Alpaca historical bars, and FRED connectors now exist (see above).
@@ -3543,6 +3563,70 @@ accurate** -- see item 34 below for the full sanitized record.
     [docs/MACRO_ANALYST.md](docs/MACRO_ANALYST.md) and
     [docs/OPENAI_PROVIDER_BOUNDARY.md](docs/OPENAI_PROVIDER_BOUNDARY.md) for
     the corresponding entries.
+
+## Next Planned Work
+
+This is the forward plan. It replaces the historical content now under
+"Completed Work Log" above.
+
+1. **Documentation reconciliation (this work).** Bring the repository's
+   top-level status documents into line with what actually exists: correct
+   `README.md`'s "Setup Status" and "Project Independence"; add this
+   at-a-glance summary and split the completed-work log from the forward plan;
+   add `docs/PHASE_0_EXIT.md`; reconcile `DATA_CATALOG.md` (migration `0008`,
+   the seven-series macro metadata, and honest per-dataset records for the
+   SPY bars, SPY news, and macro observations/metadata); correct the stale
+   top-level status line in `docs/OPENAI_PROVIDER_BOUNDARY.md`; and clarify
+   `SOURCE_POLICY.md`'s distinction between retained source provenance and
+   bounded model-facing evidence excerpts. Documentation only — no code,
+   tests, configuration, migrations, fixtures, or provider behavior change.
+
+2. **Design and implement a repeatable agent evaluation methodology (harness
+   + human rubric).** Once item 1 merges, this is the **only remaining
+   blocker to closing Phase 0** (see
+   [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md), criterion P0-7, and
+   [docs/AGENT_EVALUATION_HARNESS.md](docs/AGENT_EVALUATION_HARNESS.md)). The
+   three agents each have exactly one accepted live run; there is no
+   repeatable method to judge whether their output is trustworthy. The method
+   is offline-first and characterizes the trust gap rather than certifying the
+   agents. In scope: deterministic factual-transcription checks where the
+   claim structure permits them (does a claim's stated value/date/unit match
+   the cited stored evidence?); a human citation-support rubric that
+   adjudicates every claim in a characterization as `supported` /
+   `partially_supported` / `unsupported` / `unable_to_determine` with a reason
+   from a fixed list, with lexical overlap retained as advisory triage only
+   (not proof of support) and an LLM judge never the sole or gating reviewer;
+   an abstention matrix across all three agents; cross-agent consistency on
+   shared stored facts; and a repeatability characterization. Data-handling
+   boundary: synthetic/redacted fixtures may be committed; real evidence
+   packages, article text, URLs, credentials, response IDs, and full live
+   model outputs must not be committed; any future live evaluation capture
+   must be local, sanitized, and gitignored unless separately reviewed.
+   Closing Phase 0 on this item requires the harness and rubric to exist, at
+   least one first characterization to have been completed and recorded
+   (covering every claim, with findings, failures, and `unable_to_determine`
+   results preserved), and does not require every agent to pass or imply the
+   agents are validated. It makes no claim of automated proof of semantic
+   correctness.
+
+3. **Only after evaluation evidence exists**, reconsider — as separate,
+   individually reviewed milestones — a combined market-intelligence brief /
+   agent orchestrator, agent output persistence, and dashboard work. None of
+   these should begin before there is recorded evidence about agent
+   trustworthiness, because each one either composes or presents agent
+   output.
+
+4. **Phase 1 / later — operational ingestion capabilities.** Scheduling,
+   unattended operation, automatic stale-lock recovery, freshness monitoring,
+   and any recurring hands-off ingestion are explicitly deferred to a later
+   operational phase. They are **not** part of Phase 0 (which requires only
+   the deterministic, manually invoked ingestion path that now exists) and
+   they are not gated on the evaluation harness — they are simply not yet in
+   scope. The current ingestion path must not be described as production-ready,
+   continuously reliable, or fully validated.
+
+Manual-only trading and the non-directional agent boundary are preserved
+throughout. No brokerage integration or execution is planned.
 
 ## Notes
 

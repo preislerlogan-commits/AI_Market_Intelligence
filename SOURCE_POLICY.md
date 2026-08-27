@@ -46,3 +46,36 @@ must record:
 
 Information missing these fields should not be treated as reliable input
 to forecasts or decisions.
+
+## Retained provenance vs. model-facing evidence excerpts
+
+These are two different things and must not be conflated:
+
+- **Retained provenance** — what storage and audit records must keep. This
+  is the binding requirement above, and it is **not weakened** by anything in
+  this section. For the news currently ingested, `news_articles` (migration
+  `0004`) retains the provider name, the article URL (`article_url`), the
+  retrieval timestamp (`retrieved_at`), and the provider's publication/update
+  timestamps kept distinct from retrieval time. Ingestion runs are recorded
+  in `ingestion_runs` and `orchestration_*`.
+
+- **Model-facing evidence excerpts** — the bounded payloads the agents send
+  to the model. These are deliberately narrower than the retained record: the
+  News Analyst's model-facing evidence omits article URLs entirely (URLs live
+  only in the snapshot's separate `audit_provenance` field, which is never
+  sent to the model), and other agents send only the specific stored fields
+  each analysis needs. Omitting a field from a model-facing excerpt is a
+  data-minimization and prompt-safety choice; it does **not** remove that
+  field from the retained provenance record, and it must never be read as
+  permission to store less.
+
+## Known gap: no formal uncertainty-rating field
+
+The "Explicit uncertainty" requirement above is **not yet implemented as a
+stored field.** `news_articles` has no confidence/verification-status column,
+and the agents do not assign one — a News Analyst `claim_summary` is required
+by instruction to be framed as provider-reported, but that framing is not a
+structured uncertainty rating and is not validated as one. This is an open
+gap against the requirement, recorded here honestly; it is not something the
+current system already solves. Any future uncertainty-rating design must add
+it as retained provenance, not only as model-facing text.
