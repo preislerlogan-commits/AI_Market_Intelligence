@@ -997,6 +997,42 @@ touches only `market_intelligence/agents/macro_analyst.py`,
 
 ## Known limitations
 
+- **First successfully accepted seven-series `--execute` run (2026-08-26)
+  -- the Macro Analyst live-validation milestone.** After the model-facing
+  evidence compaction fix and the sequence of rejected seven-series
+  attempts recorded below and in `PROJECT_STATE.md` (items 26-33), a
+  separately authorized `--execute` run against the complete seven-series
+  Core Macro Basket (`FEDFUNDS`, `GS10`, `CPIAUCSL`, `PCEPI`, `UNRATE`,
+  `INDPRO`, `GDPC1`) was accepted end to end for the first time:
+  `status="completed"`, `source_series_count=7`,
+  `evidence_quality="sufficient"`, exactly one retained macro claim per
+  requested series, `limitations` empty, `transmission_channels` empty for
+  every claim, `directional_assessment` and `trade_recommendation` both the
+  fixed `"not_performed"` literal, `abstained_reasons` empty, model
+  `gpt-5-mini`, `input_tokens=3829`, `output_tokens=3272`,
+  `total_tokens=7101`, exactly one OpenAI request and no retry. The empty
+  `transmission_channels` lists were valid precisely because no claim
+  asserted an unsupported transmission mechanism -- with no channel listed
+  and no mechanism claimed, `_validate_transmission_channels` has nothing
+  to substantiate or reject. **Every `OpenAIStructuredClient`
+  structured-output validation step and every Macro Analyst post-response
+  validator passed** (`_validate_claims_quality_consistency`,
+  `_validate_citations_and_series`, `_validate_coverage`,
+  `_validate_content_scope`, `_validate_comparison_claims`,
+  `_validate_frequency_wording`, `_validate_transmission_channels`, and the
+  shared non-directional output policy check). No evidence IDs, exact
+  observation values or dates, the snapshot timestamp, or the model
+  report's free text are reproduced here or elsewhere in this repository.
+  **This is one accepted run.** It demonstrates the deterministic
+  scaffolding can now accept a complete seven-series response end to end;
+  it is **not** a validated evaluation methodology and **not** a claim that
+  any `claim_summary` is factually accurate -- no automated evaluation of
+  factual accuracy exists in this repository (see "Post-response
+  validation" above and [CLAUDE.md](../CLAUDE.md)/[AGENTS.md](../AGENTS.md)).
+  The earlier rejected attempts below are preserved unchanged as honest
+  records and are not reclassified as successes. See `PROJECT_STATE.md`
+  item 34 for the full sanitized record.
+
 - **Live seven-series `--execute` attempt failed
   `response_validation_failed` before any post-response validator ran, and
   the structured-output validation diagnostics this motivated (2026-08-25).**

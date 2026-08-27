@@ -4,7 +4,7 @@ This document is the **authoritative source of truth** for the current status
 of AI Market Intelligence. It must be read before beginning any work in this
 repository, and updated whenever the project's status materially changes.
 
-Last updated: 2026-08-25
+Last updated: 2026-08-26
 
 ## Current Phase
 
@@ -258,7 +258,26 @@ subsequent read-only verification confirmed the real local database
 healthy at schema version `0008` (8 migrations applied) with 1 stored
 `GS10` metadata row and 13 stored `GS10` observation rows covering
 2025-07-01 through 2026-07-01 (0 missing) -- see item 25 below for the
-full record.**
+full record.** **The Macro Analyst live-validation milestone is now
+complete.** After a frequency-aware staleness fix, a full-basket coverage
+fix, a model-facing evidence compaction fix, and a sequence of separately
+authorized seven-series `--execute` attempts that were each rejected --
+first locally on evidence size, then by structured-output re-validation,
+then by the shared content policy, then by transmission-channel
+validation, then again by structured-output re-validation (all preserved
+below as honest records, items 26-33, none rewritten as successes) -- a
+separately authorized post-compaction seven-series Core Macro Basket
+`--execute` run (`FEDFUNDS`, `GS10`, `CPIAUCSL`, `PCEPI`, `UNRATE`,
+`INDPRO`, `GDPC1`) was accepted end to end for the first time on
+2026-08-26: `status="completed"`, `evidence_quality="sufficient"`, one
+macro claim retained per requested series, `limitations` empty,
+`transmission_channels` empty for every claim, `directional_assessment`
+and `trade_recommendation` both the fixed `"not_performed"` value, exactly
+one OpenAI request and no retry. All `OpenAIStructuredClient`
+structured-output validation and every Macro Analyst post-response
+validator passed. **This is one accepted run, not a validated evaluation
+methodology and not a claim that any described observation is factually
+accurate** -- see item 34 below for the full sanitized record.
 
 ## Status
 
@@ -3441,6 +3460,89 @@ full record.**
     validated only by offline, deterministic tests. No connector,
     repository, migration, basket configuration, dependency, `.env`, or the
     real DuckDB database was modified.
+
+34. **Macro Analyst live-validation milestone complete: first successfully
+    accepted post-compaction seven-series Core Macro Basket `--execute` run
+    (2026-08-26, documentation only -- no code, test, configuration,
+    dependency, `.env`, migration, or database change, and no new live
+    request made as part of recording this entry).**
+
+    Following items 26-33 above -- the frequency-aware staleness fix, the
+    full-basket coverage fix, the model-facing evidence compaction fix, and
+    a sequence of separately authorized seven-series `--execute` attempts
+    that were each rejected before a report could be accepted (item 28:
+    local evidence-node-count rejection, zero tokens; item 29:
+    `policy_violation` at `limitations[1]`; item 30:
+    `transmission_channel_invalid`; item 32: `response_validation_failed`
+    before any post-response validator ran) -- a separately authorized
+    `--execute` run of the Macro Analyst against the real local database and
+    the real OpenAI API was made on 2026-08-26, requesting the complete,
+    approved seven-series Core Macro Basket: `FEDFUNDS`, `GS10`, `CPIAUCSL`,
+    `PCEPI`, `UNRATE`, `INDPRO`, `GDPC1`. **It was accepted end to end for
+    the first time.**
+
+    Sanitized result (no evidence IDs, exact observation values, observation
+    dates, snapshot timestamp, or the model report's free text are
+    reproduced here):
+
+    - `mode: execute`, `status: completed`
+    - `source_series_count: 7`; all seven requested series echoed back in
+      `series_ids`
+    - `evidence_quality: sufficient`
+    - seven macro claims accepted -- exactly one retained claim per
+      requested series, satisfying the mandatory full-basket coverage rule
+      (item 27)
+    - `limitations`: empty
+    - `transmission_channels`: empty for every claim
+    - `conditional_mechanism` asserted no unsupported transmission mechanism,
+      so the empty `transmission_channels` lists were valid -- the
+      per-channel addressing validator (`_validate_transmission_channels`)
+      has nothing to reject when a claim lists no channel and claims no
+      mechanism it would need to substantiate
+    - `directional_assessment: not_performed` and
+      `trade_recommendation: not_performed` -- both the fixed,
+      model-excluded literal, exactly as guaranteed; no direction or
+      recommendation was produced or could have been produced
+    - `abstained_reasons`: empty
+    - `model: gpt-5-mini`
+    - `input_tokens: 3829`, `output_tokens: 3272`, `total_tokens: 7101`
+    - exactly one OpenAI request occurred; no retry occurred
+
+    **Every `OpenAIStructuredClient` structured-output validation step and
+    every Macro Analyst post-response validator passed** for this response:
+    the SDK-side structured-output re-validation against
+    `MacroAnalystModelAnalysis`, then
+    `_validate_claims_quality_consistency`, `_validate_citations_and_series`,
+    `_validate_coverage`, `_validate_content_scope`,
+    `_validate_comparison_claims`, `_validate_frequency_wording`,
+    `_validate_transmission_channels`, and the shared non-directional output
+    policy check. The model-facing evidence compaction (item 28) held: the
+    seven-series evidence package stayed within
+    `OpenAIStructuredClient`'s unchanged node/byte bounds and one paid
+    request reached the model.
+
+    **What this establishes and what it does not.** This confirms that the
+    deterministic scaffolding around the model call -- the all-or-nothing
+    preflight, the compacted evidence package, the structured-output
+    contract, and all post-response validators -- can now accept a real,
+    complete seven-series response end to end, and that the
+    `directional_assessment`/`trade_recommendation` always-`"not_performed"`
+    guarantee held on a live run. **It is one accepted run.** It is not a
+    validated evaluation methodology, and it is not a claim that any
+    `claim_summary` accurately transcribes the underlying stored observation
+    or its official metadata -- no automated evaluation of factual accuracy
+    exists in this repository (see
+    [CLAUDE.md](CLAUDE.md)/[AGENTS.md](AGENTS.md)'s "Evidence and Claims"
+    section). It does not establish that any future seven-series (or other)
+    request will be accepted, that the Core Macro Basket constitutes a
+    complete, gap-free, or research-validated macro dataset, or that this
+    agent is a regime classifier, predictor, directional market model, or
+    trading agent -- it remains explicitly none of those. The earlier
+    rejected attempts in items 26-33 are preserved unchanged as honest
+    records and are **not** retroactively reclassified as successes. See
+    [docs/MACRO_ANALYST.md](docs/MACRO_ANALYST.md) and
+    [docs/OPENAI_PROVIDER_BOUNDARY.md](docs/OPENAI_PROVIDER_BOUNDARY.md) for
+    the corresponding entries.
 
 ## Notes
 
