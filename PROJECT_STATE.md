@@ -17,8 +17,8 @@ Last updated: 2026-08-26
 | Orchestration | Deterministic, manually invoked ingestion path: dry-run-first CLI over the three reviewed jobs, per-job failure isolation, fail-closed overlap lock, persistent audit trail; one authorized `--execute` run. Meets the Phase 0 ingestion criterion (with limited-verification caveats). Scheduling, unattended operation, automatic stale-lock recovery, and freshness monitoring are Phase 1 / later and unimplemented. |
 | Model boundary | One OpenAI structured-output client (no tools, no retry, `store=False`); live-connectivity-verified. |
 | Agents | Market Evidence Agent, News Analyst, seven-series Macro Analyst. Each has exactly one accepted live run. Non-directional guarantee is structurally enforced. |
-| Trust layer | **None.** No repeatable agent-evaluation methodology exists — only one manual read per agent, and no citation-support rubric. Once this documentation change merges, building one (deterministic factual-transcription checks where the claim structure permits them, plus recorded citation-support adjudication using a human-review rubric; lexical overlap is advisory triage only) is the **only remaining blocker to closing Phase 0** (see [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md) and [docs/AGENT_EVALUATION_HARNESS.md](docs/AGENT_EVALUATION_HARNESS.md)). |
-| Test baseline | 2,136 passing tests (`python -m pytest`). |
+| Trust layer | **Partial — offline foundation only; P0-7 not met.** `market_intelligence/evaluation/` now provides the safe, offline foundation for the methodology: strict Pydantic v2 contracts (agent/severity/citation-classification/citation-reason/finding-category enums, one finding, one human citation adjudication, one evaluation-run record), a deterministic rubric-completeness validator, a symlink-refusing / no-overwrite / atomic / bounded local JSON round trip, and synthetic fixtures. It performs **no** factual-transcription extraction, **no** lexical-overlap scoring, **no** repeatability requests, and **no** live-output recording. **No agent has been evaluated; no factual-transcription or citation-support result of any real agent output exists.** Completing P0-7 (the factual-transcription checks, the human rubric applied to a real first characterization, and preserved findings) remains the **only remaining blocker to closing Phase 0** (see [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md) and [docs/AGENT_EVALUATION_HARNESS.md](docs/AGENT_EVALUATION_HARNESS.md)). |
+| Test baseline | 2,268 tests (`python -m pytest`): 2,266 passing, 2 skipped (the evaluation-foundation symlink-refusal tests skip where the OS disallows creating a symlink). |
 | Not built | Predictive/forecast model, forecast records, agent orchestrator / combined brief, dashboard, trade journal, options-data pipeline, scheduler, brokerage execution. |
 
 ## Current Phase
@@ -3564,6 +3564,101 @@ entry describes something that has already been built, ingested, or attempted;
     [docs/OPENAI_PROVIDER_BOUNDARY.md](docs/OPENAI_PROVIDER_BOUNDARY.md) for
     the corresponding entries.
 
+35. **Agent-evaluation foundation added (2026-08-26, code/tests/synthetic
+    fixtures/docs only — no connector, OpenAI, DuckDB, agent, orchestration,
+    migration, schema, dependency, or `.env` change; no live request; no
+    commit or push).** This is *partial* progress on P0-7 (see
+    [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md) and
+    [docs/AGENT_EVALUATION_HARNESS.md](docs/AGENT_EVALUATION_HARNESS.md)).
+    **Phase 0 remains open.**
+
+    A new package, `market_intelligence/evaluation/`, adds *only* the safe,
+    offline data foundation for the repeatable evaluation methodology:
+
+    - **`contracts.py`** — strict Pydantic v2 models (`extra="forbid"`, every
+      string and list bounded, timestamps timezone-aware and normalized to
+      UTC, locally + deterministically generated `run_id` via `build_run_id`,
+      and deliberately **no** field for a raw model response, a provider
+      response ID, a credential, a URL, a database path, or an unrestricted
+      metadata dict). Public contract: `AgentIdentifier`
+      (`market_evidence` / `news_analyst` / `macro_analyst`),
+      `FindingSeverity` (`info` / `warning` / `failure`),
+      `CitationClassification` (`supported` / `partially_supported` /
+      `unsupported` / `unable_to_determine`), `CitationReason` (the eight
+      fixed reasons), `FindingCategory` (fixed bounded enum),
+      `ClaimCitationPair`, `CitationAdjudication` (`reason="other"` requires a
+      short bounded `reviewer_note`; every other reason forbids one; and
+      `classification` + `reason` must be a permitted pairing per the
+      immutable `CLASSIFICATION_REASON_MATRIX`, enforced by a model validator
+      that rejects an incompatible pairing with a fixed sanitized message —
+      see [docs/AGENT_EVALUATION_HARNESS.md](docs/AGENT_EVALUATION_HARNESS.md)),
+      `EvaluationFinding`, and `EvaluationRunRecord`. `unable_to_determine`
+      is a permanent, first-class classification — nothing converts it into a
+      pass or a failure.
+    - **`rubric.py`** — `check_rubric_completeness(record)`: a deterministic,
+      pure validator returning, with stable lexical ordering, whether every
+      expected (claim, citation) pair has exactly one adjudication, plus any
+      missing / unexpected / duplicate pairs. Completeness never depends on
+      classifications, reasons, or findings, so a completed characterization
+      may be entirely `unsupported` / `partially_supported` /
+      `unable_to_determine` and may carry `failure` findings.
+      `COMPLETION_IS_NOT_VALIDATION` states that completion does not imply
+      agent validation or a universal pass.
+    - **`serialization.py`** — pure `to_json_str` / `from_json_str`, plus
+      `write_record` (explicit caller path only; parent must already exist;
+      refuses symlinked target/parent; refuses overwrite by default; atomic
+      write via a uniquely named temp file in the same directory) and
+      `read_record` (refuses symlinks; refuses a file over `MAX_RECORD_BYTES`
+      before reading). Every failure is a sanitized
+      `EvaluationSerializationError` that never reproduces the path, the file
+      bytes, or the record content. No database write; no automatic output
+      directory.
+    - **`fixtures/`** — six hand-authored synthetic `EvaluationRunRecord`
+      JSON files (fully supported / partially supported / unsupported /
+      unable to determine / incomplete rubric / duplicate-and-unexpected
+      adjudication) and `PROVENANCE.md`. They contain no real article text,
+      URLs, live-run evidence IDs or observation values, credentials,
+      response IDs, or copied model output, and are explicitly not evidence
+      of any agent's quality.
+    - **Tests** — `market_intelligence/tests/test_evaluation_*.py` (132 tests)
+      cover strict enum/schema/bounds behaviour, timezone enforcement, the
+      `other` note rule, the full classification × reason compatibility matrix
+      (a parametrized sweep over every combination plus direct regressions for
+      the contradictory pairings), every rubric-completeness case,
+      deterministic ordering and JSON round trip, path-traversal / symlink /
+      overwrite / oversized-file / malformed-JSON / leak-sanitization
+      behaviour, synthetic-fixture validation, and a static (AST import scan)
+      plus
+      fresh-interpreter proof that no connector, OpenAI client, database,
+      agent, orchestration, or network import occurs. The full pre-existing
+      suite remains green.
+
+    **What this establishes and what it does not.** It establishes that the
+    offline contracts, the rubric-completeness check, and the local
+    serialization boundary exist and behave as documented. **It does not
+    evaluate any agent.** No factual-transcription check has been run, no
+    citation-support adjudication of any real agent output exists, and no
+    first characterization has been recorded. Closing P0-7 still requires the
+    deterministic factual-transcription checks, the human rubric applied to a
+    real first characterization covering every claim, and preserved
+    findings / failures / `unable_to_determine` results (see
+    [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md)).
+
+    **Pre-merge review fix (2026-08-26, same branch, not yet merged):**
+    `CitationAdjudication` originally validated `classification` and `reason`
+    independently, so semantically contradictory pairings (e.g. `supported`
+    with `value_conflicts_with_evidence`) were accepted. A single explicit,
+    immutable `CLASSIFICATION_REASON_MATRIX` and a `CitationAdjudication`
+    model validator were added, rejecting an incompatible pairing with a
+    fixed sanitized message that reproduces no reviewer note, identifier,
+    path, or record content. The `other`-requires-note / non-`other`-forbids-
+    note rules, `unable_to_determine` as a first-class outcome, and
+    rubric completeness being independent of classification are all
+    preserved; all six synthetic fixtures were already matrix-compatible and
+    needed no change. Tests grew by a full classification × reason
+    parametrized sweep plus contradictory-pair regressions. No other
+    behavioural change.
+
 ## Next Planned Work
 
 This is the forward plan. It replaces the historical content now under
@@ -3582,8 +3677,26 @@ This is the forward plan. It replaces the historical content now under
    tests, configuration, migrations, fixtures, or provider behavior change.
 
 2. **Design and implement a repeatable agent evaluation methodology (harness
-   + human rubric).** Once item 1 merges, this is the **only remaining
-   blocker to closing Phase 0** (see
+   + human rubric).** This is the **only remaining blocker to closing Phase
+   0** (see
+
+   **Progress (2026-08-26): the safe, offline foundation now exists** —
+   `market_intelligence/evaluation/` provides strict Pydantic v2 contracts
+   (the fixed agent / severity / citation-classification / citation-reason /
+   finding-category enums, one evaluation finding, one human citation
+   adjudication, one evaluation-run record with a locally, deterministically
+   generated run ID), a deterministic rubric-completeness validator, pure
+   JSON helpers plus a symlink-refusing / no-overwrite / atomic / bounded
+   local file round trip, and six synthetic fixtures. See item 35 in the
+   Completed Work Log. **This PR did not evaluate any agent** and added no
+   factual-transcription extraction, lexical-overlap scoring, repeatability
+   requests, live-output recording, `--record` flag, or LLM judge. What
+   remains for P0-7: the deterministic factual-transcription checks, the
+   lexical-overlap triage, the abstention matrix, cross-agent consistency,
+   the repeatability characterization, and — the actual closure condition —
+   at least one recorded first characterization of a real agent, covering
+   every claim, with findings / failures / `unable_to_determine` results
+   preserved.
    [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md), criterion P0-7, and
    [docs/AGENT_EVALUATION_HARNESS.md](docs/AGENT_EVALUATION_HARNESS.md)). The
    three agents each have exactly one accepted live run; there is no
