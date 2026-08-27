@@ -19,9 +19,11 @@ operating in this repository.
 - **AI does not choose an unrestricted options contract.** For any options
   decision-support workflow, deterministic safety and liquidity rules
   (expiration, strike, delta, other Greeks, IV, liquidity/open interest,
-  bid-ask spread, scenario horizon) build the eligible contract set. An AI
-  agent may only rank or explain contracts already in that set; it may not
-  introduce, widen, or override it. See
+  bid-ask spread, scenario horizon) build the eligible contract set, and
+  they run before, and independently of, any strategy agent. An AI agent
+  may only rank or explain contracts already in that set — it never
+  receives a raw option chain — and it may not introduce, widen, or
+  override the set. See
   [docs/OPTIONS_DECISION_WORKFLOW.md](docs/OPTIONS_DECISION_WORKFLOW.md).
 
 ## Forecast Requirements

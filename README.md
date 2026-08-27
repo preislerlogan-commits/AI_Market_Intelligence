@@ -60,13 +60,17 @@ requirement is a recorded first real, human-reviewed agent characterization
 
 **Phase 1 (design recorded, not started): an automated, evidence-based SPY
 options decision-support workflow** — deterministic evidence gathering and
-intraday regime classification, a bounded strategy agent that consumes only
-validated structured inputs and can return `no_trade`, deterministic
-option-contract eligibility filtering, and a recorded evaluation before any
-claim of usefulness. No options code, connector, or agent exists yet, and no
-options work begins until Phase 0 is closed. Design:
+intraday regime classification, deterministic option-contract eligibility
+filtering, and then a bounded strategy agent that consumes only the
+validated structured outputs of the upstream stages plus the deterministic
+selector's eligible contract set and can return `no_trade`, followed by a
+recorded evaluation before any claim of usefulness. No options code,
+connector, or agent exists yet, and no options work begins until Phase 0 is
+closed. Design:
 [docs/OPTIONS_DECISION_WORKFLOW.md](docs/OPTIONS_DECISION_WORKFLOW.md).
-Manual-only execution and the non-directional boundary are unchanged.
+Manual-only execution is unchanged. The three existing analysis agents
+(Market Evidence, News, Macro) stay non-directional; the future Options
+Strategy Agent is a separately bounded directional decision-support agent.
 
 ## Setup Status
 

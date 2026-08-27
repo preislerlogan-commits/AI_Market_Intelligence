@@ -29,20 +29,35 @@ implementation step (below) is closing Phase 0.
 Build an **automated, evidence-based SPY options decision-support
 workflow** that is measurably more disciplined than asking a general chatbot
 for a market prediction: deterministic evidence gathering, deterministic
-regime classification, a bounded strategy agent that consumes only validated
-structured inputs, deterministic contract eligibility filtering, and a
-recorded evaluation before any claim of usefulness. SPY only. Decision
-support only — every trade decision and its execution stay manual, exactly
-as today.
+regime classification, deterministic contract-eligibility filtering, and
+then a bounded directional strategy agent that consumes only the validated
+structured outputs of the upstream stages and the deterministic selector's
+validated eligible contract set, followed by a recorded evaluation before
+any claim of usefulness. SPY only. Decision support only — every trade
+decision and its execution stay manual, exactly as today.
 
 ## Architecture
 
 Each stage produces a **validated, structured output**. A downstream stage
 consumes only the validated output of upstream stages — never free text,
-never raw model output, never provider payloads. Every agent stays
-single-turn, no-tools, behind a deterministic preflight gate and
-deterministic post-response validators, mirroring the three existing
-non-directional agents.
+never raw model output, never provider payloads, never a raw option chain.
+Every agent stays single-turn, no-tools, behind a deterministic preflight
+gate and deterministic post-response validators, mirroring the structural
+guarantees of the three existing agents.
+
+The three existing agents (Market Evidence, News, Macro) remain strictly
+non-directional. The future **Options Strategy Agent is not one of them**:
+it is a separately bounded, directional decision-support agent, and the
+non-directional output policy that governs the three existing agents does
+not apply to it. It is bounded instead by a fixed-shape validated output,
+by consuming only validated upstream outputs plus the deterministic
+selector's eligible contract set, by the mandatory `no_trade` outcome, and
+by the manual-execution boundary — all described below.
+
+The deterministic Contract Selector runs **before** the Options Strategy
+Agent. The agent never receives a raw option chain; it receives only the
+selector's validated eligible contract set and may only rank and explain
+contracts already in it.
 
 | Stage | Type | Responsibility |
 |---|---|---|
@@ -50,8 +65,8 @@ non-directional agents.
 | **News Analyst** | agent (extends today's) | Catalysts present in stored news: relevance to SPY, timing relative to the session, affected symbols/sectors. No direction. |
 | **Macro Analyst** | agent (today's, unchanged scope) | Economic and market-regime *context* from stored FRED observations and official metadata. Factual only; not a regime predictor. |
 | **Intraday Regime/Setup Engine** | deterministic (no model) | Classifies the session into exactly one of: `trend_continuation`, `vwap_mean_reversion`, `range`, `event_driven`, `indeterminate` — from the structured features below, by fixed published rules. |
-| **Options Strategy Agent** | agent | Consumes only the validated structured outputs of the four stages above. Emits a bounded strategy recommendation **or `no_trade`**. Never sees raw evidence, raw chains, or free text. |
-| **Deterministic Contract Selector** | deterministic (no model) | Filters the option chain to an **eligible set** by expiration window, strike, delta, other Greeks, IV, liquidity/open interest, bid-ask spread, and scenario horizon. Runs before and independently of the agent. |
+| **Deterministic Contract Selector** | deterministic (no model) | Filters the option chain to an **eligible set** by expiration window, strike, delta, other Greeks, IV, liquidity/open interest, bid-ask spread, and scenario horizon. Runs **before** the Options Strategy Agent and independently of it. |
+| **Options Strategy Agent** | agent (directional decision-support; **not** one of the three non-directional agents) | Consumes only (a) the validated structured outputs of the Market Evidence, News, Macro, and Intraday Regime/Setup stages and (b) the Deterministic Contract Selector's validated eligible contract set. Emits a bounded strategy recommendation **or `no_trade`**. Never consumes a raw option chain, raw evidence, or free text, and cannot introduce a contract that is absent from the eligible set. |
 
 ## Terminology
 
@@ -100,6 +115,19 @@ behavior and must not be read as a reversion setup.
 
 ## Options Strategy Agent — bounded output
 
+The Options Strategy Agent is a bounded **directional** decision-support
+agent — distinct from the three non-directional analysis agents (Market
+Evidence, News, Macro), which are unchanged. Its inputs are exactly two:
+
+- **a.** the validated structured outputs of the evidence, news, macro, and
+  regime stages; and
+- **b.** the deterministic Contract Selector's validated eligible contract
+  set.
+
+It never consumes a raw option chain and cannot introduce a contract that
+is absent from the eligible set. Every trade decision and its execution
+remain manual, exactly as today.
+
 The agent's structured output is fixed-shape, strictly validated, and
 bounded. It contains exactly:
 
@@ -114,8 +142,8 @@ bounded. It contains exactly:
 - **Strategy type** — from a fixed enum (e.g. long call / long put / debit
   vertical / credit vertical / … ) — no free-form structures.
 - **Expiration window and target delta** — ranges, not a specific contract.
-- **IV / Greek / liquidity considerations** — bounded notes the Contract
-  Selector and the human can check.
+- **IV / Greek / liquidity considerations** — bounded notes the human can
+  check against the already-filtered eligible set.
 - **Maximum acceptable bid-ask spread** — an explicit cap.
 - **Up to three ranked candidate contracts** — chosen **only** from the
   Contract Selector's eligible set (see below).
@@ -131,7 +159,9 @@ bounded. It contains exactly:
 - The **Deterministic Contract Selector** builds the eligible contract set
   from fixed safety and liquidity rules (expiration window, strike/delta
   bounds, Greek bounds, IV bounds, minimum liquidity/open interest, maximum
-  bid-ask spread, scenario horizon). This runs without any model.
+  bid-ask spread, scenario horizon). This runs without any model, and it
+  runs **before** the Options Strategy Agent, which receives only the
+  validated eligible set — never the raw chain.
 - The Options Strategy Agent may only **rank and explain** contracts that
   are already in that eligible set. It cannot introduce, widen, or override
   the set, and it cannot name a contract the deterministic rules excluded.
