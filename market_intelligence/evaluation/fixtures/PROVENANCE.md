@@ -53,3 +53,20 @@ None of these is a real agent output, a claim of accuracy, or evidence of any
 agent's quality. All identifiers (`claim-alpha`, `cite-1`, …), series IDs, and
 evidence-shape names (`synthetic/redacted-*`) are placeholders with no
 connection to real data.
+
+## `macro_characterization.py` / `macro_characterization_input_complete.json`
+
+A single hand-authored synthetic `MacroCharacterizationInput` for the offline
+Macro characterization workflow
+(`market_intelligence/evaluation/macro_characterization_workflow.py`,
+`scripts/characterize_macro_report.py`):
+
+| Fixture | Purpose |
+|---|---|
+| `COMPLETE_MULTI_CLAIM` (`.py`) / `macro_characterization_input_complete.json` | Complete multi-claim characterization: four synthetic claims exercising the transcription match / mismatch / human-review outcomes plus a two-cited-fact comparison claim; five expected claim/citation pairs covering every claim. |
+
+The JSON file is the byte-stable `input_to_json_str(COMPLETE_MULTI_CLAIM)`
+serialization of the `.py` fixture, committed for the CLI test. Series IDs
+(`SYNTHRATE`, `SYNTHPRICE`, `SYNTHLABOR`, …), identifiers, dates, and values are
+all synthetic placeholders. It is not a real characterization and no real
+characterization has been performed.

@@ -711,6 +711,16 @@ and known-phrasing rules -- it is not a claim that any `claim_summary`
 accurately transcribes the underlying stored value or metadata. No automated
 evaluation of factual accuracy exists in this repository.
 
+An *offline* workflow to **characterize** one Macro Analyst report now exists
+(`market_intelligence/evaluation/macro_characterization_workflow.py`,
+`scripts/characterize_macro_report.py` -- see
+[AGENT_EVALUATION_HARNESS.md](AGENT_EVALUATION_HARNESS.md)): it runs the
+deterministic Macro factual-transcription check for every claim and produces one
+pending human citation-support adjudication template per expected claim/citation
+pair. It makes no live request and no database access, it is exercised only
+against synthetic fixtures, and **no real characterization has been performed**
+-- P0-7 and Phase 0 remain open.
+
 ## Error categories
 
 All errors are sanitized `RuntimeError` subclasses under

@@ -1,0 +1,95 @@
+{
+  "characterization_label": "synthetic-macro-characterization-complete",
+  "claims": [
+    {
+      "cited_facts": [
+        {
+          "citation_id": "cite-a",
+          "frequency": "monthly",
+          "observation_date": "2031-04-01",
+          "series_id": "SYNTHRATE",
+          "units": "percent",
+          "value": "2.50"
+        }
+      ],
+      "claim_id": "claim-single-match",
+      "claim_series_id": "SYNTHRATE",
+      "claim_summary": "The stored monthly observation dated 2031-04-01 is 2.50 percent, per official FRED metadata."
+    },
+    {
+      "cited_facts": [
+        {
+          "citation_id": "cite-b",
+          "frequency": "monthly",
+          "observation_date": "2031-04-01",
+          "series_id": "SYNTHPRICE",
+          "units": "index points",
+          "value": "315.00"
+        }
+      ],
+      "claim_id": "claim-single-mismatch",
+      "claim_series_id": "SYNTHPRICE",
+      "claim_summary": "The stored monthly observation dated 2031-04-01 is 318.00 index points."
+    },
+    {
+      "cited_facts": [
+        {
+          "citation_id": "cite-c",
+          "frequency": "monthly",
+          "observation_date": "2031-04-01",
+          "series_id": "SYNTHRATE",
+          "units": "percent",
+          "value": "2.50"
+        }
+      ],
+      "claim_id": "claim-unrecognized",
+      "claim_series_id": "SYNTHRATE",
+      "claim_summary": "The latest SYNTHRATE reading reflects the prevailing policy stance as of spring 2031."
+    },
+    {
+      "cited_facts": [
+        {
+          "citation_id": "cite-d-prev",
+          "frequency": "monthly",
+          "observation_date": "2031-03-01",
+          "series_id": "SYNTHLABOR",
+          "units": null,
+          "value": "4.30"
+        },
+        {
+          "citation_id": "cite-d-latest",
+          "frequency": "monthly",
+          "observation_date": "2031-04-01",
+          "series_id": "SYNTHLABOR",
+          "units": null,
+          "value": "4.10"
+        }
+      ],
+      "claim_id": "claim-comparison-match",
+      "claim_series_id": "SYNTHLABOR",
+      "claim_summary": "The stored monthly observation dated 2031-04-01 was 4.10; it decreased from the stored monthly observation dated 2031-03-01, which was 4.30."
+    }
+  ],
+  "expected_pairs": [
+    {
+      "citation_id": "cite-a",
+      "claim_id": "claim-single-match"
+    },
+    {
+      "citation_id": "cite-b",
+      "claim_id": "claim-single-mismatch"
+    },
+    {
+      "citation_id": "cite-c",
+      "claim_id": "claim-unrecognized"
+    },
+    {
+      "citation_id": "cite-d-prev",
+      "claim_id": "claim-comparison-match"
+    },
+    {
+      "citation_id": "cite-d-latest",
+      "claim_id": "claim-comparison-match"
+    }
+  ]
+}
