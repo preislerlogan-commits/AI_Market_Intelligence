@@ -11,7 +11,10 @@ Boundary (all enforced below):
 - **No silent overwrite.** ``write_record`` refuses an existing target unless
   ``overwrite=True``.
 - **Atomic write.** The record is written to a uniquely named temporary file in
-  the same (validated) directory, then ``os.replace``d into place.
+  the same (validated) directory, then published atomically: ``os.replace`` when
+  ``overwrite=True``, otherwise a no-clobber ``os.link`` that never overwrites a
+  target created after the initial existence check. The temporary file is always
+  removed.
 - **Bounded read.** ``read_record`` refuses a file larger than
   ``MAX_RECORD_BYTES`` before reading it.
 - **Sanitized errors.** Every failure raises ``EvaluationSerializationError``
@@ -92,7 +95,10 @@ def write_record(
     ``path``'s parent directory must already exist and must not be a symlink;
     ``path`` itself must not be a symlink; and, unless ``overwrite`` is true, it
     must not already exist. The write goes to a temporary file in the same
-    directory and is then ``os.replace``d into place.
+    directory. When ``overwrite`` is true it is ``os.replace``d into place;
+    otherwise it is published with an atomic no-clobber ``os.link`` so a target
+    created after the initial existence check is never overwritten. The
+    temporary file is always removed.
     """
     target = Path(path)
     directory = _validated_directory(target)
@@ -106,7 +112,19 @@ def write_record(
     try:
         with open(tmp_path, "x", encoding="utf-8", newline="\n") as handle:
             handle.write(text)
-        os.replace(tmp_path, target)
+        if overwrite:
+            os.replace(tmp_path, target)
+        else:
+            try:
+                os.link(tmp_path, target)
+            except FileExistsError:
+                raise EvaluationSerializationError(
+                    "target file already exists"
+                ) from None
+            finally:
+                tmp_path.unlink(missing_ok=True)
+    except EvaluationSerializationError:
+        raise
     except OSError:
         try:
             tmp_path.unlink(missing_ok=True)

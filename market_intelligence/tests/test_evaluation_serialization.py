@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
@@ -97,6 +98,36 @@ def test_write_refuses_existing_target_by_default(tmp_path):
     with pytest.raises(EvaluationSerializationError):
         write_record(_record(), target)
     write_record(_record(), target, overwrite=True)
+
+
+def test_write_does_not_overwrite_a_target_created_after_the_check(tmp_path, monkeypatch):
+    target = tmp_path / "record.json"
+    target.write_text("competing contents", encoding="utf-8")
+
+    real_exists = Path.exists
+
+    def blind_to_target(self):
+        if self == target:
+            return False
+        return real_exists(self)
+
+    monkeypatch.setattr(Path, "exists", blind_to_target)
+
+    with pytest.raises(EvaluationSerializationError) as exc:
+        write_record(_record(), target)
+    assert "already exists" in str(exc.value)
+
+    monkeypatch.undo()
+    assert target.read_text(encoding="utf-8") == "competing contents"
+    assert [p.name for p in tmp_path.iterdir()] == ["record.json"]
+
+
+def test_write_overwrite_true_replaces_existing_target(tmp_path):
+    target = tmp_path / "record.json"
+    target.write_text("stale contents", encoding="utf-8")
+    write_record(_record(), target, overwrite=True)
+    assert read_record(target) == _record()
+    assert [p.name for p in tmp_path.iterdir()] == ["record.json"]
 
 
 def test_write_refuses_missing_parent_directory(tmp_path):
