@@ -45,6 +45,8 @@ synthetic cited evidence facts) for
 | `incorrect_direction` | Comparison claim states the wrong direction for its two values. |
 | `unsupported_wording` | Wording is not a recognized controlled form → human review. |
 | `extra_unrelated_numbers` | Sentence carries extra digit runs; only the named value groups are read. |
+| `canonical_capitalized_monthly` | Single-observation claim in the accepted live spelling ("The stored Monthly observation …"); frequency word case-folded before comparison. |
+| `canonical_capitalized_quarterly` | Single-observation claim in the accepted live spelling ("The stored Quarterly observation …"); frequency word case-folded before comparison. |
 | `exact_match_comparison` | Comparison claim; dates, values, and direction all match. |
 
 None of these is a real agent output, a claim of accuracy, or evidence of any

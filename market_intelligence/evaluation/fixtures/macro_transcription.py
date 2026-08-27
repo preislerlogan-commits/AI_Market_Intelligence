@@ -217,6 +217,65 @@ _EXTRA_UNRELATED_NUMBERS = MacroTranscriptionFixture(
     expected_mismatch_categories=(),
 )
 
+_CANONICAL_CAPITALIZED_MONTHLY = MacroTranscriptionFixture(
+    name="canonical_capitalized_monthly",
+    description=(
+        "Single-observation claim in the Macro Analyst's accepted live spelling, "
+        "which capitalizes the frequency word (\"The stored Monthly "
+        "observation ...\"). The captured word is case-folded before comparison, "
+        "so it still matches the lowercase 'monthly' on the cited fact."
+    ),
+    item=MacroTranscriptionInput(
+        claim_id="claim-10",
+        claim_series_id="SYNTHMONTHLY",
+        claim_summary=(
+            "The stored Monthly observation dated 2031-03-01 is 1.23 percent, "
+            "per official FRED metadata."
+        ),
+        cited_facts=[
+            _single_fact(
+                series_id="SYNTHMONTHLY",
+                observation_date="2031-03-01",
+                value="1.23",
+                frequency="monthly",
+                units="percent",
+            )
+        ],
+    ),
+    expected_outcome="match",
+    expected_form="single_observation",
+    expected_mismatch_categories=(),
+)
+
+_CANONICAL_CAPITALIZED_QUARTERLY = MacroTranscriptionFixture(
+    name="canonical_capitalized_quarterly",
+    description=(
+        "Single-observation claim in the Macro Analyst's accepted live spelling, "
+        "which capitalizes the frequency word (\"The stored Quarterly "
+        "observation ...\"). Case-folded to 'quarterly' before comparison."
+    ),
+    item=MacroTranscriptionInput(
+        claim_id="claim-11",
+        claim_series_id="SYNTHQUARTERLY",
+        claim_summary=(
+            "The stored Quarterly observation dated 2031-01-01 was 4.56 index "
+            "points, as stored."
+        ),
+        cited_facts=[
+            _single_fact(
+                series_id="SYNTHQUARTERLY",
+                observation_date="2031-01-01",
+                value="4.56",
+                frequency="quarterly",
+                units="index points",
+            )
+        ],
+    ),
+    expected_outcome="match",
+    expected_form="single_observation",
+    expected_mismatch_categories=(),
+)
+
 _EXACT_MATCH_COMPARISON = MacroTranscriptionFixture(
     name="exact_match_comparison",
     description="Comparison claim whose dates, values, and direction all match.",
@@ -260,6 +319,8 @@ MACRO_TRANSCRIPTION_FIXTURES: tuple[MacroTranscriptionFixture, ...] = (
     _INCORRECT_DIRECTION,
     _UNSUPPORTED_WORDING,
     _EXTRA_UNRELATED_NUMBERS,
+    _CANONICAL_CAPITALIZED_MONTHLY,
+    _CANONICAL_CAPITALIZED_QUARTERLY,
     _EXACT_MATCH_COMPARISON,
 )
 

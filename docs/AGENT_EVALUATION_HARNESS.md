@@ -124,6 +124,15 @@ does **not** yet apply to the Market Evidence Agent or News Analyst.
   carries a raw model response, a provider response ID, a credential, a URL, or
   a database path, and every field is strictly bounded (`extra="forbid"`).
 
+- **A narrow canonical form, not a grammar the validators enforce.** The two
+  forms below are a *spelling that satisfies* the Macro Analyst's instructions
+  and post-response validators (`_validate_frequency_wording`,
+  `_validate_comparison_claims`), but those validators check for required
+  substrings and forbidden phrasing, not this exact full sentence. A claim with
+  other legitimate wording the agent would still accept is routed to human
+  citation-support review here — it is neither a deterministic pass nor a
+  failure of the agent.
+
 - **Recognized grammar (exactly two controlled forms).** Both are matched by a
   single, fully anchored regular expression with fixed connective text — never
   generic number scraping, never fuzzy or semantic matching:
@@ -142,7 +151,12 @@ does **not** yet apply to the Market Evidence Agent or News Analyst.
 
   `<frequency>` is one of `daily`, `weekly`, `biweekly`, `monthly`,
   `quarterly`, `semiannual`, `annual` (the seven words the Macro Analyst's own
-  `FREQUENCY_SHORT_WORDS` maps to). `<units>` is a fixed closed vocabulary. The
+  `FREQUENCY_SHORT_WORDS` maps to), in **any letter case** — the Macro Analyst
+  only enforces a `.lower()` copy of the claim text, and its accepted live
+  output capitalizes the word ("The stored Monthly observation …", "The stored
+  Quarterly observation …"), so the captured token is deterministically
+  case-folded to its canonical spelling before comparison (fixed-table case
+  normalization, not fuzzy parsing). `<units>` is a fixed closed vocabulary. The
   grammar has no free-text region, so any sentence carrying a digit outside the
   date / value slots simply fails to match and is reported as unrecognized
   wording (see outcomes). Because every value/date token is read from a named
@@ -178,7 +192,9 @@ does **not** yet apply to the Market Evidence Agent or News Analyst.
   single-observation match, a wrong value, a wrong date, a wrong series, wrong
   units + frequency, an incorrect comparison direction, unsupported wording, a
   comparison whose sentence carries extra unrelated digit runs (which must not
-  be scraped), and an exact comparison match. Every fixture is hand-authored
+  be scraped), a capitalized-`Monthly` and a capitalized-`Quarterly` canonical
+  single-observation statement (the accepted live spelling), and an exact
+  comparison match. Every fixture is hand-authored
   and contains no real claim/evidence text, live-run evidence IDs, live
   observation values, credentials, or model output (see
   `fixtures/PROVENANCE.md`).

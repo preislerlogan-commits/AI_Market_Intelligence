@@ -169,6 +169,70 @@ def test_recognized_single_observation_phrasings_match(summary):
     assert result.outcome == "match"
 
 
+# ---------------------------------------------------------------------------
+# Canonical frequency spelling: the agent capitalizes "Monthly" / "Quarterly"
+# ---------------------------------------------------------------------------
+
+
+def test_capitalized_monthly_canonical_statement_is_recognized_and_matches():
+    # The Macro Analyst's accepted live output writes "The stored Monthly
+    # observation ..." -- its own _validate_frequency_wording only checks a
+    # .lower() copy of the text, so the capitalized word is valid agent output.
+    result = evaluate_macro_transcription(
+        _single_input(
+            "The stored Monthly observation dated 2031-03-01 is 1.23 percent.",
+            observation_date="2031-03-01",
+            value="1.23",
+            frequency="monthly",
+        )
+    )
+    assert result.statement_form == "single_observation"
+    assert result.outcome == "match"
+    assert result.mismatch_categories == ()
+
+
+def test_capitalized_quarterly_canonical_statement_is_recognized_and_matches():
+    result = evaluate_macro_transcription(
+        _single_input(
+            "The stored Quarterly observation dated 2031-01-01 was 4.56 index "
+            "points, as stored.",
+            observation_date="2031-01-01",
+            value="4.56",
+            frequency="quarterly",
+            units="index points",
+        )
+    )
+    assert result.statement_form == "single_observation"
+    assert result.outcome == "match"
+    assert result.mismatch_categories == ()
+
+
+def test_capitalized_frequency_in_comparison_form_is_case_normalized():
+    item = _comparison_input(
+        "The stored Monthly observation dated 2026-07-01 was 5.33; it increased "
+        "from the stored Monthly observation dated 2026-06-01, which was 5.00.",
+        prev_value="5.00",
+        latest_value="5.33",
+    )
+    result = evaluate_macro_transcription(item)
+    assert result.statement_form == "comparison"
+    assert result.outcome == "match"
+
+
+def test_case_normalization_does_not_hide_a_genuine_frequency_mismatch():
+    # A capitalized "Quarterly" claim against a monthly cited fact is still a
+    # frequency mismatch -- normalization only folds case, it does not equate
+    # different frequency words.
+    result = evaluate_macro_transcription(
+        _single_input(
+            "The stored Quarterly observation dated 2026-07-01 is 3.63 percent.",
+            frequency="monthly",
+        )
+    )
+    assert result.outcome == "mismatch"
+    assert result.mismatch_categories == ("frequency",)
+
+
 def test_units_are_only_checked_when_the_claim_states_them():
     # Claim omits units entirely -> units mismatch is impossible even though the
     # cited fact carries units.

@@ -12,9 +12,8 @@ summary string, the claim's declared series ID, and one or two cited *synthetic*
 evidence facts (series ID, observation date, ``Decimal`` value, reporting
 frequency, and -- optionally -- units) -- it:
 
-1. Recognizes **only** the two exact controlled Macro Analyst statement forms
-   already enforced by that agent's instructions and post-response validators
-   (see ``market_intelligence/agents/macro_analyst.py``):
+1. Recognizes **only** a narrow canonical spelling of the two controlled Macro
+   Analyst statement forms (see ``market_intelligence/agents/macro_analyst.py``):
 
    - one stored single-observation statement --
      ``The stored <frequency> observation dated <YYYY-MM-DD> (is|was)
@@ -28,19 +27,36 @@ frequency, and -- optionally -- units) -- it:
      observation dated <previous-date>, which was <previous-value>.`` (and the
      ``it was unchanged from ...`` variant).
 
-   Any other wording -- including the ``Comparing the stored observations dated
-   X and Y, ...`` phrasing, which is not part of this canonical wording -- is
-   reported as *unrecognized* and routed to human
-   citation-support review -- it is **never** treated as a pass. There is no
-   generic number scraping and no fuzzy / semantic matching: every value/date
-   token is read from a named capture group of a fully anchored grammar, so
-   digits appearing anywhere else in the sentence are ignored by construction.
+   ``<frequency>`` is one of the seven human-readable words the Macro Analyst's
+   ``FREQUENCY_SHORT_WORDS`` maps its recognized ``frequency_short`` codes to,
+   in **any letter case** -- its accepted live output capitalizes the word
+   (``The stored Monthly observation ...``, ``The stored Quarterly
+   observation ...``), which its own ``_validate_frequency_wording`` permits
+   because that validator only inspects a ``.lower()`` copy of the claim text.
+   The captured word is deterministically case-folded back to its canonical
+   spelling before comparison (see :func:`_normalize_frequency`) -- fixed-table
+   case normalization, not fuzzy parsing.
+
+   This exact full-sentence grammar is *sufficient* to satisfy the agent's
+   instructions and post-response validators
+   (``_validate_frequency_wording`` / ``_validate_comparison_claims``), but
+   those validators do **not** *require* this precise wording -- they check for
+   necessary substrings and forbidden phrasing, not this whole grammar. Any
+   other wording a Macro Analyst could legitimately emit and have accepted --
+   including the ``Comparing the stored observations dated X and Y, ...``
+   phrasing -- is reported as *unrecognized* and routed to human
+   citation-support review -- it is **never** treated as a pass, and it is not
+   a failure of the agent. There is no generic number scraping and no fuzzy /
+   semantic matching: every value/date token is read from a named capture group
+   of a fully anchored grammar, so digits appearing anywhere else in the
+   sentence are ignored by construction.
 
 2. Deterministically verifies, token by token, against the cited synthetic
    evidence: the series ID (the claim's declared series vs. every cited fact),
    the observation date, the ``Decimal`` value (by numeric, not string,
-   equality), the frequency wording, the units *when the claim states them*,
-   the previous observation's date and value for a comparison, and that a
+   equality), the frequency wording (the captured word case-folded to its
+   canonical spelling first), the units *when the claim states them*, the
+   previous observation's date and value for a comparison, and that a
    comparison's stated direction agrees with the two cited values.
 
 3. Emits exactly one :class:`~market_intelligence.evaluation.contracts.EvaluationFinding`
@@ -106,6 +122,20 @@ _FREQUENCY_WORDS: frozenset[str] = frozenset(
     ("daily", "weekly", "biweekly", "monthly", "quarterly", "semiannual", "annual")
 )
 
+
+def _normalize_frequency(token: str) -> str:
+    """Case-fold a captured frequency word to its canonical spelling.
+
+    The recognized grammar accepts the frequency word in any letter case: the
+    Macro Analyst's ``_validate_frequency_wording`` only inspects a ``.lower()``
+    copy of the claim text, so the agent is free to -- and in its accepted live
+    output does -- capitalize the word (``The stored Monthly observation ...``).
+    Comparison against the lowercase :data:`MacroFrequencyWord` on the
+    evaluation input is always done on this normalized form. Deterministic: a
+    plain case fold, never fuzzy matching.
+    """
+    return token.casefold()
+
 # --- Broad, code-authored mismatch categories --------------------------------
 #
 # A mismatch finding names only these fixed slugs -- never the claim text, the
@@ -154,7 +184,13 @@ MATCH_IS_NOT_VALIDATION = (
 # free-text region, so "extra" numbers cannot be silently scraped: any sentence
 # carrying a number outside these slots simply fails to match and is reported as
 # unrecognized wording (human review), never as a pass.
-_FREQ_ALT = r"daily|weekly|biweekly|monthly|quarterly|semiannual|annual"
+# Case-insensitive on the frequency word only: the Macro Analyst enforces just a
+# ``.lower()`` copy of the claim text, and its accepted live output capitalizes
+# the word (``The stored Monthly observation ...``). The captured token is
+# deterministically case-folded to its canonical spelling before any comparison
+# (see ``_normalize_frequency``); this is fixed-table case normalization, not
+# fuzzy parsing. Every other token in the grammar stays exact.
+_FREQ_ALT = r"(?i:daily|weekly|biweekly|monthly|quarterly|semiannual|annual)"
 _DATE = r"\d{4}-\d{2}-\d{2}"
 _NUM = r"-?\d+(?:\.\d+)?"
 
@@ -397,7 +433,7 @@ def _check_single_observation(
     if stated_value is None or stated_value != fact.value:
         categories.add(MISMATCH_VALUE)
 
-    if match.group("freq") != fact.frequency:
+    if _normalize_frequency(match.group("freq")) != fact.frequency:
         categories.add(MISMATCH_FREQUENCY)
 
     stated_units = match.group("units")
@@ -437,8 +473,8 @@ def _check_comparison(
     ):
         categories.add(MISMATCH_SERIES_ID)
     if (
-        latest_frequency_word != latest_fact.frequency
-        or previous_frequency_word != previous_fact.frequency
+        _normalize_frequency(latest_frequency_word) != latest_fact.frequency
+        or _normalize_frequency(previous_frequency_word) != previous_fact.frequency
     ):
         categories.add(MISMATCH_FREQUENCY)
 
