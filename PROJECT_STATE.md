@@ -17,8 +17,8 @@ Last updated: 2026-08-27
 | Orchestration | Deterministic, manually invoked ingestion path: dry-run-first CLI over the three reviewed jobs, per-job failure isolation, fail-closed overlap lock, persistent audit trail; one authorized `--execute` run. Meets the Phase 0 ingestion criterion (with limited-verification caveats). Scheduling, unattended operation, automatic stale-lock recovery, and freshness monitoring are Phase 1 / later and unimplemented. |
 | Model boundary | One OpenAI structured-output client (no tools, no retry, `store=False`); live-connectivity-verified. |
 | Agents | Market Evidence Agent, News Analyst, seven-series Macro Analyst. Each has exactly one accepted live run. Non-directional guarantee is structurally enforced. |
-| Trust layer | **Partial — offline foundation + first Macro-only transcription check + offline Macro characterization workflow; P0-7 not met.** `market_intelligence/evaluation/` provides the safe, offline foundation for the methodology: strict Pydantic v2 contracts (agent/severity/citation-classification/citation-reason/finding-category enums, one finding, one human citation adjudication, one evaluation-run record), a deterministic rubric-completeness validator, a symlink-refusing / no-overwrite / atomic / bounded local JSON round trip, and synthetic fixtures. It **also** provides the **first deterministic factual-transcription check — Macro Analyst only, over synthetic inputs** (`macro_factual_transcription.py`): it recognizes only the two exact controlled Macro Analyst statement forms (single stored observation; increase/decrease/unchanged two-observation comparison), verifies series ID / observation date / `Decimal` value / frequency wording / units-when-stated / previous observation / comparison direction, and emits one `info` (exact match — *not* a validation) / `failure` (mismatch, broad category only, no text reproduced) / `warning` (unrecognized wording → human review) finding. It **also** provides the **offline Macro characterization workflow** (`macro_characterization_input.py`, `macro_characterization_workflow.py`, `scripts/characterize_macro_report.py`): a strict local input contract (sanitized label; Macro claim IDs; claim series IDs and summaries; the cited synthetic evidence facts the transcription evaluator needs; expected claim/citation pairs — and nothing else), a pure builder that runs the transcription check for every claim, creates an `EvaluationRunRecord` carrying those findings, and emits one pending human-adjudication template per expected pair (never pre-classifying citation support, never treating a transcription match as citation support), a pure completion step that attaches completed human adjudications only when every expected pair has exactly one (refusing missing/duplicate/unexpected pairs; completion is not validation), and a dry-run-first, offline, explicit-path CLI (`--write` required, no overwrite, no directory creation, refuses tracked output dirs). It still performs **no** lexical-overlap scoring, **no** citation-support adjudication of real output, **no** abstention matrix, **no** cross-agent or repeatability checks, **no** live-output recording, and **no** transcription check for the Market Evidence Agent or News Analyst. **No real agent output has been evaluated; no factual-transcription result of any live agent run and no citation-support adjudication of any real agent output exists; no real characterization has been performed.** Completing P0-7 (the remaining factual-transcription checks, the human rubric applied to a real first characterization covering every claim, and preserved findings) remains the **only remaining blocker to closing Phase 0** (see [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md) and [docs/AGENT_EVALUATION_HARNESS.md](docs/AGENT_EVALUATION_HARNESS.md)). |
-| Test baseline | `python -m pytest`: **2,371 passed, 2 skipped** (2,373 collected). The 2 skipped are the evaluation-foundation symlink-refusal tests, which skip where the OS disallows creating a symlink; they are not passing tests. |
+| Trust layer | **Partial — offline foundation + first Macro-only transcription check + offline Macro characterization workflow; P0-7 not met.** `market_intelligence/evaluation/` provides the safe, offline foundation for the methodology: strict Pydantic v2 contracts (agent/severity/citation-classification/citation-reason/finding-category enums, one finding, one human citation adjudication, one evaluation-run record), a deterministic rubric-completeness validator, a symlink-refusing / no-overwrite / atomic / bounded local JSON round trip, and synthetic fixtures. It **also** provides the **first deterministic factual-transcription check — Macro Analyst only, over synthetic inputs** (`macro_factual_transcription.py`): it recognizes only the two exact controlled Macro Analyst statement forms (single stored observation; increase/decrease/unchanged two-observation comparison), verifies series ID / observation date / `Decimal` value / frequency wording / units-when-stated / previous observation / comparison direction, and emits one `info` (exact match — *not* a validation) / `failure` (mismatch, broad category only, no text reproduced) / `warning` (unrecognized wording → human review) finding. It **also** provides the **offline Macro characterization workflow** (`macro_characterization_input.py`, `macro_characterization_workflow.py`, `scripts/characterize_macro_report.py`): a strict local input contract (sanitized label; Macro claim IDs; claim series IDs and summaries; the sanitized evaluation evidence facts the transcription evaluator needs; expected claim/citation pairs — and nothing else), a pure builder that runs the transcription check for every claim, creates an `EvaluationRunRecord` carrying those findings, and emits one pending human-adjudication template per expected pair (never pre-classifying citation support, never treating a transcription match as citation support), a pure completion step that attaches completed human adjudications only when every expected pair has exactly one (refusing missing/duplicate/unexpected pairs; completion is not validation), and a dry-run-first, offline, explicit-path CLI (`--write` required, no overwrite, no directory creation; with `--write` the resolved output path must be strictly inside gitignored `data/evaluations/local/`, and repository-root, tracked-directory, outside-repository, `..`-traversal, and symlink-escape targets are refused; dry-run behavior is unchanged). Committed fixtures and tests remain synthetic-only; real sanitized evidence facts may be used only through the explicit local characterization workflow under gitignored `data/evaluations/local/`, and real characterization inputs and outputs must never be committed. It still performs **no** lexical-overlap scoring, **no** citation-support adjudication of real output, **no** abstention matrix, **no** cross-agent or repeatability checks, **no** live-output recording, and **no** transcription check for the Market Evidence Agent or News Analyst. **No real agent output has been evaluated; no factual-transcription result of any live agent run and no citation-support adjudication of any real agent output exists; no real characterization has been performed.** Completing P0-7 (the remaining factual-transcription checks, the human rubric applied to a real first characterization covering every claim, and preserved findings) remains the **only remaining blocker to closing Phase 0** (see [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md) and [docs/AGENT_EVALUATION_HARNESS.md](docs/AGENT_EVALUATION_HARNESS.md)). |
+| Test baseline | `python -m pytest`: **2,375 passed, 3 skipped** (2,378 collected). The 3 skipped are symlink-refusal / symlink-escape tests (the evaluation-foundation serialization tests plus the characterization CLI symlink-escape test), which skip where the OS disallows creating a symlink; they are not passing tests. |
 | Not built | Predictive/forecast model, forecast records, agent orchestrator / combined brief, dashboard, trade journal, options-data pipeline, scheduler, brokerage execution. |
 
 ## Current Phase
@@ -3770,9 +3770,13 @@ entry describes something that has already been built, ingested, or attempted;
       `MacroCharacterizationInput` carries **only**: a sanitized
       `characterization_label`; one entry per Macro claim (the local `claim_id`,
       the declared `claim_series_id`, the `claim_summary` string, and the one or
-      two cited *synthetic / redacted* `TranscriptionEvidenceFact`s the existing
+      two sanitized evaluation-evidence `TranscriptionEvidenceFact`s the existing
       Macro transcription evaluator needs); and the expected
-      `(claim_id, citation_id)` pairs. It has **no** field for a credential,
+      `(claim_id, citation_id)` pairs. Committed fixtures and tests stay
+      synthetic-only; real sanitized evidence facts may be supplied only through
+      the explicit local characterization workflow under gitignored
+      `data/evaluations/local/`, and real characterization inputs and outputs
+      must never be committed. It has **no** field for a credential,
       URL, provider response ID, raw provider payload, unrestricted metadata
       dict, database path, or model reasoning, and rejects a duplicate
       `claim_id`, an expected pair naming an unknown claim or an uncited
@@ -3802,27 +3806,34 @@ entry describes something that has already been built, ingested, or attempted;
       (prints a sanitized summary plus the pending-adjudication templates,
       writes nothing); `--write` required to serialize the `EvaluationRunRecord`
       via `evaluation.serialization.write_record` (no overwrite, no symlink,
-      atomic, no directory creation); **refuses** an `--output` path inside a
-      tracked `fixtures/` / `tests/` / `docs/` directory; every error is a fixed
-      sanitized marker.
+      atomic, no directory creation); with `--write`, the resolved `--output`
+      path must be **strictly inside** gitignored `data/evaluations/local/` —
+      a repository-root, tracked-directory (`fixtures/` / `tests/` / `docs/`),
+      `data/evaluations/`-itself, outside-repository, `..`-traversal, or
+      symlink-escape target is refused; dry-run behavior is unchanged; every
+      error is a fixed sanitized marker.
     - **Local-data boundary.** New gitignored `data/evaluations/local/` (with a
-      tracked `.gitkeep` and `data/evaluations/README.md`) is the home for real
-      characterization inputs/outputs. Only synthetic fixtures under
+      tracked `.gitkeep` and `data/evaluations/README.md`) is the only home for
+      real characterization inputs/outputs, and they must never be committed.
+      Only synthetic fixtures under
       `market_intelligence/evaluation/fixtures/` are committed
       (`macro_characterization.py` and the byte-stable
       `macro_characterization_input_complete.json`).
     - **Tests** —
       `market_intelligence/tests/test_evaluation_macro_characterization.py` (21
-      tests) and `test_characterize_macro_report_cli.py` (13 tests) cover a
+      tests) and `test_characterize_macro_report_cli.py` (17 tests) cover a
       complete multi-claim characterization, transcription match / mismatch /
       human-review outcomes, the adjudication template covering every pair, no
       pre-classification, a complete human rubric, missing / duplicate /
       unexpected adjudications, explicit-path / dry-run / no-overwrite /
-      no-directory-creation / tracked-path-refusal / sanitization CLI behaviour,
-      and (via `test_evaluation_offline.py` plus a dedicated AST scan of the CLI
-      script) zero connector / DB / OpenAI / agent-runtime imports. Full suite:
-      `python -m pytest` → **2,371 passed, 2 skipped**; `python -m ruff check .`
-      clean; `git diff --check` clean.
+      no-directory-creation, the `data/evaluations/local/`-only output allowlist
+      (repository-root, tracked-directory, `data/evaluations/`-itself,
+      outside-repository, `..`-traversal, and symlink-escape refusal), and
+      sanitization CLI behaviour, and (via `test_evaluation_offline.py` plus a
+      dedicated AST scan of the CLI script) zero connector / DB / OpenAI /
+      agent-runtime imports. Full suite: `python -m pytest` → **2,375 passed,
+      3 skipped** (2,378 collected); `python -m ruff check .` clean;
+      `git diff --check` clean.
 
     **What this establishes and what it does not.** It establishes that an
     offline workflow to build and complete one Macro characterization record
@@ -3878,8 +3889,9 @@ This is the forward plan. It replaces the historical content now under
    and emits one pending human-adjudication template per expected claim/citation
    pair (never pre-classifying citation support), a pure completion step
    (refuses missing/duplicate/unexpected pairs; completion is not validation),
-   and a dry-run-first offline CLI (`scripts/characterize_macro_report.py`) that
-   writes only to an explicit, non-tracked path. See items 35, 36, and 37 in the
+   and a dry-run-first offline CLI (`scripts/characterize_macro_report.py`) whose
+   `--write` output must resolve strictly inside gitignored
+   `data/evaluations/local/`. See items 35, 36, and 37 in the
    Completed Work Log. **No PR to date has evaluated any real agent output, and
    no real characterization has been performed**, and none added lexical-overlap
    scoring, a `--record` flag, or an LLM judge. What remains for P0-7: the same
