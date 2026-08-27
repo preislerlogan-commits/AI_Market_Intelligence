@@ -2,15 +2,21 @@
 
 This is the *first, deliberately narrow* slice of the "deterministic
 factual-transcription checks" named in ``docs/AGENT_EVALUATION_HARNESS.md``
-(criterion P0-7). It is **Macro-Analyst-only** and **offline / synthetic only**.
+(criterion P0-7). It is **Macro-Analyst-only** and runs fully **offline** -- it
+imports no connector, database, model client, or agent runtime and makes no
+network request. Its committed fixtures and tests are **synthetic only**; real
+*sanitized* evidence facts may be supplied only by the explicit local
+characterization workflow under the gitignored ``data/evaluations/local/`` (see
+``docs/AGENT_EVALUATION_HARNESS.md`` and ``data/evaluations/README.md``), and
+such real characterization inputs and outputs must never be committed.
 
 What it does
 ------------
 
 Given one evaluation-specific input -- a sanitized local claim ID, the claim
-summary string, the claim's declared series ID, and one or two cited *synthetic*
-evidence facts (series ID, observation date, ``Decimal`` value, reporting
-frequency, and -- optionally -- units) -- it:
+summary string, the claim's declared series ID, and one or two cited sanitized
+evaluation evidence facts (series ID, observation date, ``Decimal`` value,
+reporting frequency, and -- optionally -- units) -- it:
 
 1. Recognizes **only** a narrow canonical spelling of the two controlled Macro
    Analyst statement forms (see ``market_intelligence/agents/macro_analyst.py``):
@@ -51,8 +57,8 @@ frequency, and -- optionally -- units) -- it:
    of a fully anchored grammar, so digits appearing anywhere else in the
    sentence are ignored by construction.
 
-2. Deterministically verifies, token by token, against the cited synthetic
-   evidence: the series ID (the claim's declared series vs. every cited fact),
+2. Deterministically verifies, token by token, against the cited evidence
+   fact(s): the series ID (the claim's declared series vs. every cited fact),
    the observation date, the ``Decimal`` value (by numeric, not string,
    equality), the frequency wording (the captured word case-folded to its
    canonical spelling first), the units *when the claim states them*, the
@@ -73,12 +79,14 @@ What it is NOT
 
 - Not a validation, certification, or "pass" of the Macro Analyst or of any
   individual claim. A match confirms only that the recognized tokens transcribe
-  the cited synthetic fact -- see :data:`MATCH_IS_NOT_VALIDATION`.
-- Not connected to any real agent output. It imports no connector, no database,
-  no OpenAI client, and no agent runtime, and makes no network request (see the
-  offline-guarantee test in
-  ``market_intelligence/tests/test_evaluation_offline.py``). Every fixture it is
-  exercised with is synthetic and hand-authored.
+  the cited evidence fact -- see :data:`MATCH_IS_NOT_VALIDATION`.
+- Fully offline. It imports no connector, no database, no OpenAI client, and no
+  agent runtime, and makes no network request (see the offline-guarantee test
+  in ``market_intelligence/tests/test_evaluation_offline.py``). Every committed
+  fixture and test exercises it with **synthetic, hand-authored** facts only;
+  real sanitized facts may be used only by the explicit local characterization
+  workflow under the gitignored ``data/evaluations/local/``, and real
+  characterization inputs and outputs must never be committed.
 - Not the citation-support rubric, the lexical-overlap triage, the abstention
   matrix, cross-agent consistency, repeatability, or the first recorded
   characterization -- all of those remain unimplemented, and Phase 0 remains
@@ -169,7 +177,7 @@ TranscriptionOutcome = Literal["match", "mismatch", "human_review"]
 
 MATCH_IS_NOT_VALIDATION = (
     "A match means only that the recognized value/date/unit/frequency/direction "
-    "tokens in this one claim transcribe the cited synthetic evidence fact. It "
+    "tokens in this one claim transcribe the cited sanitized evidence fact. It "
     "does not mean the claim is factually accurate beyond those tokens, that the "
     "cited evidence supports the claim (that is the human citation-support "
     "rubric's job), that the output is repeatable, or that the Macro Analyst "
@@ -266,11 +274,21 @@ _UnitsText = Annotated[
 
 
 class TranscriptionEvidenceFact(BaseModel):
-    """One cited *synthetic* stored-observation fact the claim is checked against.
+    """One cited sanitized evaluation evidence fact the claim is checked against.
 
-    Every field is exactly what a redacted / synthetic macro-evidence fact would
-    carry -- never real live-run data. ``value`` is a ``Decimal`` (pass it as a
-    string in fixtures to avoid binary-float artifacts).
+    This type represents a *sanitized* stored-observation evidence fact: only a
+    local citation handle, series ID, observation date, ``Decimal`` value,
+    reporting frequency, and optional units -- never a credential, URL, provider
+    response ID, raw provider payload, database path, or model reasoning.
+
+    Committed fixtures and tests must use only **synthetic, hand-authored**
+    facts. Real sanitized facts may be used only by the explicit local
+    characterization workflow under the gitignored ``data/evaluations/local/``
+    (see ``docs/AGENT_EVALUATION_HARNESS.md`` and ``data/evaluations/README.md``);
+    real characterization inputs and outputs must never be committed.
+
+    ``value`` is a ``Decimal`` -- pass it as a string to avoid binary-float
+    artifacts.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -284,7 +302,7 @@ class TranscriptionEvidenceFact(BaseModel):
 
 
 class MacroTranscriptionInput(BaseModel):
-    """One Macro Analyst claim plus its cited synthetic evidence, for checking.
+    """One Macro Analyst claim plus its cited sanitized evaluation evidence, for checking.
 
     ``cited_facts`` holds exactly one fact for a single-observation claim, or
     exactly two (the previous and latest observation, in any order -- they are

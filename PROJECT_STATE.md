@@ -4,7 +4,7 @@ This document is the **authoritative source of truth** for the current status
 of AI Market Intelligence. It must be read before beginning any work in this
 repository, and updated whenever the project's status materially changes.
 
-Last updated: 2026-08-26
+Last updated: 2026-08-27
 
 ## Current State at a Glance
 
@@ -17,8 +17,8 @@ Last updated: 2026-08-26
 | Orchestration | Deterministic, manually invoked ingestion path: dry-run-first CLI over the three reviewed jobs, per-job failure isolation, fail-closed overlap lock, persistent audit trail; one authorized `--execute` run. Meets the Phase 0 ingestion criterion (with limited-verification caveats). Scheduling, unattended operation, automatic stale-lock recovery, and freshness monitoring are Phase 1 / later and unimplemented. |
 | Model boundary | One OpenAI structured-output client (no tools, no retry, `store=False`); live-connectivity-verified. |
 | Agents | Market Evidence Agent, News Analyst, seven-series Macro Analyst. Each has exactly one accepted live run. Non-directional guarantee is structurally enforced. |
-| Trust layer | **Partial — offline foundation + first Macro-only transcription check; P0-7 not met.** `market_intelligence/evaluation/` provides the safe, offline foundation for the methodology: strict Pydantic v2 contracts (agent/severity/citation-classification/citation-reason/finding-category enums, one finding, one human citation adjudication, one evaluation-run record), a deterministic rubric-completeness validator, a symlink-refusing / no-overwrite / atomic / bounded local JSON round trip, and synthetic fixtures. It now **also** provides the **first deterministic factual-transcription check — Macro Analyst only, over synthetic inputs** (`macro_factual_transcription.py`): it recognizes only the two exact controlled Macro Analyst statement forms (single stored observation; increase/decrease/unchanged two-observation comparison), verifies series ID / observation date / `Decimal` value / frequency wording / units-when-stated / previous observation / comparison direction, and emits one `info` (exact match — *not* a validation) / `failure` (mismatch, broad category only, no text reproduced) / `warning` (unrecognized wording → human review) finding. It still performs **no** lexical-overlap scoring, **no** citation-support adjudication, **no** abstention matrix, **no** cross-agent or repeatability checks, **no** live-output recording, and **no** transcription check for the Market Evidence Agent or News Analyst. **No real agent output has been evaluated; no factual-transcription result of any live agent run and no citation-support adjudication of any real agent output exists; no first characterization has been recorded.** Completing P0-7 (the remaining factual-transcription checks, the human rubric applied to a real first characterization covering every claim, and preserved findings) remains the **only remaining blocker to closing Phase 0** (see [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md) and [docs/AGENT_EVALUATION_HARNESS.md](docs/AGENT_EVALUATION_HARNESS.md)). |
-| Test baseline | `python -m pytest`: **2,335 passed, 2 skipped** (2,337 collected). The 2 skipped are the evaluation-foundation symlink-refusal tests, which skip where the OS disallows creating a symlink; they are not passing tests. |
+| Trust layer | **Partial — offline foundation + first Macro-only transcription check + offline Macro characterization workflow; P0-7 not met.** `market_intelligence/evaluation/` provides the safe, offline foundation for the methodology: strict Pydantic v2 contracts (agent/severity/citation-classification/citation-reason/finding-category enums, one finding, one human citation adjudication, one evaluation-run record), a deterministic rubric-completeness validator, a symlink-refusing / no-overwrite / atomic / bounded local JSON round trip, and synthetic fixtures. It **also** provides the **first deterministic factual-transcription check — Macro Analyst only, over synthetic inputs** (`macro_factual_transcription.py`): it recognizes only the two exact controlled Macro Analyst statement forms (single stored observation; increase/decrease/unchanged two-observation comparison), verifies series ID / observation date / `Decimal` value / frequency wording / units-when-stated / previous observation / comparison direction, and emits one `info` (exact match — *not* a validation) / `failure` (mismatch, broad category only, no text reproduced) / `warning` (unrecognized wording → human review) finding. It **also** provides the **offline Macro characterization workflow** (`macro_characterization_input.py`, `macro_characterization_workflow.py`, `scripts/characterize_macro_report.py`): a strict local input contract (sanitized label; Macro claim IDs; claim series IDs and summaries; the cited synthetic evidence facts the transcription evaluator needs; expected claim/citation pairs — and nothing else), a pure builder that runs the transcription check for every claim, creates an `EvaluationRunRecord` carrying those findings, and emits one pending human-adjudication template per expected pair (never pre-classifying citation support, never treating a transcription match as citation support), a pure completion step that attaches completed human adjudications only when every expected pair has exactly one (refusing missing/duplicate/unexpected pairs; completion is not validation), and a dry-run-first, offline, explicit-path CLI (`--write` required, no overwrite, no directory creation, refuses tracked output dirs). It still performs **no** lexical-overlap scoring, **no** citation-support adjudication of real output, **no** abstention matrix, **no** cross-agent or repeatability checks, **no** live-output recording, and **no** transcription check for the Market Evidence Agent or News Analyst. **No real agent output has been evaluated; no factual-transcription result of any live agent run and no citation-support adjudication of any real agent output exists; no real characterization has been performed.** Completing P0-7 (the remaining factual-transcription checks, the human rubric applied to a real first characterization covering every claim, and preserved findings) remains the **only remaining blocker to closing Phase 0** (see [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md) and [docs/AGENT_EVALUATION_HARNESS.md](docs/AGENT_EVALUATION_HARNESS.md)). |
+| Test baseline | `python -m pytest`: **2,371 passed, 2 skipped** (2,373 collected). The 2 skipped are the evaluation-foundation symlink-refusal tests, which skip where the OS disallows creating a symlink; they are not passing tests. |
 | Not built | Predictive/forecast model, forecast records, agent orchestrator / combined brief, dashboard, trade journal, options-data pipeline, scheduler, brokerage execution. |
 
 ## Current Phase
@@ -3753,6 +3753,89 @@ entry describes something that has already been built, ingested, or attempted;
     — a recorded first characterization of a real agent covering every claim
     all remain unimplemented. Phase 0 stays open.
 
+37. **Offline Macro characterization workflow added (2026-08-27,
+    code/tests/synthetic fixtures/docs only — no connector, OpenAI, DuckDB,
+    agent, orchestration, migration, schema, dependency, or `.env` change; no
+    live request; no real database access; no agent-behaviour change; no commit
+    or push).** This is *further partial* progress on P0-7 (see
+    [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md) and
+    [docs/AGENT_EVALUATION_HARNESS.md](docs/AGENT_EVALUATION_HARNESS.md)).
+    **Phase 0 remains open; P0-7 is not met; no real characterization has been
+    performed.**
+
+    The minimum offline workflow to *characterize* one Macro Analyst report
+    (not to run one):
+
+    - **`macro_characterization_input.py` — strict local input contract.**
+      `MacroCharacterizationInput` carries **only**: a sanitized
+      `characterization_label`; one entry per Macro claim (the local `claim_id`,
+      the declared `claim_series_id`, the `claim_summary` string, and the one or
+      two cited *synthetic / redacted* `TranscriptionEvidenceFact`s the existing
+      Macro transcription evaluator needs); and the expected
+      `(claim_id, citation_id)` pairs. It has **no** field for a credential,
+      URL, provider response ID, raw provider payload, unrestricted metadata
+      dict, database path, or model reasoning, and rejects a duplicate
+      `claim_id`, an expected pair naming an unknown claim or an uncited
+      `citation_id`, a duplicated expected pair, or a claim not covered by any
+      expected pair. `read_characterization_input` reuses the serialization
+      boundary's symlink / size / sanitized-error rules.
+    - **`macro_characterization_workflow.py` — pure builder + completion.**
+      `build_macro_characterization(input, *, created_at)` runs
+      `evaluate_macro_transcription` for **every** claim, creates an
+      `EvaluationRunRecord` (agent `macro_analyst`, locally derived `run_id`)
+      whose `findings` are one `scope_boundary` `info` finding plus every
+      claim's transcription finding, and emits one `PendingCitationAdjudication`
+      per expected pair. The record's `adjudications` list is **always empty** —
+      the builder never pre-classifies citation support and never records a
+      transcription match as citation support
+      (`TRANSCRIPTION_IS_NOT_CITATION_SUPPORT`).
+      `complete_macro_characterization(record, adjudications)` requires
+      **exactly one** adjudication per expected pair (missing / duplicate /
+      unexpected each raises a sanitized `MacroCharacterizationError` that echoes
+      no identifier, note, path, or classification), preserves every
+      `supported` / `partially_supported` / `unsupported` /
+      `unable_to_determine` classification unchanged, and returns a fully
+      re-validated `EvaluationRunRecord`. Completion does **not** imply
+      validation (`COMPLETION_IS_NOT_VALIDATION`).
+    - **`scripts/characterize_macro_report.py` — offline CLI.** Explicit
+      `--input` / `--output` paths only; **dry-run / validate by default**
+      (prints a sanitized summary plus the pending-adjudication templates,
+      writes nothing); `--write` required to serialize the `EvaluationRunRecord`
+      via `evaluation.serialization.write_record` (no overwrite, no symlink,
+      atomic, no directory creation); **refuses** an `--output` path inside a
+      tracked `fixtures/` / `tests/` / `docs/` directory; every error is a fixed
+      sanitized marker.
+    - **Local-data boundary.** New gitignored `data/evaluations/local/` (with a
+      tracked `.gitkeep` and `data/evaluations/README.md`) is the home for real
+      characterization inputs/outputs. Only synthetic fixtures under
+      `market_intelligence/evaluation/fixtures/` are committed
+      (`macro_characterization.py` and the byte-stable
+      `macro_characterization_input_complete.json`).
+    - **Tests** —
+      `market_intelligence/tests/test_evaluation_macro_characterization.py` (21
+      tests) and `test_characterize_macro_report_cli.py` (13 tests) cover a
+      complete multi-claim characterization, transcription match / mismatch /
+      human-review outcomes, the adjudication template covering every pair, no
+      pre-classification, a complete human rubric, missing / duplicate /
+      unexpected adjudications, explicit-path / dry-run / no-overwrite /
+      no-directory-creation / tracked-path-refusal / sanitization CLI behaviour,
+      and (via `test_evaluation_offline.py` plus a dedicated AST scan of the CLI
+      script) zero connector / DB / OpenAI / agent-runtime imports. Full suite:
+      `python -m pytest` → **2,371 passed, 2 skipped**; `python -m ruff check .`
+      clean; `git diff --check` clean.
+
+    **What this establishes and what it does not.** It establishes that an
+    offline workflow to build and complete one Macro characterization record
+    exists and behaves as documented against synthetic inputs. **It does not
+    evaluate any real agent output**, makes no live request, and performs no
+    real database access. Citation-support adjudication of real output,
+    lexical-overlap triage, the abstention matrix, cross-agent consistency,
+    repeatability, the same transcription check for the Market Evidence Agent
+    and News Analyst, and — the actual closure condition — a recorded first
+    characterization of a real agent covering every claim all remain
+    unimplemented. The next step after this workflow merges is one separately
+    authorized local characterization run. Phase 0 stays open.
+
 ## Next Planned Work
 
 This is the forward plan. It replaces the historical content now under
@@ -3789,16 +3872,25 @@ This is the forward plan. It replaces the historical content now under
    date / `Decimal` value / frequency wording / units-when-stated / previous
    observation / comparison direction, and emits one `info` (match, *not* a
    validation) / `failure` (mismatch, broad category only) / `warning`
-   (unrecognized wording → human review) finding (see item 36). See items 35
-   and 36 in the Completed Work Log. **No PR to date has evaluated any real
-   agent output**, and none added lexical-overlap scoring, a `--record` flag,
-   or an LLM judge. What remains for P0-7: the same deterministic
-   factual-transcription check for the Market Evidence Agent and News Analyst,
-   the human citation-support adjudication, the lexical-overlap triage, the
-   abstention matrix, cross-agent consistency, the repeatability
-   characterization, and — the actual closure condition — at least one
-   recorded first characterization of a real agent, covering every claim, with
-   findings / failures / `unable_to_determine` results preserved.
+   (unrecognized wording → human review) finding (see item 36), **plus** the
+   offline Macro characterization workflow (item 37): a strict local input
+   contract, a pure builder that runs the transcription check for every claim
+   and emits one pending human-adjudication template per expected claim/citation
+   pair (never pre-classifying citation support), a pure completion step
+   (refuses missing/duplicate/unexpected pairs; completion is not validation),
+   and a dry-run-first offline CLI (`scripts/characterize_macro_report.py`) that
+   writes only to an explicit, non-tracked path. See items 35, 36, and 37 in the
+   Completed Work Log. **No PR to date has evaluated any real agent output, and
+   no real characterization has been performed**, and none added lexical-overlap
+   scoring, a `--record` flag, or an LLM judge. What remains for P0-7: the same
+   deterministic factual-transcription check for the Market Evidence Agent and
+   News Analyst, the human citation-support adjudication of real output, the
+   lexical-overlap triage, the abstention matrix, cross-agent consistency, the
+   repeatability characterization, and — the actual closure condition — at least
+   one recorded first characterization of a real agent, covering every claim,
+   with findings / failures / `unable_to_determine` results preserved. The next
+   step is one separately authorized local characterization run using the
+   workflow from item 37.
    [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md), criterion P0-7, and
    [docs/AGENT_EVALUATION_HARNESS.md](docs/AGENT_EVALUATION_HARNESS.md)). The
    three agents each have exactly one accepted live run; there is no

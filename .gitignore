@@ -21,6 +21,12 @@ data/cache/*
 !data/processed/.gitkeep
 !data/cache/.gitkeep
 
+# Local agent-evaluation characterization inputs/outputs (never committed).
+# Only synthetic fixtures under market_intelligence/evaluation/fixtures/ are
+# tracked; real characterization inputs and outputs must remain local here.
+data/evaluations/local/*
+!data/evaluations/local/.gitkeep
+
 # Databases
 *.duckdb
 *.db

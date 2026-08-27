@@ -2,7 +2,9 @@
 
 **Status: offline foundation implemented; the first (Macro-Analyst-only)
 deterministic factual-transcription check implemented over synthetic inputs;
-methodology (P0-7) not complete, and no real agent output has been evaluated.**
+the offline Macro characterization workflow (builder + completion + CLI)
+implemented over synthetic inputs; methodology (P0-7) not complete, and no real
+agent output has been evaluated — no real characterization has been performed.**
 This document records the intent and the hard boundaries for the offline-first
 agent evaluation harness named in
 [PROJECT_STATE.md](../PROJECT_STATE.md)'s "Next Planned Work" (item 2) and
@@ -112,17 +114,25 @@ Added as code, tests, and synthetic fixtures only
 `market_intelligence/tests/test_evaluation_macro_transcription.py`). No
 connector, OpenAI, DuckDB, agent, or orchestration import; no network request;
 no agent-behaviour, schema, migration, or dependency change. This is
-**Macro-Analyst-only** and **offline / synthetic only** — the first slice of the
+**Macro-Analyst-only** and runs fully **offline** — the first slice of the
 "Deterministic factual-transcription checks" bullet under "In scope" below. It
-does **not** yet apply to the Market Evidence Agent or News Analyst.
+does **not** yet apply to the Market Evidence Agent or News Analyst. Its
+committed fixtures and tests are **synthetic only**; real *sanitized* evidence
+facts may be supplied only by the explicit local characterization workflow under
+the gitignored `data/evaluations/local/` (see "Data-handling boundary" below),
+and real characterization inputs and outputs must never be committed.
 
 - **Input (`MacroTranscriptionInput`).** One evaluation-specific, sanitized
   shape: a local `claim_id`, the claim's declared `claim_series_id`, the
-  `claim_summary` string, and one or two `cited_facts`
-  (`TranscriptionEvidenceFact`: `citation_id`, `series_id`, `observation_date`,
-  a `Decimal` `value`, a `frequency` word, and optional `units`). It never
-  carries a raw model response, a provider response ID, a credential, a URL, or
-  a database path, and every field is strictly bounded (`extra="forbid"`).
+  `claim_summary` string, and one or two `cited_facts`. Each
+  `TranscriptionEvidenceFact` represents one **sanitized evaluation evidence
+  fact** — `citation_id`, `series_id`, `observation_date`, a `Decimal` `value`,
+  a `frequency` word, and optional `units`, and nothing else. It never carries a
+  raw model response, a provider response ID, a credential, a URL, a raw
+  provider payload, or a database path, and every field is strictly bounded
+  (`extra="forbid"`). Committed fixtures and tests use only synthetic,
+  hand-authored facts; real sanitized facts are used only by the local
+  characterization workflow described above.
 
 - **A narrow canonical form, not a grammar the validators enforce.** The two
   forms below are a *spelling that satisfies* the Macro Analyst's instructions
@@ -175,7 +185,7 @@ does **not** yet apply to the Market Evidence Agent or News Analyst.
 - **Outcomes (one `EvaluationFinding` per claim).**
   - **Exact match** → an `info` `factual_transcription` finding. A match is
     **not** a validation — see `MATCH_IS_NOT_VALIDATION`: it confirms only that
-    the recognized tokens transcribe the cited synthetic fact.
+    the recognized tokens transcribe the cited sanitized evidence fact.
   - **Mismatch** → a `failure` `factual_transcription` finding naming only the
     broad mismatch *categories* (fixed code slugs: `series_id`,
     `observation_date`, `value`, `frequency`, `units`,
@@ -188,16 +198,93 @@ does **not** yet apply to the Market Evidence Agent or News Analyst.
   - There is no universal "agent passes" or "validated" result at any level:
     `MacroTranscriptionResult` carries no `passed` / `validated` attribute.
 
-- **Synthetic fixtures only.** `MACRO_TRANSCRIPTION_FIXTURES` covers an exact
-  single-observation match, a wrong value, a wrong date, a wrong series, wrong
-  units + frequency, an incorrect comparison direction, unsupported wording, a
-  comparison whose sentence carries extra unrelated digit runs (which must not
-  be scraped), a capitalized-`Monthly` and a capitalized-`Quarterly` canonical
+- **Committed fixtures and tests are synthetic only.**
+  `MACRO_TRANSCRIPTION_FIXTURES` covers an exact single-observation match, a
+  wrong value, a wrong date, a wrong series, wrong units + frequency, an
+  incorrect comparison direction, unsupported wording, a comparison whose
+  sentence carries extra unrelated digit runs (which must not be scraped), a
+  capitalized-`Monthly` and a capitalized-`Quarterly` canonical
   single-observation statement (the accepted live spelling), and an exact
-  comparison match. Every fixture is hand-authored
-  and contains no real claim/evidence text, live-run evidence IDs, live
-  observation values, credentials, or model output (see
-  `fixtures/PROVENANCE.md`).
+  comparison match. Every committed fixture is hand-authored and contains no
+  real claim/evidence text, live-run evidence IDs, live observation values,
+  credentials, or model output (see `fixtures/PROVENANCE.md`). Real *sanitized*
+  evidence facts may be used only by the explicit local characterization
+  workflow under the gitignored `data/evaluations/local/`; real characterization
+  inputs and outputs must never be committed.
+
+## Implemented: offline Macro characterization workflow
+
+Added as code, tests, and synthetic fixtures only
+(`market_intelligence/evaluation/macro_characterization_input.py`,
+`market_intelligence/evaluation/macro_characterization_workflow.py`,
+`scripts/characterize_macro_report.py`,
+`market_intelligence/evaluation/fixtures/macro_characterization.py`,
+`market_intelligence/tests/test_evaluation_macro_characterization.py`,
+`market_intelligence/tests/test_characterize_macro_report_cli.py`). No connector,
+OpenAI, DuckDB, agent, or orchestration import; no network request; **no live
+Macro Analyst run**; no agent-behaviour, schema, migration, or dependency
+change. This is the minimum offline workflow to *characterize* one Macro
+Analyst report — it does not perform one, and **no real characterization has
+been performed**.
+
+- **Strict local input contract (`MacroCharacterizationInput`).** Carries
+  **only**: a sanitized `characterization_label`; one entry per Macro claim (the
+  local `claim_id`, the declared `claim_series_id`, the `claim_summary` string,
+  and the one or two cited sanitized evaluation evidence facts the existing
+  Macro transcription evaluator needs — each an existing
+  `TranscriptionEvidenceFact`); and the expected `(claim_id, citation_id)`
+  pairs. It has **no** field for a credential, URL, provider response ID, raw
+  provider payload, unrestricted metadata dict, database path, or model
+  reasoning. It rejects a duplicate `claim_id`, an expected pair that names an
+  unknown claim or a `citation_id` its claim does not cite, a duplicated
+  expected pair, and any claim not covered by at least one expected pair.
+
+- **Pure builder (`build_macro_characterization`).** Given the input and an
+  explicit `created_at`: runs `evaluate_macro_transcription` for **every** claim
+  (in order); creates an `EvaluationRunRecord` (agent `macro_analyst`, locally
+  derived `run_id`) whose `findings` are one `scope_boundary` `info` finding
+  (recording that citation support is not adjudicated here) followed by every
+  claim's transcription finding; and emits one `PendingCitationAdjudication` per
+  expected pair. The record's `adjudications` list is **always empty** — the
+  builder never pre-classifies citation support, and it never records a
+  transcription match as citation support
+  (`TRANSCRIPTION_IS_NOT_CITATION_SUPPORT`).
+
+- **Pure completion step (`complete_macro_characterization`).** Accepts the run
+  record plus the completed human `CitationAdjudication` list. It requires
+  **exactly one** adjudication for **every** expected pair — a missing,
+  duplicated, or unexpected pair each raises a sanitized
+  `MacroCharacterizationError` (which never echoes an identifier, note, path, or
+  classification). It preserves every `supported` / `partially_supported` /
+  `unsupported` / `unable_to_determine` classification exactly as recorded, and
+  returns a fully re-validated `EvaluationRunRecord`. Completion does **not**
+  imply validation (`COMPLETION_IS_NOT_VALIDATION`).
+
+- **CLI (`scripts/characterize_macro_report.py`).** Explicit `--input` and
+  `--output` paths only; offline only; **dry-run / validate by default** (prints
+  a sanitized summary plus the pending-adjudication templates, writes nothing).
+  `--write` is required to serialize the `EvaluationRunRecord` — it reuses
+  `evaluation.serialization.write_record` (no overwrite, no symlink, atomic, no
+  directory creation) and **refuses** an `--output` path inside a tracked
+  `fixtures/`, `tests/`, or `docs/` directory. Every error is a fixed sanitized
+  marker (`invalid_input`, `output_path_refused`, `write_failed`,
+  `unexpected_error`).
+
+- **Local-data boundary.** Real characterization inputs and outputs must live in
+  the gitignored `data/evaluations/local/` (see `data/evaluations/README.md`).
+  Only synthetic fixtures under `market_intelligence/evaluation/fixtures/` are
+  committed.
+
+**What this does and does not establish.** It establishes that an offline
+workflow to build and complete one Macro characterization record exists and
+behaves as documented against synthetic inputs. It does **not** evaluate any
+real agent output. Citation-support adjudication of real output, the
+lexical-overlap triage, the abstention matrix, cross-agent consistency,
+repeatability, the same transcription check for the Market Evidence Agent and
+News Analyst, and — the actual closure condition — a recorded first
+characterization of a real agent covering every claim all remain unimplemented.
+**Phase 0 remains open (P0-7 unmet).** The next step after this workflow merges
+is one separately authorized local characterization run.
 
 ## Still not implemented (unchanged boundary below)
 
@@ -330,6 +417,14 @@ lexical-overlap score.
 - **Must not be committed, ever:** real evidence packages built from the real
   database, real article headline/summary text, article URLs, credentials,
   OpenAI response IDs, and full live model outputs.
+- **Evaluation evidence facts (`TranscriptionEvidenceFact`).** The type
+  represents a *sanitized* stored-observation evidence fact (citation handle,
+  series ID, observation date, `Decimal` value, frequency, optional units — and
+  nothing else). Committed fixtures and tests must use only synthetic,
+  hand-authored facts. Real sanitized facts may be used only by the explicit
+  local characterization workflow (`scripts/characterize_macro_report.py`), with
+  its inputs and outputs kept in the gitignored `data/evaluations/local/`; real
+  characterization inputs and outputs must never be committed.
 - **Any future live evaluation capture** (recording a real agent's real
   structured output for analysis) must be written to a **local, sanitized,
   gitignored** location. Committing any such capture requires separate,

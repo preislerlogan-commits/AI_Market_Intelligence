@@ -16,8 +16,19 @@ This package is the *safe, offline* part of Phase 0 criterion P0-7 (see
   observation / comparison direction, and emits one ``info`` / ``failure`` /
   ``warning`` finding. A match is **not** a validation
   (``MATCH_IS_NOT_VALIDATION``);
+- ``macro_characterization_input`` / ``macro_characterization_workflow`` -- the
+  *first, offline* workflow to characterize one Macro Analyst report: a strict
+  local input contract, a pure builder that runs the transcription check for
+  every claim and emits one pending human-adjudication template per expected
+  claim/citation pair (never pre-classifying citation support), and a pure
+  completion step that attaches completed human adjudications only when every
+  expected pair has exactly one. Completion is not validation
+  (``CHARACTERIZATION_COMPLETION_IS_NOT_VALIDATION``);
 - ``fixtures`` -- small hand-authored synthetic/redacted records and
-  synthetic Macro-transcription inputs for tests.
+  synthetic Macro-transcription / Macro-characterization inputs for tests.
+
+**No real characterization has been performed.** The workflow is offline only;
+it makes no live request and no database access. P0-7 and Phase 0 remain open.
 
 It deliberately does **not** implement lexical-overlap scoring, the citation-
 support rubric adjudication, the abstention matrix, cross-agent consistency,
@@ -48,6 +59,24 @@ from market_intelligence.evaluation.contracts import (
     FindingCategory,
     FindingSeverity,
     build_run_id,
+)
+from market_intelligence.evaluation.macro_characterization_input import (
+    MacroCharacterizationInput,
+    input_from_json_str,
+    input_to_json_str,
+    read_characterization_input,
+)
+from market_intelligence.evaluation.macro_characterization_workflow import (
+    COMPLETION_IS_NOT_VALIDATION as CHARACTERIZATION_COMPLETION_IS_NOT_VALIDATION,
+)
+from market_intelligence.evaluation.macro_characterization_workflow import (
+    EVIDENCE_FIXTURE_NAME,
+    TRANSCRIPTION_IS_NOT_CITATION_SUPPORT,
+    CharacterizationBuildResult,
+    MacroCharacterizationError,
+    PendingCitationAdjudication,
+    build_macro_characterization,
+    complete_macro_characterization,
 )
 from market_intelligence.evaluation.macro_factual_transcription import (
     MATCH_IS_NOT_VALIDATION,
@@ -98,6 +127,18 @@ __all__ = [
     "collect_findings",
     "evaluate_macro_transcription",
     "evaluate_macro_transcription_batch",
+    "MacroCharacterizationInput",
+    "input_from_json_str",
+    "input_to_json_str",
+    "read_characterization_input",
+    "CHARACTERIZATION_COMPLETION_IS_NOT_VALIDATION",
+    "TRANSCRIPTION_IS_NOT_CITATION_SUPPORT",
+    "EVIDENCE_FIXTURE_NAME",
+    "CharacterizationBuildResult",
+    "MacroCharacterizationError",
+    "PendingCitationAdjudication",
+    "build_macro_characterization",
+    "complete_macro_characterization",
     "MAX_RECORD_BYTES",
     "EvaluationSerializationError",
     "from_json_str",
