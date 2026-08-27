@@ -11,6 +11,8 @@ from __future__ import annotations
 import ast
 import importlib.util
 import json
+import os
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
@@ -28,8 +30,38 @@ FIXTURE_JSON = (
     / "fixtures"
     / "macro_characterization_input_complete.json"
 )
+LOCAL_DIR = REPO_ROOT / "data" / "evaluations" / "local"
 
 _NOW = datetime(2031, 5, 1, tzinfo=UTC)
+
+
+@pytest.fixture
+def local_output():
+    """Yield a factory for uniquely named paths under ``data/evaluations/local/``.
+
+    ``data/evaluations/local/`` is the only directory the CLI will write to;
+    every path handed out is removed afterwards so the gitignored directory
+    stays clean.
+    """
+    LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+    created: list[Path] = []
+
+    def _make(name: str = "rec.json") -> Path:
+        path = LOCAL_DIR / f"pytest-{uuid.uuid4().hex}-{name}"
+        created.append(path)
+        return path
+
+    yield _make
+
+    for path in created:
+        path.unlink(missing_ok=True)
+
+
+def _symlink_or_skip(src, dst, target_is_directory=False):
+    try:
+        os.symlink(src, dst, target_is_directory=target_is_directory)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks not permitted in this environment")
 
 FORBIDDEN_IMPORT_PREFIXES = (
     "openai",
@@ -108,9 +140,9 @@ def test_dry_run_validates_and_writes_nothing(tmp_path, capsys):
 # ---------------------------------------------------------------------------
 
 
-def test_write_creates_a_valid_evaluation_run_record(tmp_path, capsys):
+def test_write_inside_the_local_dir_is_allowed(local_output, capsys):
     module = load_script_module()
-    output = tmp_path / "rec.json"
+    output = local_output()
 
     code, payload = _run(
         module,
@@ -126,9 +158,9 @@ def test_write_creates_a_valid_evaluation_run_record(tmp_path, capsys):
     assert len(record.expected_pairs) == 5
 
 
-def test_write_refuses_to_overwrite_an_existing_output(tmp_path, capsys):
+def test_write_refuses_to_overwrite_an_existing_output(local_output, capsys):
     module = load_script_module()
-    output = tmp_path / "rec.json"
+    output = local_output()
     output.write_text("sentinel", encoding="utf-8")
 
     code, payload = _run(
@@ -142,9 +174,9 @@ def test_write_refuses_to_overwrite_an_existing_output(tmp_path, capsys):
     assert output.read_text(encoding="utf-8") == "sentinel"
 
 
-def test_write_does_not_create_a_missing_directory(tmp_path, capsys):
+def test_write_does_not_create_a_missing_directory(local_output, capsys):
     module = load_script_module()
-    output = tmp_path / "missing" / "rec.json"
+    output = LOCAL_DIR / f"missing-{uuid.uuid4().hex}" / "rec.json"
 
     code, payload = _run(
         module,
@@ -158,19 +190,21 @@ def test_write_does_not_create_a_missing_directory(tmp_path, capsys):
 
 
 # ---------------------------------------------------------------------------
-# Tracked-directory output refusal
+# Output-location allowlist (data/evaluations/local/ only)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
     "relative",
     [
+        "rec.json",  # repository root
         "docs/rec.json",
-        "market_intelligence/evaluation/fixtures/rec.json",
         "market_intelligence/tests/rec.json",
+        "market_intelligence/evaluation/fixtures/rec.json",
+        "data/evaluations/rec.json",  # parent of local/, not local/ itself
     ],
 )
-def test_write_refuses_output_inside_a_tracked_directory(relative, capsys):
+def test_write_refuses_output_outside_the_local_allowlist(relative, capsys):
     module = load_script_module()
     target = REPO_ROOT / relative
 
@@ -183,6 +217,63 @@ def test_write_refuses_output_inside_a_tracked_directory(relative, capsys):
     assert code == 2
     assert payload == {"error": "output_path_refused"}
     assert not target.exists()
+
+
+def test_write_refuses_output_outside_the_repository(tmp_path, capsys):
+    module = load_script_module()
+    target = tmp_path / "rec.json"
+
+    code, payload = _run(
+        module,
+        capsys,
+        ["--input", str(FIXTURE_JSON), "--output", str(target), "--write"],
+    )
+
+    assert code == 2
+    assert payload == {"error": "output_path_refused"}
+    assert not target.exists()
+
+
+def test_write_refuses_dotdot_traversal_escaping_the_local_dir(capsys):
+    module = load_script_module()
+    target = LOCAL_DIR / ".." / "rec.json"
+    escaped = REPO_ROOT / "data" / "evaluations" / "rec.json"
+
+    code, payload = _run(
+        module,
+        capsys,
+        ["--input", str(FIXTURE_JSON), "--output", str(target), "--write"],
+    )
+
+    assert code == 2
+    assert payload == {"error": "output_path_refused"}
+    assert not escaped.exists()
+
+
+def test_write_refuses_a_symlink_escaping_the_local_dir(tmp_path, capsys):
+    module = load_script_module()
+    LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+    link = LOCAL_DIR / f"pytest-escape-{uuid.uuid4().hex}"
+    _symlink_or_skip(tmp_path, link, target_is_directory=True)
+
+    try:
+        code, payload = _run(
+            module,
+            capsys,
+            [
+                "--input",
+                str(FIXTURE_JSON),
+                "--output",
+                str(link / "rec.json"),
+                "--write",
+            ],
+        )
+
+        assert code == 2
+        assert payload == {"error": "output_path_refused"}
+        assert not (tmp_path / "rec.json").exists()
+    finally:
+        link.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------

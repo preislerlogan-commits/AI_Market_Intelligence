@@ -12,9 +12,10 @@ Pass ``--write`` to serialize the resulting ``EvaluationRunRecord`` (with an
 empty ``adjudications`` list -- citation support is never pre-classified) to an
 explicit ``--output`` path, reusing ``evaluation.serialization.write_record``:
 it refuses to overwrite an existing file, refuses a symlinked target/parent,
-and never creates a directory. The output path may **not** be inside a tracked
-fixture, docs, or tests directory -- real characterization inputs and outputs
-must stay in a local, gitignored location such as ``data/evaluations/local/``.
+and never creates a directory. The resolved output path must be **inside**
+``data/evaluations/local/`` (the gitignored local-only home for real
+characterization inputs and outputs); any path outside that directory --
+including one reached via ``..`` traversal or a symlink -- is refused.
 
 No real characterization has been performed anywhere in this repository, and
 running this CLI on a synthetic fixture does not constitute one. Phase 0 remains
@@ -41,14 +42,11 @@ from market_intelligence.evaluation.serialization import (
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# Output paths inside any of these tracked directories are refused: only
-# synthetic fixtures belong under version control, and real characterization
-# outputs must remain local and uncommitted.
-_REFUSED_OUTPUT_DIRS: tuple[Path, ...] = (
-    _REPO_ROOT / "market_intelligence" / "evaluation" / "fixtures",
-    _REPO_ROOT / "market_intelligence" / "tests",
-    _REPO_ROOT / "docs",
-)
+# The only directory a ``--write`` output may land in. It is gitignored, so real
+# characterization inputs and outputs stay local and uncommitted; everything
+# else (the repository root, docs/, tests/, fixtures/, data/evaluations/ itself,
+# and any path outside the repository) is refused.
+_ALLOWED_OUTPUT_DIR = _REPO_ROOT / "data" / "evaluations" / "local"
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -70,8 +68,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         required=True,
         help=(
             "Explicit path for the EvaluationRunRecord JSON output. Only used "
-            "with --write. Must not be inside a tracked fixtures/tests/docs "
-            "directory, and its parent directory must already exist."
+            "with --write. Its resolved location must be inside "
+            "data/evaluations/local/, and its parent directory must already "
+            "exist."
         ),
     )
     parser.add_argument(
@@ -87,13 +86,23 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _output_is_refused(output: Path) -> bool:
-    resolved = output.resolve()
-    for refused in _REFUSED_OUTPUT_DIRS:
-        try:
-            resolved.relative_to(refused.resolve())
-            return True
-        except ValueError:
-            continue
+    """True unless ``output`` resolves to a path inside ``data/evaluations/local/``.
+
+    ``resolve()`` collapses ``..`` segments and follows symlinks, so a target
+    that escapes the allowed directory by either route lands outside it and is
+    refused. The allowed directory itself (a non-file target) is also refused.
+    """
+    try:
+        resolved = output.resolve()
+        allowed = _ALLOWED_OUTPUT_DIR.resolve()
+    except OSError:
+        return True
+    if resolved == allowed:
+        return True
+    try:
+        resolved.relative_to(allowed)
+    except ValueError:
+        return True
     return False
 
 

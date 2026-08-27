@@ -19,9 +19,12 @@ characterization inputs and outputs.
   Real sanitized facts may be used only by the local characterization workflow
   here in `data/evaluations/local/`, which is gitignored; real inputs and
   outputs must never be committed.
-- The offline workflow CLI (`scripts/characterize_macro_report.py`) **refuses**
-  to write an output whose path is inside a tracked `fixtures/`, `tests/`, or
-  `docs/` directory. Point its `--output` at `data/evaluations/local/`.
+- The offline workflow CLI (`scripts/characterize_macro_report.py`) **only**
+  writes a `--write` output whose resolved path is inside
+  `data/evaluations/local/`. Any path outside that directory — the repository
+  root, `docs/`, `tests/`, `fixtures/`, `data/evaluations/` itself, an
+  outside-repo path, or one reached via `..` traversal or a symlink — is
+  refused. Point its `--output` at `data/evaluations/local/`.
 - Committing any real characterization capture would require separate, explicit
   review and is not done by any automated step.
 
