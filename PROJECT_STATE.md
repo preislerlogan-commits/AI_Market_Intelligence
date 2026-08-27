@@ -17,7 +17,7 @@ Last updated: 2026-08-26
 | Orchestration | Deterministic, manually invoked ingestion path: dry-run-first CLI over the three reviewed jobs, per-job failure isolation, fail-closed overlap lock, persistent audit trail; one authorized `--execute` run. Meets the Phase 0 ingestion criterion (with limited-verification caveats). Scheduling, unattended operation, automatic stale-lock recovery, and freshness monitoring are Phase 1 / later and unimplemented. |
 | Model boundary | One OpenAI structured-output client (no tools, no retry, `store=False`); live-connectivity-verified. |
 | Agents | Market Evidence Agent, News Analyst, seven-series Macro Analyst. Each has exactly one accepted live run. Non-directional guarantee is structurally enforced. |
-| Trust layer | **None.** No repeatable agent-evaluation methodology exists — only one manual read per agent. Once this documentation change merges, this is the **only remaining blocker to closing Phase 0** (see [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md)). |
+| Trust layer | **None.** No repeatable agent-evaluation methodology exists — only one manual read per agent, and no citation-support rubric. Once this documentation change merges, building one (deterministic factual-transcription checks where the claim structure permits them, plus recorded citation-support adjudication using a human-review rubric; lexical overlap is advisory triage only) is the **only remaining blocker to closing Phase 0** (see [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md) and [docs/AGENT_EVALUATION_HARNESS.md](docs/AGENT_EVALUATION_HARNESS.md)). |
 | Test baseline | 2,136 passing tests (`python -m pytest`). |
 | Not built | Predictive/forecast model, forecast records, agent orchestrator / combined brief, dashboard, trade journal, options-data pipeline, scheduler, brokerage execution. |
 
@@ -3581,23 +3581,33 @@ This is the forward plan. It replaces the historical content now under
    bounded model-facing evidence excerpts. Documentation only — no code,
    tests, configuration, migrations, fixtures, or provider behavior change.
 
-2. **Design and implement an offline-first agent evaluation harness.** Once
-   item 1 merges, this is the **only remaining blocker to closing Phase 0**
-   (see [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md), criterion P0-7). The
+2. **Design and implement a repeatable agent evaluation methodology (harness
+   + human rubric).** Once item 1 merges, this is the **only remaining
+   blocker to closing Phase 0** (see
+   [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md), criterion P0-7, and
+   [docs/AGENT_EVALUATION_HARNESS.md](docs/AGENT_EVALUATION_HARNESS.md)). The
    three agents each have exactly one accepted live run; there is no
-   repeatable method to judge whether their output is trustworthy. The
-   harness is deterministic and offline-first, and characterizes the trust
-   gap rather than certifying the agents. In scope: factual-transcription
-   checks (does a claim's stated value/date/unit match the cited stored
-   evidence?), citation-support checks (lexical overlap only, advisory — not
-   proof of support), an abstention matrix across all three agents,
-   cross-agent consistency on shared stored facts, and a repeatability
-   characterization. Data-handling boundary: synthetic/redacted fixtures may
-   be committed; real evidence packages, article text, URLs, credentials,
-   response IDs, and full live model outputs must not be committed; any
-   future live evaluation capture must be local, sanitized, and gitignored
-   unless separately reviewed. The first version does not automatically
-   validate the agents.
+   repeatable method to judge whether their output is trustworthy. The method
+   is offline-first and characterizes the trust gap rather than certifying the
+   agents. In scope: deterministic factual-transcription checks where the
+   claim structure permits them (does a claim's stated value/date/unit match
+   the cited stored evidence?); a human citation-support rubric that
+   adjudicates every claim in a characterization as `supported` /
+   `partially_supported` / `unsupported` / `unable_to_determine` with a reason
+   from a fixed list, with lexical overlap retained as advisory triage only
+   (not proof of support) and an LLM judge never the sole or gating reviewer;
+   an abstention matrix across all three agents; cross-agent consistency on
+   shared stored facts; and a repeatability characterization. Data-handling
+   boundary: synthetic/redacted fixtures may be committed; real evidence
+   packages, article text, URLs, credentials, response IDs, and full live
+   model outputs must not be committed; any future live evaluation capture
+   must be local, sanitized, and gitignored unless separately reviewed.
+   Closing Phase 0 on this item requires the harness and rubric to exist, at
+   least one first characterization to have been completed and recorded
+   (covering every claim, with findings, failures, and `unable_to_determine`
+   results preserved), and does not require every agent to pass or imply the
+   agents are validated. It makes no claim of automated proof of semantic
+   correctness.
 
 3. **Only after evaluation evidence exists**, reconsider — as separate,
    individually reviewed milestones — a combined market-intelligence brief /

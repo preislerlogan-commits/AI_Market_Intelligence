@@ -20,7 +20,7 @@ Phase 0 and are not claimed anywhere in this repository.
 | P0-4 | **Bounded end-to-end agent execution.** At least one bounded, non-directional agent that runs end to end against real stored data and a real model, behind a deterministic preflight gate and deterministic post-response validators, with the non-directional guarantee structurally enforced (the model-facing schema cannot express a direction or recommendation). | **Passed once per agent.** Market Evidence Agent, News Analyst, and the seven-series Macro Analyst have each produced exactly one accepted live run. One accepted run is not repeated, characterized, or validated behaviour. |
 | P0-5 | **Deterministic, manually invoked ingestion path.** A dry-run-first, manually invoked path to run the reviewed ingestion jobs through explicit contracts, with per-job failure isolation, overlap protection (a fail-closed run lock), and a persistent audit trail. Scheduling, unattended operation, and recurring reliability are explicitly **not** part of this criterion — see the Phase boundary note below. | **Passed, with limited-verification caveats.** The dry-run-first orchestration CLI (`scripts/run_ingestion_pipeline.py`) exists with all four capabilities and has completed exactly **one** authorized `--execute` run, recorded in the `orchestration_*` audit tables. Limited verification: one live run only — no repeated runs, no failure-path exercise in production, no soak testing. Not production-ready, not continuously reliable, not fully validated. |
 | P0-6 | **Documentation accuracy and catalog coverage.** Top-level status documents (`README.md`, `PROJECT_STATE.md`, `DATA_CATALOG.md`, `docs/`) accurately describe what exists; at least one ingested dataset has an honest catalog record (source, provenance, schema/table, actual coverage, freshness limitations, validation status). | **Partial until the `docs/phase0-reconciliation` change merges.** Before it: `README.md` stated no APIs/database/pipelines existed; `DATA_CATALOG.md` and `docs/OPENAI_PROVIDER_BOUNDARY.md` carried stale, self-contradicting status lines; no dataset had a completed catalog record. That change corrects all of these. |
-| P0-7 | **Repeatable agent evaluation methodology.** A recorded, repeatable method to judge whether an agent's output is trustworthy — at minimum, factual transcription (does a claim's stated value/date/unit match the cited stored evidence?) and citation correctness. | **Failed / not yet implemented.** Only one manual read exists per agent. `docs/MARKET_EVIDENCE_EVALUATIONS.md` has a single entry. There is no harness, no thresholds, and no repeatability data. This is the remaining Phase 0 trust-layer milestone (see [PROJECT_STATE.md](../PROJECT_STATE.md), "Next Planned Work", item 2). |
+| P0-7 | **Repeatable agent evaluation methodology.** A recorded, repeatable evaluation methodology covering (a) deterministic factual-transcription checks where the claim structure permits them (does a claim's stated value/date/unit match the cited stored evidence?), and (b) recorded citation-support adjudication using a human-review rubric — each citation classified `supported` / `partially_supported` / `unsupported` / `unable_to_determine`, with a reason from a fixed list, for every claim in a characterization. Lexical overlap is advisory triage only and does not by itself satisfy this criterion. This is not a claim of automated proof of semantic correctness. | **Failed / not yet implemented.** Only one manual read exists per agent. `docs/MARKET_EVIDENCE_EVALUATIONS.md` has a single entry. There is no harness, no rubric, and no recorded characterization. This is the remaining Phase 0 trust-layer milestone (see [PROJECT_STATE.md](../PROJECT_STATE.md), "Next Planned Work", item 2, and [AGENT_EVALUATION_HARNESS.md](AGENT_EVALUATION_HARNESS.md)). |
 
 ## Phase boundary: ingestion operations
 
@@ -54,13 +54,20 @@ operational pipeline.
   implemented. This is the only remaining substantive blocker.**
 
 **After this documentation change merges, the single remaining blocker to
-closing Phase 0 is P0-7:** an offline-first agent evaluation harness that
-exists, is repeatable, and has produced a first recorded characterization of
-the agents' trust gaps. The harness does not need to *pass* the agents — its
-first version characterizes gaps rather than certifying correctness — it needs
-to exist, be repeatable, and have produced recorded findings. See
-[PROJECT_STATE.md](../PROJECT_STATE.md), "Next Planned Work", item 2, and
-[AGENT_EVALUATION_HARNESS.md](AGENT_EVALUATION_HARNESS.md).
+closing Phase 0 is P0-7.** Closing it requires all of:
+
+- the deterministic factual-transcription harness and the human
+  citation-support rubric both exist and are documented (see
+  [AGENT_EVALUATION_HARNESS.md](AGENT_EVALUATION_HARNESS.md));
+- at least one first characterization has been completed and recorded,
+  covering every claim in that characterization (not only low-overlap claims);
+- its findings, failures, and `unable_to_determine` results are preserved.
+
+Closing Phase 0 does **not** require that every agent passes, and does not
+imply the agents are validated. The first characterization describes the
+agents' trust gaps; passing it is not a claim of factual accuracy or
+repeatability. See [PROJECT_STATE.md](../PROJECT_STATE.md), "Next Planned
+Work", item 2.
 
 ## What closing Phase 0 will still not establish
 
