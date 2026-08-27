@@ -54,19 +54,23 @@ by consuming only validated upstream outputs plus the deterministic
 selector's eligible contract set, by the mandatory `no_trade` outcome, and
 by the manual-execution boundary — all described below.
 
-The deterministic Contract Selector runs **before** the Options Strategy
+The scenario horizon originates with the deterministic Intraday
+Regime/Setup Engine, not with the Options Strategy Agent. The deterministic
+Contract Selector consumes that validated upstream horizon when constructing
+the eligible contract set, and it runs **before** the Options Strategy
 Agent. The agent never receives a raw option chain; it receives only the
 selector's validated eligible contract set and may only rank and explain
-contracts already in it.
+contracts already in it, and it may repeat or reference the supplied horizon
+but cannot invent, extend, or override it.
 
 | Stage | Type | Responsibility |
 |---|---|---|
 | **Market Evidence Agent** | agent (extends today's) | Price, volume, candlestick structure, VWAP and VWAP extension, opening range, realized/known volatility, and key prior-day/session levels — described factually, no direction. |
 | **News Analyst** | agent (extends today's) | Catalysts present in stored news: relevance to SPY, timing relative to the session, affected symbols/sectors. No direction. |
 | **Macro Analyst** | agent (today's, unchanged scope) | Economic and market-regime *context* from stored FRED observations and official metadata. Factual only; not a regime predictor. |
-| **Intraday Regime/Setup Engine** | deterministic (no model) | Classifies the session into exactly one of: `trend_continuation`, `vwap_mean_reversion`, `range`, `event_driven`, `indeterminate` — from the structured features below, by fixed published rules. |
-| **Deterministic Contract Selector** | deterministic (no model) | Filters the option chain to an **eligible set** by expiration window, strike, delta, other Greeks, IV, liquidity/open interest, bid-ask spread, and scenario horizon. Runs **before** the Options Strategy Agent and independently of it. |
-| **Options Strategy Agent** | agent (directional decision-support; **not** one of the three non-directional agents) | Consumes only (a) the validated structured outputs of the Market Evidence, News, Macro, and Intraday Regime/Setup stages and (b) the Deterministic Contract Selector's validated eligible contract set. Emits a bounded strategy recommendation **or `no_trade`**. Never consumes a raw option chain, raw evidence, or free text, and cannot introduce a contract that is absent from the eligible set. |
+| **Intraday Regime/Setup Engine** | deterministic (no model) | Produces two validated values from the structured features below, by fixed published rules: (1) a regime classification — exactly one of `trend_continuation`, `vwap_mean_reversion`, `range`, `event_driven`, `indeterminate`; and (2) exactly one scenario-horizon bucket from the fixed enum `intraday_30m`, `intraday_2h`, `to_session_close`, `next_session`, or `indeterminate` when no bounded horizon is supported. Both are validated before any downstream stage consumes them. |
+| **Deterministic Contract Selector** | deterministic (no model) | Filters the option chain to an **eligible set** by expiration window, strike, delta, other Greeks, IV, liquidity/open interest, bid-ask spread, and the validated scenario-horizon bucket produced upstream by the Intraday Regime/Setup Engine. Runs **before** the Options Strategy Agent and independently of it. |
+| **Options Strategy Agent** | agent (directional decision-support; **not** one of the three non-directional agents) | Consumes only (a) the validated structured outputs of the Market Evidence, News, Macro, and Intraday Regime/Setup stages (including the regime classification and the scenario-horizon bucket) and (b) the Deterministic Contract Selector's validated eligible contract set. Emits a bounded strategy recommendation **or `no_trade`**. Never consumes a raw option chain, raw evidence, or free text, cannot introduce a contract that is absent from the eligible set, and may repeat or reference the supplied scenario horizon but cannot invent, extend, or override it. |
 
 ## Terminology
 
@@ -113,6 +117,16 @@ feature set. At minimum:
 conditions.** On a classified trend day, a large VWAP extension is expected
 behavior and must not be read as a reversion setup.
 
+**Engine outputs.** From this feature set the engine emits, by fixed
+published rules, exactly two validated values: the regime classification and
+one scenario-horizon bucket from the fixed enum (`intraday_30m`,
+`intraday_2h`, `to_session_close`, `next_session`, or `indeterminate` when
+no bounded horizon is supported). These are the only horizon and regime
+values in the workflow: the Deterministic Contract Selector consumes the
+validated horizon bucket when it builds the eligible set, and no downstream
+stage — including the Options Strategy Agent — may invent, extend, or
+override either value.
+
 ## Options Strategy Agent — bounded output
 
 The Options Strategy Agent is a bounded **directional** decision-support
@@ -132,8 +146,11 @@ The agent's structured output is fixed-shape, strictly validated, and
 bounded. It contains exactly:
 
 - **Underlying** (`SPY`) and **timestamp** (UTC).
-- **Scenario and horizon** — the classified regime and the forward time
-  window the thesis applies to.
+- **Scenario and horizon** — the classified regime and the scenario-horizon
+  bucket, both exactly as produced upstream by the Intraday Regime/Setup
+  Engine. The agent may repeat or reference the supplied horizon but cannot
+  invent, extend, or override it; the horizon it reports must equal the one
+  it was given (and `no_trade` applies when that horizon is `indeterminate`).
 - **Directional or mean-reversion thesis** — a bounded statement of the
   expected behavior, tied to the regime; or none, for `no_trade`.
 - **Entry condition, invalidation, and target** — explicit, checkable
@@ -151,17 +168,19 @@ bounded. It contains exactly:
 - **Cancellation conditions** — what would void the recommendation before
   entry.
 - **`no_trade`** — a first-class, fully valid outcome, not a failure. The
-  agent must return `no_trade` when the regime is `indeterminate`, when no
-  eligible contract exists, or when the evidence does not support a thesis.
+  agent must return `no_trade` when the regime or the scenario horizon is
+  `indeterminate`, when no eligible contract exists, or when the evidence
+  does not support a thesis.
 
 ## AI does not choose an unrestricted contract
 
 - The **Deterministic Contract Selector** builds the eligible contract set
   from fixed safety and liquidity rules (expiration window, strike/delta
   bounds, Greek bounds, IV bounds, minimum liquidity/open interest, maximum
-  bid-ask spread, scenario horizon). This runs without any model, and it
-  runs **before** the Options Strategy Agent, which receives only the
-  validated eligible set — never the raw chain.
+  bid-ask spread, and the validated scenario-horizon bucket produced
+  upstream by the Intraday Regime/Setup Engine). This runs without any
+  model, and it runs **before** the Options Strategy Agent, which receives
+  only the validated eligible set — never the raw chain.
 - The Options Strategy Agent may only **rank and explain** contracts that
   are already in that eligible set. It cannot introduce, widen, or override
   the set, and it cannot name a contract the deterministic rules excluded.
