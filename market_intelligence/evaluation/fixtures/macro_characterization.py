@@ -12,8 +12,18 @@ kind. See ``PROVENANCE.md`` in this directory.
 
 from __future__ import annotations
 
-from market_intelligence.evaluation.contracts import ClaimCitationPair
+from datetime import UTC, datetime
+
+from market_intelligence.evaluation.contracts import (
+    AgentIdentifier,
+    CitationAdjudication,
+    CitationClassification,
+    CitationReason,
+    ClaimCitationPair,
+    build_run_id,
+)
 from market_intelligence.evaluation.macro_characterization_input import (
+    MacroAdjudicationInput,
     MacroCharacterizationInput,
 )
 from market_intelligence.evaluation.macro_factual_transcription import (
@@ -118,3 +128,67 @@ COMPLETE_MULTI_CLAIM = MacroCharacterizationInput(
 
 def load_complete_multi_claim() -> MacroCharacterizationInput:
     return COMPLETE_MULTI_CLAIM
+
+
+# The fixed created_at used to derive the scaffold run_id for the completion
+# fixture below. Synthetic; it corresponds to no real characterization.
+CHARACTERIZATION_CREATED_AT = datetime(2031, 5, 1, tzinfo=UTC)
+_ADJUDICATED_AT = datetime(2031, 5, 2, tzinfo=UTC)
+
+# The completed human citation adjudications for ``COMPLETE_MULTI_CLAIM`` -- one
+# per expected pair, exercising all four classifications. Every value is
+# synthetic and hand-authored: reviewer id, timestamps, classifications, and
+# reasons are placeholders and are not a judgement of any real agent output.
+COMPLETE_ADJUDICATION_INPUT = MacroAdjudicationInput(
+    run_id=build_run_id(
+        AgentIdentifier.MACRO_ANALYST,
+        COMPLETE_MULTI_CLAIM.characterization_label,
+        CHARACTERIZATION_CREATED_AT,
+    ),
+    adjudications=[
+        CitationAdjudication(
+            claim_id="claim-single-match",
+            citation_id="cite-a",
+            reviewer="synthetic-reviewer",
+            adjudicated_at=_ADJUDICATED_AT,
+            classification=CitationClassification.SUPPORTED,
+            reason=CitationReason.VALUE_MATCHES_EVIDENCE,
+        ),
+        CitationAdjudication(
+            claim_id="claim-single-mismatch",
+            citation_id="cite-b",
+            reviewer="synthetic-reviewer",
+            adjudicated_at=_ADJUDICATED_AT,
+            classification=CitationClassification.UNSUPPORTED,
+            reason=CitationReason.VALUE_CONFLICTS_WITH_EVIDENCE,
+        ),
+        CitationAdjudication(
+            claim_id="claim-unrecognized",
+            citation_id="cite-c",
+            reviewer="synthetic-reviewer",
+            adjudicated_at=_ADJUDICATED_AT,
+            classification=CitationClassification.UNABLE_TO_DETERMINE,
+            reason=CitationReason.SANITIZED_MATERIAL_INSUFFICIENT,
+        ),
+        CitationAdjudication(
+            claim_id="claim-comparison-match",
+            citation_id="cite-d-prev",
+            reviewer="synthetic-reviewer",
+            adjudicated_at=_ADJUDICATED_AT,
+            classification=CitationClassification.PARTIALLY_SUPPORTED,
+            reason=CitationReason.CLAIM_ADDS_UNSUPPORTED_CHARACTERIZATION,
+        ),
+        CitationAdjudication(
+            claim_id="claim-comparison-match",
+            citation_id="cite-d-latest",
+            reviewer="synthetic-reviewer",
+            adjudicated_at=_ADJUDICATED_AT,
+            classification=CitationClassification.SUPPORTED,
+            reason=CitationReason.VALUE_MATCHES_EVIDENCE,
+        ),
+    ],
+)
+
+
+def load_complete_adjudication_input() -> MacroAdjudicationInput:
+    return COMPLETE_ADJUDICATION_INPUT

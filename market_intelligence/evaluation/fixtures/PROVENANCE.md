@@ -70,3 +70,22 @@ serialization of the `.py` fixture, committed for the CLI test. Series IDs
 (`SYNTHRATE`, `SYNTHPRICE`, `SYNTHLABOR`, …), identifiers, dates, and values are
 all synthetic placeholders. It is not a real characterization and no real
 characterization has been performed.
+
+## `macro_adjudication_input_complete.json` / `COMPLETE_ADJUDICATION_INPUT`
+
+A single hand-authored synthetic `MacroAdjudicationInput` for the offline Macro
+characterization **completion** step
+(`market_intelligence/evaluation/macro_characterization_workflow.py`
+`complete_macro_characterization`, `scripts/complete_macro_characterization.py`):
+
+| Fixture | Purpose |
+|---|---|
+| `COMPLETE_ADJUDICATION_INPUT` (`.py`) / `macro_adjudication_input_complete.json` | The completed human citation adjudications for `COMPLETE_MULTI_CLAIM`: one per expected pair, exercising all four classifications (`supported` ×2, `partially_supported`, `unsupported`, `unable_to_determine`). |
+
+The `run_id` (`evalrun-…`) is the deterministic local digest of
+`macro_analyst` + the characterization label + a fixed synthetic `created_at`
+(`CHARACTERIZATION_CREATED_AT`); it is never a provider response id. The
+reviewer id (`synthetic-reviewer`), timestamps, classifications, and reasons are
+all synthetic placeholders and are **not** a judgement of any real agent output.
+The JSON file is the byte-stable `adjudication_input_to_json_str(...)`
+serialization of the `.py` fixture. No real characterization has been completed.

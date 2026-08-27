@@ -19,15 +19,21 @@ from market_intelligence.evaluation.contracts import (
     CitationClassification,
     CitationReason,
     ClaimCitationPair,
+    EvaluationRunRecord,
     FindingCategory,
     FindingSeverity,
     build_run_id,
 )
 from market_intelligence.evaluation.fixtures.macro_characterization import (
+    COMPLETE_ADJUDICATION_INPUT,
     COMPLETE_MULTI_CLAIM,
 )
 from market_intelligence.evaluation.macro_characterization_input import (
+    MAX_ADJUDICATIONS,
+    MacroAdjudicationInput,
     MacroCharacterizationInput,
+    adjudication_input_from_json_str,
+    adjudication_input_to_json_str,
     input_from_json_str,
     input_to_json_str,
 )
@@ -45,6 +51,7 @@ from market_intelligence.evaluation.macro_factual_transcription import (
     TranscriptionEvidenceFact,
 )
 from market_intelligence.evaluation.rubric import check_rubric_completeness
+from market_intelligence.evaluation.serialization import EvaluationSerializationError
 
 _CREATED_AT = datetime(2031, 5, 1, tzinfo=UTC)
 _ADJUDICATED_AT = datetime(2031, 5, 2, tzinfo=UTC)
@@ -323,3 +330,149 @@ def test_completion_error_is_sanitized():
 def test_completion_is_not_validation_constant_is_explicit():
     assert "does not mean" in COMPLETION_IS_NOT_VALIDATION
     assert "universal sense" in COMPLETION_IS_NOT_VALIDATION
+
+
+# ---------------------------------------------------------------------------
+# Completion: scaffold-identity boundary
+# ---------------------------------------------------------------------------
+
+
+def _non_macro_scaffold() -> EvaluationRunRecord:
+    label = "synthetic-news-scaffold"
+    return EvaluationRunRecord(
+        run_id=build_run_id(AgentIdentifier.NEWS_ANALYST, label, _CREATED_AT),
+        agent=AgentIdentifier.NEWS_ANALYST,
+        characterization_label=label,
+        created_at=_CREATED_AT,
+        evidence_fixture_name="local/synthetic-scaffold",
+        summary="synthetic non-macro scaffold",
+        expected_pairs=[ClaimCitationPair(claim_id="claim-single-match", citation_id="cite-a")],
+        adjudications=[],
+        findings=[],
+    )
+
+
+def test_completion_refuses_a_non_macro_record():
+    with pytest.raises(MacroCharacterizationError):
+        complete_macro_characterization(
+            _non_macro_scaffold(),
+            [
+                _adj(
+                    "claim-single-match",
+                    "cite-a",
+                    CitationClassification.SUPPORTED,
+                    CitationReason.VALUE_MATCHES_EVIDENCE,
+                )
+            ],
+        )
+
+
+def test_completion_refuses_an_already_adjudicated_record():
+    built = build_macro_characterization(COMPLETE_MULTI_CLAIM, created_at=_CREATED_AT)
+    completed = complete_macro_characterization(built.run_record, _full_adjudications())
+
+    with pytest.raises(MacroCharacterizationError):
+        complete_macro_characterization(completed, _full_adjudications())
+
+
+def test_completion_still_accepts_a_valid_empty_macro_scaffold():
+    built = build_macro_characterization(COMPLETE_MULTI_CLAIM, created_at=_CREATED_AT)
+    assert built.run_record.agent is AgentIdentifier.MACRO_ANALYST
+    assert built.run_record.adjudications == []
+
+    completed = complete_macro_characterization(built.run_record, _full_adjudications())
+    assert check_rubric_completeness(completed).complete is True
+    assert len(completed.adjudications) == 5
+
+
+def test_scaffold_identity_errors_leak_no_ids_or_content():
+    built = build_macro_characterization(COMPLETE_MULTI_CLAIM, created_at=_CREATED_AT)
+    completed = complete_macro_characterization(built.run_record, _full_adjudications())
+
+    for bad_record in (_non_macro_scaffold(), completed):
+        try:
+            complete_macro_characterization(bad_record, _full_adjudications())
+        except MacroCharacterizationError as exc:
+            message = str(exc)
+            for banned in (
+                "claim-",
+                "cite-",
+                "SYNTH",
+                "news_analyst",
+                "supported",
+                "reviewer",
+                "/",
+                "\\",
+            ):
+                assert banned not in message, banned
+        else:  # pragma: no cover - defensive
+            pytest.fail("expected MacroCharacterizationError")
+
+
+# ---------------------------------------------------------------------------
+# Adjudication-input contract
+# ---------------------------------------------------------------------------
+
+
+def test_adjudication_input_fixture_validates_and_round_trips():
+    text = adjudication_input_to_json_str(COMPLETE_ADJUDICATION_INPUT)
+    assert adjudication_input_from_json_str(text) == COMPLETE_ADJUDICATION_INPUT
+
+
+def test_committed_adjudication_json_fixture_is_byte_stable():
+    from market_intelligence.evaluation.fixtures import FIXTURE_DIR
+
+    path = FIXTURE_DIR / "macro_adjudication_input_complete.json"
+    assert adjudication_input_to_json_str(COMPLETE_ADJUDICATION_INPUT) == path.read_text(
+        encoding="utf-8"
+    )
+
+
+def _one_adjudication() -> CitationAdjudication:
+    return _adj(
+        "claim-1",
+        "cite-a",
+        CitationClassification.SUPPORTED,
+        CitationReason.VALUE_MATCHES_EVIDENCE,
+    )
+
+
+def test_adjudication_input_rejects_extra_fields():
+    with pytest.raises(ValidationError):
+        MacroAdjudicationInput(
+            run_id=COMPLETE_ADJUDICATION_INPUT.run_id,
+            adjudications=[_one_adjudication()],
+            note="unexpected",
+        )
+
+
+def test_adjudication_input_rejects_a_non_run_id_string():
+    with pytest.raises(ValidationError):
+        MacroAdjudicationInput(run_id="resp_or_anything", adjudications=[_one_adjudication()])
+
+
+def test_adjudication_input_rejects_an_empty_list():
+    with pytest.raises(ValidationError):
+        MacroAdjudicationInput(run_id=COMPLETE_ADJUDICATION_INPUT.run_id, adjudications=[])
+
+
+def test_adjudication_input_rejects_an_over_long_list():
+    with pytest.raises(ValidationError):
+        MacroAdjudicationInput(
+            run_id=COMPLETE_ADJUDICATION_INPUT.run_id,
+            adjudications=[_one_adjudication()] * (MAX_ADJUDICATIONS + 1),
+        )
+
+
+def test_adjudication_input_has_no_field_for_a_path_or_metadata():
+    assert set(MacroAdjudicationInput.model_fields) == {"run_id", "adjudications"}
+
+
+def test_adjudication_input_from_json_str_rejects_non_object():
+    with pytest.raises(EvaluationSerializationError):
+        adjudication_input_from_json_str("[]")
+
+
+def test_adjudication_input_from_json_str_rejects_malformed_json():
+    with pytest.raises(EvaluationSerializationError):
+        adjudication_input_from_json_str("not json")

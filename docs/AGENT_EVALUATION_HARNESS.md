@@ -2,9 +2,10 @@
 
 **Status: offline foundation implemented; the first (Macro-Analyst-only)
 deterministic factual-transcription check implemented over synthetic inputs;
-the offline Macro characterization workflow (builder + completion + CLI)
-implemented over synthetic inputs; methodology (P0-7) not complete, and no real
-agent output has been evaluated — no real characterization has been performed.**
+the offline Macro characterization workflow (builder + completion step + a
+build CLI and a completion CLI) implemented over synthetic inputs; methodology
+(P0-7) not complete, and no real agent output has been evaluated — no real
+characterization has been performed.**
 This document records the intent and the hard boundaries for the offline-first
 agent evaluation harness named in
 [PROJECT_STATE.md](../PROJECT_STATE.md)'s "Next Planned Work" (item 2) and
@@ -218,14 +219,16 @@ Added as code, tests, and synthetic fixtures only
 (`market_intelligence/evaluation/macro_characterization_input.py`,
 `market_intelligence/evaluation/macro_characterization_workflow.py`,
 `scripts/characterize_macro_report.py`,
+`scripts/complete_macro_characterization.py`,
 `market_intelligence/evaluation/fixtures/macro_characterization.py`,
 `market_intelligence/tests/test_evaluation_macro_characterization.py`,
-`market_intelligence/tests/test_characterize_macro_report_cli.py`). No connector,
-OpenAI, DuckDB, agent, or orchestration import; no network request; **no live
-Macro Analyst run**; no agent-behaviour, schema, migration, or dependency
-change. This is the minimum offline workflow to *characterize* one Macro
-Analyst report — it does not perform one, and **no real characterization has
-been performed**.
+`market_intelligence/tests/test_characterize_macro_report_cli.py`,
+`market_intelligence/tests/test_complete_macro_characterization_cli.py`). No
+connector, OpenAI, DuckDB, agent, or orchestration import; no network request;
+**no live Macro Analyst run**; no real database access; no agent-behaviour,
+schema, migration, or dependency change. This is the minimum offline workflow to
+*characterize* one Macro Analyst report — it does not perform one, and **no real
+characterization has been performed**.
 
 - **Strict local input contract (`MacroCharacterizationInput`).** Carries
   **only**: a sanitized `characterization_label`; one entry per Macro claim (the
@@ -251,29 +254,59 @@ been performed**.
   (`TRANSCRIPTION_IS_NOT_CITATION_SUPPORT`).
 
 - **Pure completion step (`complete_macro_characterization`).** Accepts the run
-  record plus the completed human `CitationAdjudication` list. It requires
-  **exactly one** adjudication for **every** expected pair — a missing,
-  duplicated, or unexpected pair each raises a sanitized
-  `MacroCharacterizationError` (which never echoes an identifier, note, path, or
-  classification). It preserves every `supported` / `partially_supported` /
+  record plus the completed human `CitationAdjudication` list. The record must
+  be an **unadjudicated Macro scaffold** — `agent == macro_analyst` and an empty
+  `adjudications` list; a non-Macro record or an already-adjudicated one raises a
+  sanitized `MacroCharacterizationError`. It then requires **exactly one**
+  adjudication for **every** expected pair — a missing, duplicated, or
+  unexpected pair each raises a sanitized `MacroCharacterizationError` (which
+  never echoes an identifier, note, path, or classification). It preserves every `supported` / `partially_supported` /
   `unsupported` / `unable_to_determine` classification exactly as recorded, and
   returns a fully re-validated `EvaluationRunRecord`. Completion does **not**
   imply validation (`COMPLETION_IS_NOT_VALIDATION`).
 
-- **CLI (`scripts/characterize_macro_report.py`).** Explicit `--input` and
+- **Strict adjudication-input contract (`MacroAdjudicationInput`).** The single
+  local shape for *completing* a scaffold: **only** the scaffold's deterministic
+  `run_id` and a bounded list (1–500) of completed human `CitationAdjudication`
+  records. `extra="forbid"`; **no** field for a credential, URL, provider
+  response ID, raw provider payload, filesystem path, raw evidence text, model
+  reasoning, or unrestricted metadata. `read_adjudication_input` reuses the
+  serialization boundary's symlink / size / sanitized-error rules.
+
+- **Build CLI (`scripts/characterize_macro_report.py`).** Explicit `--input` and
   `--output` paths only; offline only; **dry-run / validate by default** (prints
   a sanitized summary plus the pending-adjudication templates, writes nothing).
   `--write` is required to serialize the `EvaluationRunRecord` — it reuses
   `evaluation.serialization.write_record` (no overwrite, no symlink, atomic, no
-  directory creation) and **refuses** an `--output` path inside a tracked
-  `fixtures/`, `tests/`, or `docs/` directory. Every error is a fixed sanitized
-  marker (`invalid_input`, `output_path_refused`, `write_failed`,
-  `unexpected_error`).
+  directory creation) and requires the resolved `--output` path to be strictly
+  inside `data/evaluations/local/`. Every error is a fixed sanitized marker
+  (`invalid_input`, `output_path_refused`, `write_failed`, `unexpected_error`).
 
-- **Local-data boundary.** Real characterization inputs and outputs must live in
-  the gitignored `data/evaluations/local/` (see `data/evaluations/README.md`).
-  Only synthetic fixtures under `market_intelligence/evaluation/fixtures/` are
-  committed.
+- **Completion CLI (`scripts/complete_macro_characterization.py`).** Explicit
+  `--record`, `--adjudications`, and `--output` paths; offline only;
+  **dry-run / validate by default** (prints a sanitized summary — counts and
+  classification / finding-severity tallies only — and writes nothing).
+  `--write` is required to serialize the completed `EvaluationRunRecord`. It
+  reads the scaffold with the existing safe serialization, validates the
+  adjudication input, **requires the adjudication `run_id` to match the scaffold
+  `run_id`**, calls `complete_macro_characterization`, and reuses
+  `evaluation.serialization.write_record` (no overwrite, no symlink, atomic, no
+  directory creation). **All three resolved paths must be strictly inside
+  `data/evaluations/local/`** — a repository-root, tracked (`docs/` / `tests/` /
+  `fixtures/`), `data/evaluations/`-itself, outside-repository, `..`-traversal,
+  or symlink-escape path is refused. It **records human decisions only**: it
+  never generates, recommends, or second-guesses a classification, there is no
+  LLM judge, the four classifications are preserved exactly as recorded, and it
+  never prints a reviewer note, claim ID, citation ID, path, or record text.
+  Completion is not validation. Every error is a fixed sanitized marker
+  (`record_path_refused`, `adjudications_path_refused`, `output_path_refused`,
+  `invalid_record`, `invalid_adjudications`, `run_id_mismatch`,
+  `completion_failed`, `write_failed`, `unexpected_error`).
+
+- **Local-data boundary.** Real characterization inputs, adjudication inputs,
+  and outputs must live in the gitignored `data/evaluations/local/` (see
+  `data/evaluations/README.md`). Only synthetic fixtures under
+  `market_intelligence/evaluation/fixtures/` are committed.
 
 **What this does and does not establish.** It establishes that an offline
 workflow to build and complete one Macro characterization record exists and
