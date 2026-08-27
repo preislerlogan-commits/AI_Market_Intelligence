@@ -52,6 +52,22 @@ and does not execute trades.
 Data is stored locally in DuckDB. No cloud database or hosted service is part
 of the current design.
 
+## Roadmap
+
+Phase 0 (Infrastructure Foundation) is **not closed**; its one remaining
+requirement is a recorded first real, human-reviewed agent characterization
+(see [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md)).
+
+**Phase 1 (design recorded, not started): an automated, evidence-based SPY
+options decision-support workflow** — deterministic evidence gathering and
+intraday regime classification, a bounded strategy agent that consumes only
+validated structured inputs and can return `no_trade`, deterministic
+option-contract eligibility filtering, and a recorded evaluation before any
+claim of usefulness. No options code, connector, or agent exists yet, and no
+options work begins until Phase 0 is closed. Design:
+[docs/OPTIONS_DECISION_WORKFLOW.md](docs/OPTIONS_DECISION_WORKFLOW.md).
+Manual-only execution and the non-directional boundary are unchanged.
+
 ## Setup Status
 
 The Python environment, runtime/dev dependencies, and settings layer

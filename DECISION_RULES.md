@@ -16,6 +16,13 @@ operating in this repository.
 - **Manual user approval is required for every trade.** Every trade,
   without exception, must be reviewed and manually approved and entered by
   the user. The system may inform this decision; it may never make it.
+- **AI does not choose an unrestricted options contract.** For any options
+  decision-support workflow, deterministic safety and liquidity rules
+  (expiration, strike, delta, other Greeks, IV, liquidity/open interest,
+  bid-ask spread, scenario horizon) build the eligible contract set. An AI
+  agent may only rank or explain contracts already in that set; it may not
+  introduce, widen, or override it. See
+  [docs/OPTIONS_DECISION_WORKFLOW.md](docs/OPTIONS_DECISION_WORKFLOW.md).
 
 ## Forecast Requirements
 
@@ -50,3 +57,14 @@ Every forecast produced by this system must record:
   scores must not be presented unless they are derived from a defined,
   recorded methodology. Unsupported numeric confidence must not be
   invented to sound precise.
+- **VWAP distance is not a valuation.** Distance from VWAP must not be
+  described as intrinsic "overvaluation" or "undervaluation." It is a
+  session-relative, mechanical execution-benchmark statistic — call it
+  "statistical intraday extension from VWAP" (or another explicitly defined
+  intraday fair-value-proxy term, defined where used).
+- **A large VWAP extension alone is not a trade signal.** Extension is one
+  conditioning feature. A directional or mean-reversion thesis requires a
+  deterministic regime classification plus corroborating features, not
+  extension by itself. The system must distinguish likely trend days (where
+  a large extension is expected) from mean-reversion conditions. See
+  [docs/OPTIONS_DECISION_WORKFLOW.md](docs/OPTIONS_DECISION_WORKFLOW.md).
