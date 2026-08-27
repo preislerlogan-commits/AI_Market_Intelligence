@@ -48,6 +48,8 @@ from __future__ import annotations
 import json
 import math
 import re
+import types
+import typing
 from dataclasses import dataclass
 from typing import Any
 
@@ -80,6 +82,417 @@ _RESPONSE_ID_PATTERN = re.compile(rf"^resp_[A-Za-z0-9_-]{{1,{MAX_RESPONSE_ID_SUF
 # provider text.
 KNOWN_INCOMPLETE_REASONS = frozenset({"max_output_tokens", "content_filter"})
 OTHER_INCOMPLETE_REASON = "other"
+
+# --- Sanitized structured-output validation diagnostics --------------------
+#
+# When a received response's content fails ``pydantic.ValidationError``
+# re-validation against ``output_model`` (see ``OpenAIParseFailureError``),
+# these bounded, sanitized diagnostics identify *which schema-controlled
+# field path(s)* and *what broad category* of bound was violated -- without
+# ever exposing a model-authored value, raw evidence, a credential, a raw
+# response, a URL, or a raw exception/type/message. This is diagnostic
+# metadata only: it never changes the raised exception class or its fixed
+# ``category`` (``CATEGORY_RESPONSE_VALIDATION_FAILED``), and it never
+# retries or otherwise alters request behavior.
+#
+# Bounds are deliberately small and fixed so a pathological or adversarial
+# ``ValidationError`` (many errors, deeply nested ``loc``, huge integer
+# indexes, oversized field names) cannot inflate this diagnostic payload.
+MAX_VALIDATION_ISSUE_COUNT = 20
+MAX_VALIDATION_ISSUES_REPORTED = 5
+MAX_FIELD_PATH_DEPTH = 6
+MAX_FIELD_PATH_SEGMENT_LENGTH = 40
+MAX_FIELD_PATH_INDEX = 10_000
+MAX_FIELD_PATH_LENGTH = 200
+UNKNOWN_FIELD_PATH = "unknown"
+
+# A field-name segment must look like a plausible Python/Pydantic identifier
+# -- letters, digits, underscores, starting with a letter or underscore, and
+# bounded in length. Anything else (including any evidence-derived or
+# otherwise unexpected text) is untrusted and collapses the whole path to
+# ``UNKNOWN_FIELD_PATH`` rather than ever being echoed.
+_FIELD_PATH_SEGMENT_RE = re.compile(
+    rf"^[A-Za-z_][A-Za-z0-9_]{{0,{MAX_FIELD_PATH_SEGMENT_LENGTH - 1}}}$"
+)
+
+# Fixed, sanitized, broad validation-issue categories. Every one of these is
+# the ONLY thing ever surfaced for a given issue -- the raw Pydantic error
+# ``type`` string (e.g. ``"string_too_long"``) is used only internally, as a
+# lookup key into this fixed mapping, and is never itself exposed.
+VALIDATION_CATEGORY_STRING_TOO_LONG = "string_too_long"
+VALIDATION_CATEGORY_STRING_TOO_SHORT = "string_too_short"
+VALIDATION_CATEGORY_TOO_MANY_ITEMS = "too_many_items"
+VALIDATION_CATEGORY_TOO_FEW_ITEMS = "too_few_items"
+VALIDATION_CATEGORY_MISSING_FIELD = "missing_field"
+VALIDATION_CATEGORY_EXTRA_FIELD = "extra_field"
+VALIDATION_CATEGORY_LITERAL_OR_ENUM_INVALID = "literal_or_enum_invalid"
+VALIDATION_CATEGORY_TYPE_INVALID = "type_invalid"
+VALIDATION_CATEGORY_OTHER = "other"
+
+# Strict, fixed allowlist mapping Pydantic v2's own documented error ``type``
+# strings to one of the broad categories above. Only these exact keys are
+# ever recognized -- an unrecognized/unexpected ``type`` string (including a
+# future Pydantic version's new error type) always falls back to
+# ``VALIDATION_CATEGORY_OTHER`` rather than ever being surfaced as-is.
+_VALIDATION_EXPLICIT_CATEGORY_MAP: dict[str, str] = {
+    "string_too_long": VALIDATION_CATEGORY_STRING_TOO_LONG,
+    "string_too_short": VALIDATION_CATEGORY_STRING_TOO_SHORT,
+    "too_long": VALIDATION_CATEGORY_TOO_MANY_ITEMS,
+    "too_short": VALIDATION_CATEGORY_TOO_FEW_ITEMS,
+    "missing": VALIDATION_CATEGORY_MISSING_FIELD,
+    "extra_forbidden": VALIDATION_CATEGORY_EXTRA_FIELD,
+    "literal_error": VALIDATION_CATEGORY_LITERAL_OR_ENUM_INVALID,
+    "enum": VALIDATION_CATEGORY_LITERAL_OR_ENUM_INVALID,
+}
+
+# A fixed, explicit allowlist of Pydantic v2's own "wrong Python/JSON type"
+# error identifiers -- every one maps to VALIDATION_CATEGORY_TYPE_INVALID.
+# Deliberately an explicit set, not a suffix heuristic, so this stays a
+# closed, reviewed allowlist rather than silently accepting any future
+# ``*_type``-shaped string Pydantic might introduce.
+_VALIDATION_TYPE_INVALID_TYPES = frozenset(
+    {
+        "string_type",
+        "int_type",
+        "float_type",
+        "bool_type",
+        "bytes_type",
+        "list_type",
+        "dict_type",
+        "set_type",
+        "frozenset_type",
+        "tuple_type",
+        "none_required",
+        "model_type",
+        "is_instance_of",
+        "datetime_type",
+        "date_type",
+        "time_type",
+        "timedelta_type",
+        "decimal_type",
+        "uuid_type",
+        "json_type",
+        "int_parsing",
+        "float_parsing",
+        "bool_parsing",
+    }
+)
+
+
+@dataclass(frozen=True)
+class ValidationIssue:
+    """One sanitized, bounded validation issue.
+
+    ``field_path`` is derived only from a Pydantic ``ValidationError``
+    error's ``loc`` tuple, and is valid only when it is BOTH
+    identifier-shaped syntax AND an actual, resolvable position in the
+    exact ``output_model`` schema the request used -- i.e. validated
+    against that model's real, declared field structure
+    (``BaseModel.model_fields``/field annotations), not merely identifier
+    syntax (see ``_sanitize_field_path``/``_schema_path_is_valid``). This
+    matters because a Pydantic ``extra_forbidden`` error's ``loc`` can
+    contain an arbitrary, identifier-shaped, model-authored extra JSON key
+    that is not a real schema field at all -- syntax alone cannot tell that
+    apart from a genuine field name. Any path that is unrecognized,
+    malformed, oversized, or not an actual schema position collapses to
+    ``UNKNOWN_FIELD_PATH`` -- the unknown segment itself is never echoed.
+    ``category`` is one of the fixed ``VALIDATION_CATEGORY_*`` constants
+    above -- never a raw Pydantic error type string.
+    """
+
+    field_path: str
+    category: str
+
+
+@dataclass(frozen=True)
+class ValidationDiagnostics:
+    """Sanitized, bounded diagnostics for one ``OpenAIParseFailureError``.
+
+    ``available`` is ``False`` whenever safe details could not be extracted
+    (e.g. the installed OpenAI SDK wrapped or stripped the underlying
+    ``pydantic.ValidationError`` so ``errors()`` is missing or unusable) --
+    in that case ``issue_count`` is ``0`` and ``issues`` is empty, and no
+    other diagnostic detail is ever inferred or guessed. ``issue_count`` is
+    the total number of validation issues found, bounded to
+    ``MAX_VALIDATION_ISSUE_COUNT``. ``issues`` is a deduplicated,
+    deterministically ordered (by first occurrence), bounded (at most
+    ``MAX_VALIDATION_ISSUES_REPORTED``) tuple of ``ValidationIssue``.
+    """
+
+    available: bool
+    issue_count: int
+    issues: tuple[ValidationIssue, ...]
+
+
+_UNAVAILABLE_DIAGNOSTICS = ValidationDiagnostics(available=False, issue_count=0, issues=())
+
+
+# --- Schema-aware field-path validation -------------------------------------
+#
+# Syntax alone (identifier-shaped segments) is NOT sufficient to prove a
+# `loc` segment is schema-controlled: for a Pydantic `extra_forbidden`
+# error, `loc` contains the arbitrary, model-authored extra key itself
+# (e.g. a caller-controlled JSON key like "secret_marker"), which can be
+# perfectly identifier-shaped while still being attacker/model-controlled
+# text, not a real field this project's schema declares. Every field path
+# is therefore additionally walked against the exact `output_model` the
+# request used, using only public Pydantic v2 API (`BaseModel.model_fields`,
+# `FieldInfo.annotation`) and the standard library `typing` module for
+# introspection -- never any private/underscore-prefixed Pydantic or OpenAI
+# SDK module. A `loc` that does not correspond to a real, resolvable schema
+# path -- including the extra-key case above -- collapses the whole path to
+# `UNKNOWN_FIELD_PATH`, even when every segment is individually
+# identifier-shaped.
+_SCHEMA_UNRESOLVABLE = object()
+
+
+def _strip_annotated(annotation: Any) -> Any:
+    """Unwrap ``Annotated[X, ...]`` down to ``X``, recursively.
+
+    Returns ``_SCHEMA_UNRESOLVABLE`` for a malformed ``Annotated`` with no
+    underlying type -- conservative, never guessed.
+    """
+    while typing.get_origin(annotation) is typing.Annotated:
+        args = typing.get_args(annotation)
+        if not args:
+            return _SCHEMA_UNRESOLVABLE
+        annotation = args[0]
+    return annotation
+
+
+def _strip_optional(annotation: Any) -> Any:
+    """Unwrap ``Annotated``, then an ``Optional``/``X | None`` union down to
+    its single non-``None`` member type.
+
+    A union with more than one non-``None`` member (e.g.
+    ``int | str | None``) is ambiguous -- which branch a given ``loc``
+    segment actually took cannot be determined from ``loc`` alone -- so this
+    conservatively returns ``_SCHEMA_UNRESOLVABLE`` rather than guessing a
+    branch.
+    """
+    annotation = _strip_annotated(annotation)
+    if annotation is _SCHEMA_UNRESOLVABLE:
+        return _SCHEMA_UNRESOLVABLE
+    origin = typing.get_origin(annotation)
+    if origin is typing.Union or origin is types.UnionType:
+        non_none_args = [a for a in typing.get_args(annotation) if a is not type(None)]
+        if len(non_none_args) != 1:
+            return _SCHEMA_UNRESOLVABLE
+        return _strip_annotated(non_none_args[0])
+    return annotation
+
+
+def _list_item_type(annotation: Any) -> Any:
+    """Return a list-shaped annotation's single item type.
+
+    Returns ``None`` (a plain, deliberate "not a list at all" signal,
+    distinct from unresolvable) when ``annotation`` is not list-shaped, so a
+    ``loc`` integer segment against a non-list field is correctly rejected
+    rather than treated as ambiguous. Returns ``_SCHEMA_UNRESOLVABLE`` for a
+    list-shaped annotation with zero or more than one type argument (e.g. an
+    unparameterized ``list``), since the item type cannot be determined --
+    never guessed.
+    """
+    annotation = _strip_annotated(annotation)
+    if annotation is _SCHEMA_UNRESOLVABLE:
+        return _SCHEMA_UNRESOLVABLE
+    if typing.get_origin(annotation) is not list:
+        return None
+    args = typing.get_args(annotation)
+    if len(args) != 1:
+        return _SCHEMA_UNRESOLVABLE
+    return args[0]
+
+
+def _is_model_type(annotation: Any) -> bool:
+    return isinstance(annotation, type) and issubclass(annotation, BaseModel)
+
+
+def _model_field_annotation(model: Any, field_name: str) -> Any:
+    """Return the declared annotation for ``field_name`` on ``model``.
+
+    Returns ``None`` when ``field_name`` is not an actual declared field
+    (the "extra/unknown key" case this function exists to catch) --
+    distinct from ``_SCHEMA_UNRESOLVABLE``, which means "a real field, but
+    its shape could not be determined." Uses only the public
+    ``BaseModel.model_fields``/``FieldInfo.annotation`` API.
+    """
+    fields = getattr(model, "model_fields", None)
+    if not isinstance(fields, dict):
+        return _SCHEMA_UNRESOLVABLE
+    field_info = fields.get(field_name)
+    if field_info is None:
+        return None
+    annotation = getattr(field_info, "annotation", None)
+    if annotation is None:
+        return _SCHEMA_UNRESOLVABLE
+    return annotation
+
+
+def _schema_path_is_valid(output_model: Any, loc: tuple[Any, ...]) -> bool:
+    """Walk ``loc`` against ``output_model``'s own public Pydantic field
+    structure, returning ``True`` only if every segment corresponds to a
+    real, resolvable schema position.
+
+    A string segment is valid only when the current position is a
+    ``BaseModel`` subclass declaring that exact field name (via
+    ``model_fields`` -- never a caller/model-authored extra key). An integer
+    segment is valid only when the current position is a bounded,
+    single-type-argument list annotation (``list[X]``), descending into
+    ``X``. ``Annotated``/``Optional``/``X | None`` wrappers are unwrapped
+    along the way. Nested ``BaseModel`` fields and lists of ``BaseModel``
+    fields are both supported by simply repeating this same walk (e.g.
+    ``("macro_claims", 0, "claim_summary")``: field, then list index, then a
+    field on the resulting nested model). Conservative and fail-closed:
+    any ambiguous, malformed, recursive-with-no-progress, or unsupported
+    annotation shape makes the *whole* path invalid rather than guessing --
+    never a partial/best-effort match.
+    """
+    if not _is_model_type(output_model):
+        return False
+    current: Any = output_model
+    for segment in loc:
+        if current is _SCHEMA_UNRESOLVABLE:
+            return False
+        if isinstance(segment, bool):
+            return False
+        if isinstance(segment, str):
+            if not _is_model_type(current):
+                return False
+            annotation = _model_field_annotation(current, segment)
+            if annotation is None or annotation is _SCHEMA_UNRESOLVABLE:
+                return False
+            current = _strip_optional(annotation)
+        elif isinstance(segment, int):
+            item_type = _list_item_type(current)
+            if item_type is None or item_type is _SCHEMA_UNRESOLVABLE:
+                return False
+            current = _strip_optional(item_type)
+        else:
+            return False
+    return current is not _SCHEMA_UNRESOLVABLE
+
+
+def _sanitize_field_path(loc: Any, output_model: Any) -> str:
+    """Sanitize one Pydantic ``ValidationError`` error's ``loc`` into a bounded,
+    human-readable field path, or ``UNKNOWN_FIELD_PATH`` if anything about it
+    is unrecognized, malformed, out of bounds, or not an actual position in
+    ``output_model``'s own schema.
+
+    Two layers, both required: (1) syntax -- each segment must already look
+    like a schema field-name identifier (``_FIELD_PATH_SEGMENT_RE``) or a
+    nonnegative integer index (bounded to ``MAX_FIELD_PATH_INDEX``), bounded
+    to ``MAX_FIELD_PATH_DEPTH`` segments; (2) schema -- the full path must
+    additionally resolve against ``output_model``'s real, declared field
+    structure (see ``_schema_path_is_valid``), using only public Pydantic v2
+    API. Syntax alone is NOT sufficient: a Pydantic ``extra_forbidden``
+    error's ``loc`` can contain an arbitrary, identifier-shaped,
+    model-authored extra key that is not a real field at all -- that case is
+    caught only by the schema layer and collapses to ``UNKNOWN_FIELD_PATH``,
+    never echoing the unknown segment. Never echoes an unrecognized value
+    (e.g. a non-str/int/bool segment) either -- the whole path collapses to
+    ``UNKNOWN_FIELD_PATH`` instead.
+    """
+    if not isinstance(loc, (tuple, list)) or len(loc) == 0:
+        return UNKNOWN_FIELD_PATH
+    if len(loc) > MAX_FIELD_PATH_DEPTH:
+        return UNKNOWN_FIELD_PATH
+
+    for segment in loc:
+        if isinstance(segment, bool):
+            return UNKNOWN_FIELD_PATH
+        if isinstance(segment, int):
+            if segment < 0 or segment > MAX_FIELD_PATH_INDEX:
+                return UNKNOWN_FIELD_PATH
+        elif isinstance(segment, str):
+            if not _FIELD_PATH_SEGMENT_RE.fullmatch(segment):
+                return UNKNOWN_FIELD_PATH
+        else:
+            return UNKNOWN_FIELD_PATH
+
+    loc_tuple = tuple(loc)
+    if not _schema_path_is_valid(output_model, loc_tuple):
+        return UNKNOWN_FIELD_PATH
+
+    path = ""
+    for segment in loc_tuple:
+        if isinstance(segment, int):
+            path += f"[{segment}]"
+        else:
+            path = f"{path}.{segment}" if path else segment
+
+    if not path or len(path) > MAX_FIELD_PATH_LENGTH:
+        return UNKNOWN_FIELD_PATH
+    return path
+
+
+def _normalize_validation_category(pydantic_error_type: Any) -> str:
+    """Map a raw Pydantic error ``type`` string to a fixed, sanitized category.
+
+    Only the exact strings in ``_VALIDATION_EXPLICIT_CATEGORY_MAP``/
+    ``_VALIDATION_TYPE_INVALID_TYPES`` are ever recognized; anything else
+    (including a non-string value, or a legitimate but unlisted Pydantic
+    error type) maps to ``VALIDATION_CATEGORY_OTHER``. The raw input value
+    itself is never returned or included anywhere.
+    """
+    if not isinstance(pydantic_error_type, str):
+        return VALIDATION_CATEGORY_OTHER
+    if pydantic_error_type in _VALIDATION_EXPLICIT_CATEGORY_MAP:
+        return _VALIDATION_EXPLICIT_CATEGORY_MAP[pydantic_error_type]
+    if pydantic_error_type in _VALIDATION_TYPE_INVALID_TYPES:
+        return VALIDATION_CATEGORY_TYPE_INVALID
+    return VALIDATION_CATEGORY_OTHER
+
+
+def _build_validation_diagnostics(exc: Exception, output_model: Any) -> ValidationDiagnostics:
+    """Build sanitized, bounded diagnostics from a ``pydantic.ValidationError``.
+
+    ``output_model`` is the exact Pydantic model the request used --
+    required so every reported ``field_path`` can be validated against that
+    model's own real, declared field structure (see
+    ``_schema_path_is_valid``), not merely identifier syntax. Uses only the
+    public ``ValidationError.errors()``/``BaseModel.model_fields`` API --
+    never any private/underscore-prefixed OpenAI SDK or Pydantic module. If
+    the installed OpenAI SDK wraps or strips the underlying
+    ``ValidationError`` so ``errors()`` is missing, not callable, or returns
+    something unusable, or if anything else about extraction fails, this
+    returns ``_UNAVAILABLE_DIAGNOSTICS`` (``available=False``) rather than
+    raising or guessing -- the caller's generic, already-sanitized error
+    message and category are unaffected either way. Never includes
+    ``input``/``ctx``, a raw error message, an exception type/repr, a
+    model-authored value, or response text/body.
+    """
+    try:
+        errors_method = getattr(exc, "errors", None)
+        if not callable(errors_method):
+            return _UNAVAILABLE_DIAGNOSTICS
+        raw_errors = errors_method()
+        if not isinstance(raw_errors, list):
+            return _UNAVAILABLE_DIAGNOSTICS
+
+        issue_count = min(len(raw_errors), MAX_VALIDATION_ISSUE_COUNT)
+
+        seen: set[tuple[str, str]] = set()
+        issues: list[ValidationIssue] = []
+        for raw_error in raw_errors:
+            if len(issues) >= MAX_VALIDATION_ISSUES_REPORTED:
+                break
+            if not isinstance(raw_error, dict):
+                continue
+            field_path = _sanitize_field_path(raw_error.get("loc"), output_model)
+            category = _normalize_validation_category(raw_error.get("type"))
+            key = (field_path, category)
+            if key in seen:
+                continue
+            seen.add(key)
+            issues.append(ValidationIssue(field_path=field_path, category=category))
+
+        return ValidationDiagnostics(
+            available=True, issue_count=issue_count, issues=tuple(issues)
+        )
+    except Exception:
+        return _UNAVAILABLE_DIAGNOSTICS
+
 
 # Fixed, sanitized failure-category strings. Every ``OpenAIStructuredError``
 # subclass exposes one of these on its ``category`` class attribute so
@@ -219,9 +632,27 @@ class OpenAIParseFailureError(OpenAIStructuredError):
     documentation establishing that its Structured Outputs generation
     leaves these bound keywords unenforced specifically for the
     non-fine-tuned ``gpt-5-mini`` model this project uses.
+
+    ``diagnostics`` (``ValidationDiagnostics``) carries bounded, sanitized
+    detail about which schema-controlled field path(s) and which broad
+    validation-issue category the underlying ``pydantic.ValidationError``
+    reported (see ``_build_validation_diagnostics``) -- never a raw error
+    message, raw Pydantic type string, ``input``/``ctx``, model-authored
+    value, or response text. When safe details could not be extracted (e.g.
+    the installed OpenAI SDK wrapped or stripped the underlying
+    ``ValidationError``), ``diagnostics.available`` is ``False`` and this
+    error's fixed message/category are otherwise unaffected.
     """
 
     category = CATEGORY_RESPONSE_VALIDATION_FAILED
+
+    def __init__(
+        self, message: str, *, diagnostics: ValidationDiagnostics | None = None
+    ) -> None:
+        super().__init__(message)
+        self.diagnostics: ValidationDiagnostics = (
+            diagnostics if diagnostics is not None else _UNAVAILABLE_DIAGNOSTICS
+        )
 
 
 class OpenAIUnexpectedError(OpenAIStructuredError):
@@ -614,9 +1045,10 @@ class OpenAIStructuredClient:
             raise OpenAIAuthenticationError("OpenAI authentication failed.") from None
         except openai.APIConnectionError:
             raise OpenAIConnectionError("OpenAI connection failed.") from None
-        except pydantic.ValidationError:
+        except pydantic.ValidationError as exc:
             raise OpenAIParseFailureError(
-                "OpenAI response failed structured-output validation."
+                "OpenAI response failed structured-output validation.",
+                diagnostics=_build_validation_diagnostics(exc, output_model),
             ) from None
         except openai.OpenAIError:
             raise OpenAIUnexpectedError("OpenAI request failed unexpectedly.") from None
