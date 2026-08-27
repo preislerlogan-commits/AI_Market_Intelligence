@@ -997,6 +997,78 @@ touches only `market_intelligence/agents/macro_analyst.py`,
 
 ## Known limitations
 
+- **Live seven-series `--execute` attempt failed
+  `response_validation_failed` before any post-response validator ran, and
+  the structured-output validation diagnostics this motivated (2026-08-25).**
+  A separately authorized seven-series Core Macro Basket dry run against the
+  real local database passed the deterministic preflight (`eligible: true`,
+  every flag list empty). A separately authorized `--execute` attempt was
+  then made against the same seven series (`FEDFUNDS`, `GS10`, `CPIAUCSL`,
+  `PCEPI`, `UNRATE`, `INDPRO`, `GDPC1`): it passed preflight and one paid
+  OpenAI request reached OpenAI, but the response failed OpenAI SDK's
+  client-side structured-output re-validation against
+  `MacroAnalystModelAnalysis` -- `agent_error`, `detail: "OpenAI response
+  failed structured-output validation."`, `category:
+  response_validation_failed`. **This failure occurs entirely inside
+  `OpenAIStructuredClient.generate()`, before this agent's own
+  `_validate_claims_quality_consistency`, `_validate_citations_and_series`,
+  `_validate_coverage`, `_validate_content_scope`,
+  `_validate_comparison_claims`, `_validate_frequency_wording`,
+  `_validate_transmission_channels`, or the shared non-directional output
+  policy check ever runs -- none of them saw this response at all. No
+  report was accepted from this attempt, and no retry was made.** This is a
+  distinct failure from the seven-series `transmission_channel_invalid`
+  rejection documented immediately below: that earlier attempt's response
+  *did* reach and get rejected by a post-response validator; this attempt's
+  response never reached one.
+
+  Because `OpenAIStructuredClient` never captures or logs raw model output,
+  and because the bounded, sanitized structured-output validation
+  diagnostics described in
+  [docs/OPENAI_PROVIDER_BOUNDARY.md](OPENAI_PROVIDER_BOUNDARY.md) did not
+  yet exist at the time of this attempt, **the exact schema field/value
+  that failed re-validation for this specific occurrence is unavailable and
+  permanently unrecoverable.** No bound of `MacroAnalystModelAnalysis`/
+  `MacroClaimDraft` was changed or is claimed to be the cause -- exceeding
+  one of the schema's Pydantic-only `minLength`/`maxLength`/`minItems`/
+  `maxItems` bounds (e.g. `claim_summary`'s 400-character maximum, or
+  `macro_claims`' 10-item maximum) remains one plausible, locally
+  reproducible failure mode, reproduced offline with a real,
+  locally-constructed seven-series stress fixture in
+  `market_intelligence/tests/test_openai_structured.py` -- **not** an
+  established proven cause of this specific live attempt.
+
+  In direct response, `OpenAIStructuredClient.generate()`'s existing
+  `except pydantic.ValidationError` handling (the only place this category
+  is ever raised) was extended to attach bounded, sanitized diagnostics
+  (`ValidationDiagnostics`: an `issue_count`, and up to five deduplicated
+  `(field_path, category)` pairs derived from `ValidationError.errors()`,
+  where `field_path` is validated against the exact `output_model` schema's
+  own real, declared fields -- not merely identifier syntax, a distinction
+  hardened on 2026-08-26 after a follow-up review; see
+  [docs/OPENAI_PROVIDER_BOUNDARY.md](OPENAI_PROVIDER_BOUNDARY.md)'s
+  "Security correction" note) to the raised `OpenAIParseFailureError`, and
+  `scripts/run_macro_analyst.py`'s sanitized `agent_error` JSON output was
+  extended to include them when available -- see
+  [docs/OPENAI_PROVIDER_BOUNDARY.md](OPENAI_PROVIDER_BOUNDARY.md)'s
+  "Structured-output validation diagnostics" section for the full,
+  sanitized contract (never a model-authored value, raw evidence, a
+  credential, a raw response, a URL, or a raw exception/type/message).
+  **No hard Pydantic bound, citation check, coverage check, content-scope
+  check, comparison check, frequency-wording check, transmission-channel
+  check, or output-policy check was weakened, and the existing
+  `MacroAnalystModelAnalysis`/`MacroAnalystSchema` bounds were not changed
+  or even speculated about as part of this hardening** -- this change adds
+  observability for a *future* occurrence of this same category only. No
+  further live OpenAI request was made to test the new diagnostics against
+  a real failure; they have been validated only by offline, deterministic
+  tests using synthetic `pydantic.ValidationError` instances, including a
+  locally constructed seven-series `MacroAnalystModelAnalysis` stress
+  fixture (a valid seven-claim response still parses successfully; separate
+  invalid fixtures reproduce an oversized `claim_summary` and excessive
+  `macro_claims` as reproducible possibilities, not proof of this attempt's
+  cause). See `PROJECT_STATE.md` for the full, dated record.
+
 - **Code-review correction: three ambiguous bare transmission-channel
   synonym tokens narrowed to explicit economic phrases (2026-08-25, code/
   tests/docs only -- no live FRED/OpenAI request, no migration, no

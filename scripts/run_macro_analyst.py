@@ -45,7 +45,7 @@ _VALIDATION_ERRORS = (MacroAnalystValidationError, MacroEvidenceValidationError)
 _SANITIZED_AGENT_ERRORS = (MacroAnalystAgentError, MacroEvidenceError, OpenAIStructuredError)
 
 
-def _agent_error_payload(exc: Exception) -> dict[str, str]:
+def _agent_error_payload(exc: Exception) -> dict[str, object]:
     """Build the sanitized JSON error payload for a ``_SANITIZED_AGENT_ERRORS`` exception.
 
     ``str(exc)`` is always one of this codebase's own fixed, sanitized
@@ -55,11 +55,32 @@ def _agent_error_payload(exc: Exception) -> dict[str, str]:
     constants defined on the error classes -- included so an operator or a
     future caller can distinguish failure classes without parsing ``detail``
     text.
+
+    When ``exc`` carries a ``diagnostics`` attribute (only
+    ``OpenAIParseFailureError`` does, see ``openai_structured.py``'s
+    ``ValidationDiagnostics``), the payload also includes
+    ``diagnostics_available`` and, only when ``True``,
+    ``validation_issue_count`` and ``validation_issues`` (each entry only
+    ``field_path``/``category``, both already bounded and sanitized -- never
+    ``input``/``ctx``, a raw error message, an exception type, a
+    model-authored value, or response text). When diagnostics are
+    unavailable (e.g. the installed OpenAI SDK wrapped or stripped the
+    underlying ``ValidationError``), only ``diagnostics_available: false`` is
+    added -- no count or issue list.
     """
-    payload = {"error": "agent_error", "detail": str(exc)}
+    payload: dict[str, object] = {"error": "agent_error", "detail": str(exc)}
     category = getattr(exc, "category", None)
     if isinstance(category, str):
         payload["category"] = category
+    diagnostics = getattr(exc, "diagnostics", None)
+    if diagnostics is not None:
+        payload["diagnostics_available"] = bool(diagnostics.available)
+        if diagnostics.available:
+            payload["validation_issue_count"] = diagnostics.issue_count
+            payload["validation_issues"] = [
+                {"field_path": issue.field_path, "category": issue.category}
+                for issue in diagnostics.issues
+            ]
     return payload
 
 

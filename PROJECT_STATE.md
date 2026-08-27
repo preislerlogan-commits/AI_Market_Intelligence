@@ -3247,6 +3247,201 @@ full record.**
     repository, migration, basket configuration, dependency, `.env`, or
     the real DuckDB database was modified as part of this change.
 
+32. **Live seven-series Macro Analyst `--execute` attempt failed
+    `response_validation_failed` before any post-response validator ran, and
+    the structured-output validation diagnostics hardening this motivated
+    (2026-08-25, code/tests/docs only -- no live FRED/OpenAI request made as
+    part of the hardening itself, no migration, no configuration/dependency/
+    `.env` change, and no write to the real local database).**
+
+    A separately authorized seven-series Core Macro Basket dry run
+    (`FEDFUNDS`, `GS10`, `CPIAUCSL`, `PCEPI`, `UNRATE`, `INDPRO`, `GDPC1`)
+    against the real local database passed the deterministic preflight
+    (`eligible: true`, every flag list empty). A separately authorized
+    `--execute` attempt against the same seven series was then made: it
+    passed preflight, and exactly one paid OpenAI request reached OpenAI,
+    but the response failed OpenAI SDK's own client-side structured-output
+    re-validation against `MacroAnalystModelAnalysis` --
+    `{"error": "agent_error", "detail": "OpenAI response failed
+    structured-output validation.", "category":
+    "response_validation_failed"}`. **This failure occurs entirely inside
+    `OpenAIStructuredClient.generate()`, upstream of every
+    `MacroAnalyst`-owned post-response validator (citation, series,
+    full-basket coverage, content-scope, comparison-claim,
+    frequency-wording, transmission-channel, and the shared non-directional
+    output policy check) -- none of them ever saw this response. No report
+    was accepted from this attempt, and no retry was made.** This is a
+    distinct failure from the earlier seven-series
+    `transmission_channel_invalid` rejection recorded in item 30 above: that
+    attempt's response *did* reach and get rejected by a post-response
+    validator; this attempt's response never reached one.
+
+    Because `OpenAIStructuredClient` never captures or logs raw model
+    output, **the exact schema field/value that failed re-validation for
+    this specific occurrence is unavailable and permanently unrecoverable.**
+    No bound of `MacroAnalystModelAnalysis`/`MacroClaimDraft` was changed or
+    is claimed to be the proven cause -- exceeding one of the schema's
+    Pydantic-only `minLength`/`maxLength`/`minItems`/`maxItems` bounds
+    remains one plausible, locally reproducible failure mode (reproduced
+    offline only, see below), not an established fact about this attempt.
+
+    In direct response, bounded, sanitized structured-output validation
+    diagnostics were added: `OpenAIStructuredClient.generate()`'s existing
+    `except pydantic.ValidationError` handling (the sole place
+    `OpenAIParseFailureError`/`response_validation_failed` is ever raised)
+    now also builds a `ValidationDiagnostics` object (via the public
+    `pydantic.ValidationError.errors()` API only -- no private/
+    underscore-prefixed OpenAI SDK module) and attaches it to the raised
+    error's new `diagnostics` attribute, with the error's fixed message and
+    `category` completely unchanged. `ValidationDiagnostics` carries only: a
+    bounded `issue_count` (capped at 20); and up to 5 deduplicated,
+    deterministically ordered `(field_path, category)` pairs, where
+    `field_path` is derived only from each Pydantic error's `loc` (sanitized
+    to known schema field-name syntax and nonnegative integer indexes,
+    bounded to 6 segments/200 characters total, collapsing to the fixed
+    string `"unknown"` for anything unrecognized or malformed) and
+    `category` is one of a fixed allowlist (`string_too_long`,
+    `string_too_short`, `too_many_items`, `too_few_items`, `missing_field`,
+    `extra_field`, `literal_or_enum_invalid`, `type_invalid`, `other`) --
+    never a raw Pydantic error type string. **Never included, anywhere:** a
+    Pydantic error's `input`/`ctx`, a raw error message, an exception
+    type/repr, a model-authored value, response text/body, evidence
+    content, credentials, URLs, or headers. If the installed OpenAI SDK
+    ever wraps or strips the underlying `ValidationError` so `errors()` is
+    missing/non-callable/raising/non-list, diagnostics report
+    `available=false` and the existing generic error is otherwise preserved
+    unchanged -- no private SDK module is ever imported to work around
+    this. `scripts/run_macro_analyst.py`'s sanitized `agent_error` JSON
+    output now includes `diagnostics_available` and, only when `true`,
+    `validation_issue_count`/`validation_issues` (each entry only
+    `field_path`/`category`). The Market Evidence Agent and News Analyst
+    automatically inherit the same diagnostics on any
+    `OpenAIParseFailureError` they propagate -- both already re-raise
+    `OpenAIStructuredError` unchanged, so no per-agent code change was
+    needed; this was confirmed by extending their own existing real-schema
+    regression tests to assert the same diagnostics now appear, with no
+    other behavior change to either agent.
+
+    **No hard Pydantic bound, citation check, coverage check, content-scope
+    check, comparison check, frequency-wording check, transmission-channel
+    check, or output-policy check was weakened, and no
+    `MacroAnalystModelAnalysis`/`MacroClaimDraft` bound was changed or even
+    speculated about as the cause of this specific live attempt** -- this
+    change adds observability for a *future* occurrence of this category
+    only. 42 new focused tests were added across
+    `market_intelligence/tests/test_openai_structured.py` and
+    `market_intelligence/tests/test_run_macro_analyst.py` (2116 in the full
+    repository suite, up from 2074), covering: one real
+    `pydantic.ValidationError` per required category (oversized/undersized
+    string, too many/too few list items, a missing required field, a
+    forbidden extra field, an invalid literal, a wrong Python type, and a
+    nested list-index path) using a small local test-only schema;
+    deterministic ordering/deduplication/bounds for multiple issues;
+    malicious/malformed `loc` values (injection-shaped strings, non-str/int
+    segments, oversized indexes, excessive depth/length) always collapsing
+    to `"unknown"`; a real `ValidationError` whose own embedded
+    secret-shaped `input`/`msg` never appearing anywhere in the resulting
+    diagnostics; a missing/non-callable/raising/non-list `errors()` all
+    falling back to `available=false` without raising; `generate()`
+    attaching diagnostics without changing the fixed message/category, with
+    exactly one SDK call and no automatic retry; a locally constructed
+    seven-series `MacroAnalystModelAnalysis` stress fixture proving a valid
+    seven-claim response still parses successfully; separate invalid
+    fixtures for an oversized `claim_summary` and excessive `macro_claims`
+    (explicitly documented as reproducible possibilities, not the proven
+    live cause); the existing `MarketEvidenceModelAnalysis`/
+    `NewsAnalystModelAnalysis` regression tests extended to prove the shared
+    boundary requires no per-agent change; and the CLI's sanitized
+    `diagnostics_available`/`validation_issue_count`/`validation_issues`
+    output, including the `diagnostics_available: false` case. `python -m
+    pytest` (2116 passed), `python -m ruff check .` (all checks passed),
+    and `git diff --check` (no whitespace errors) were all run as part of
+    this change and pass. See
+    [docs/OPENAI_PROVIDER_BOUNDARY.md](docs/OPENAI_PROVIDER_BOUNDARY.md)'s
+    "Structured-output validation diagnostics" and "Known structured-output
+    validation failure (Macro Analyst, seven-series, 2026-08-25)" sections
+    and [docs/MACRO_ANALYST.md](docs/MACRO_ANALYST.md)'s "Known
+    limitations" for full detail.
+
+    **As of this item, no further live OpenAI request has been made** --
+    this hardening was validated only by offline, deterministic tests. No
+    connector, repository, migration, basket configuration, dependency,
+    `.env`, or the real DuckDB database was modified as part of this
+    change.
+
+33. **Security correction: structured-output validation diagnostics'
+    `field_path` now validated against the real output schema, not merely
+    identifier syntax (2026-08-26, code/tests/docs only -- no live
+    FRED/OpenAI request, no migration, no configuration/dependency/`.env`
+    change, and no write to the real local database).**
+
+    A review of item 32's diagnostics feature found that
+    `_sanitize_field_path` validated only that each `loc` segment *looked
+    like* a schema field-name identifier, never that it actually *was* one.
+    For a Pydantic `extra_forbidden` error, `loc` contains the arbitrary,
+    model-authored extra JSON key itself -- e.g. a key literally named
+    `secret_marker`, or shaped like a credential, URL, SQL text, or a
+    path-traversal string. Such a key can be perfectly identifier-shaped
+    while still being attacker/model-controlled text that is not a real,
+    schema-declared field, so it could previously be reproduced verbatim as
+    a `field_path` even though it was never schema-controlled.
+
+    The fix, made entirely in
+    `market_intelligence/model_clients/openai_structured.py`: every
+    reported `field_path` is now additionally walked against the exact
+    `output_model` schema the request used, using only public Pydantic v2
+    API (`BaseModel.model_fields`, `FieldInfo.annotation`) and the standard
+    library `typing` module (`get_origin`/`get_args`) -- never any private/
+    underscore-prefixed Pydantic or OpenAI SDK module. A string segment is
+    valid only when the current schema position is a `BaseModel` subclass
+    declaring that exact field; an integer segment is valid only when the
+    current position is a bounded, single-argument `list[X]` annotation.
+    `Annotated`/`Optional`/`X | None` wrappers are unwrapped along the way;
+    an ambiguous union (more than one non-`None` member type) is never
+    guessed -- the whole path fails closed to `unknown` instead. This walk
+    naturally supports nested `BaseModel` fields and lists of `BaseModel`
+    fields (e.g. `macro_claims[0].claim_summary`,
+    `macro_claims[3].evidence_ids`, `limitations[1]` all remain correctly
+    identified), while any extra/unknown key -- identifier-shaped or not --
+    now always collapses to `unknown`, with only the broad `extra_field`
+    category still reported. `_build_validation_diagnostics`/
+    `_sanitize_field_path` now both take the exact `output_model` as a
+    required parameter (previously derived `field_path` from `loc` alone).
+    `OpenAIParseFailureError`'s fixed message/category, every existing
+    depth/segment-length/index/count/deduplication/output-size bound, and
+    every other validator are all unchanged.
+
+    20 new focused tests were added to
+    `market_intelligence/tests/test_openai_structured.py` (2136 in the full
+    repository suite, up from 2116), covering: a parametrized sweep proving
+    a forbidden extra key named with a secret, credential, URL, SQL,
+    path-traversal, or code-injection marker is never reproduced (always
+    `unknown`, category still `extra_field`) regardless of whether the key
+    is identifier-shaped; valid top-level and nested schema fields, and
+    valid list indexes, remaining visible; out-of-range/malformed schema
+    paths (a real field in the wrong position, a string where an index is
+    required, a segment past a leaf type, an undeclared field) remaining
+    `unknown`; an ambiguous union annotation never being guessed; a
+    non-`BaseModel`/malformed `output_model` falling back to `unknown`
+    without raising; and the existing multiple-issues/deduplication/bounds,
+    malicious-`loc`, credential-leak, unavailable-diagnostics-fallback, and
+    real `MarketEvidenceModelAnalysis`/`NewsAnalystModelAnalysis`/
+    `MacroAnalystModelAnalysis` regression tests all re-verified passing
+    with schema-validated paths (proving Market Evidence, News Analyst, and
+    Macro Analyst all inherit the same safe, corrected behavior with no
+    per-agent change) -- including exactly one SDK request and zero
+    automatic retry, unchanged. `python -m pytest` (2136 passed), `python -m
+    ruff check .` (all checks passed), and `git diff --check` (no
+    whitespace errors) were all run as part of this change and pass. See
+    [docs/OPENAI_PROVIDER_BOUNDARY.md](docs/OPENAI_PROVIDER_BOUNDARY.md)'s
+    "Structured-output validation diagnostics" section (updated "Field
+    paths" contract and new "Security correction" note) for full detail.
+
+    **No live OpenAI request was made as part of this change** -- it was
+    validated only by offline, deterministic tests. No connector,
+    repository, migration, basket configuration, dependency, `.env`, or the
+    real DuckDB database was modified.
+
 ## Notes
 
 - This file should be updated as phases progress. Treat entries here as

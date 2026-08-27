@@ -201,6 +201,192 @@ means a request was sent and a response was received (tokens may have been
 spent) but its content did not validate — see "Known limitations" below for
 the live failure this classification was added to explain.
 
+## Structured-output validation diagnostics (added 2026-08-25)
+
+**Motivation.** A separately authorized seven-series Core Macro Basket
+`--execute` request (see "Known limitations" below and
+[docs/MACRO_ANALYST.md](MACRO_ANALYST.md)) passed its deterministic
+preflight and reached OpenAI, but the response failed with
+`OpenAIParseFailureError`/`response_validation_failed` before any Macro
+Analyst post-response validator ran. Because this client never captured or
+logged raw model output, the exact schema field that failed re-validation
+was, at the time, completely unrecoverable -- only the fixed, generic
+message and category were available. This section adds a bounded, sanitized
+diagnostic layer so a *future* occurrence of this category can identify
+*which schema-controlled field path(s)* and *what broad kind* of Pydantic
+bound was violated, without ever exposing a model-authored value, raw
+evidence, a credential, a raw response, a URL, or a raw exception/type/
+message. **This is diagnostic metadata only** -- it changes no exception
+class, no `category`, no retry behavior, and no validator; it existed only
+after the change described here, so it does not retroactively explain the
+2026-08-24/2026-08-25 live failures already documented below.
+
+**Where it hooks in.** `OpenAIStructuredClient.generate()` catches
+`pydantic.ValidationError` in exactly one place (the SDK-call/response-
+normalization exception boundary) and raises `OpenAIParseFailureError`.
+That `except` clause now also builds a `ValidationDiagnostics` object from
+the caught `pydantic.ValidationError` (via `_build_validation_diagnostics`,
+using only the public `ValidationError.errors()` API -- never any private/
+underscore-prefixed OpenAI SDK module) and attaches it to the raised
+error's new `diagnostics` attribute. The error's fixed message
+(`"OpenAI response failed structured-output validation."`) and `category`
+(`response_validation_failed`) are completely unchanged.
+
+### Sanitized output contract
+
+`ValidationDiagnostics`:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `available` | `bool` | `False` whenever safe details could not be extracted (see below) -- in that case `issue_count == 0` and `issues == ()`. |
+| `issue_count` | `int` | Total validation issues found, bounded to `MAX_VALIDATION_ISSUE_COUNT` (20). |
+| `issues` | `tuple[ValidationIssue, ...]` | Deduplicated, deterministically ordered (by first occurrence), bounded to at most `MAX_VALIDATION_ISSUES_REPORTED` (5) unique `(field_path, category)` pairs. |
+
+`ValidationIssue`: `field_path: str`, `category: str` -- nothing else.
+
+**Field paths** (`field_path`) are derived only from each Pydantic error's
+`loc` tuple, and are validated against the exact `output_model` schema the
+request used before being reported at all -- identifier syntax by itself is
+**not** sufficient (see "Security correction" below for why). Two layers,
+both required:
+
+1. **Syntax.** Each segment must be a plain schema field-name identifier
+   (letters, digits, underscore; must start with a letter/underscore; at
+   most `MAX_FIELD_PATH_SEGMENT_LENGTH` (40) characters) or a nonnegative
+   integer index (at most `MAX_FIELD_PATH_INDEX`, 10,000), bounded to at
+   most `MAX_FIELD_PATH_DEPTH` (6) segments.
+2. **Schema.** The full path is additionally walked against `output_model`'s
+   own real, declared field structure -- using only public Pydantic v2 API
+   (`BaseModel.model_fields`, `FieldInfo.annotation`) and the standard
+   library `typing` module (`get_origin`/`get_args`) for introspection,
+   never any private/underscore-prefixed Pydantic or OpenAI SDK module. A
+   string segment is only valid when the current schema position is a
+   `BaseModel` subclass declaring that exact field name. An integer segment
+   is only valid when the current position is a bounded, single-argument
+   list annotation (`list[X]`), descending into `X`. `Annotated[X, ...]` and
+   `Optional`/`X | None` wrappers are unwrapped along the way; an ambiguous
+   union (more than one non-`None` member type) is never guessed -- it fails
+   the path instead. This walk naturally supports nested `BaseModel` fields
+   and lists of `BaseModel` fields, so paths like
+   `macro_claims[0].claim_summary`, `macro_claims[3].evidence_ids`, and
+   `limitations[1]` remain available and correctly identified.
+
+Any segment failing either layer, an empty/missing `loc`, a path exceeding
+`MAX_FIELD_PATH_DEPTH`/`MAX_FIELD_PATH_LENGTH` (200 characters total), or a
+`loc` that does not resolve to a real position in `output_model`'s schema
+(including every case in "Security correction" below) collapses the
+**entire path** to the fixed string `"unknown"` (`UNKNOWN_FIELD_PATH`)
+rather than partially rendering it -- the unknown/unresolvable segment
+itself is never echoed. Name segments are joined with `.`; index segments
+render as `[N]` appended to the preceding segment.
+
+**Security correction (added 2026-08-26).** The original version of this
+field-path sanitizer validated only identifier *syntax*, not schema
+membership. For a Pydantic `extra_forbidden` error, `loc` contains the
+arbitrary, model-authored extra JSON key itself -- e.g. a key literally
+named `secret_marker`, a credential-shaped name, a URL, SQL text, or a
+path-traversal string. Such a key can be perfectly identifier-shaped (or,
+for many attack shapes, simply fail the syntax check and already collapse
+to unknown) while still being attacker/model-controlled text that is not a
+real, schema-declared field -- syntax alone could not reliably distinguish
+an identifier-shaped extra key from a genuine field name, so an
+identifier-shaped extra key could previously be reproduced verbatim as a
+`field_path`. The fix adds the schema-validation layer described above:
+every path (not only `extra_forbidden` ones) must now additionally resolve
+against `output_model`'s own real field structure, so an extra/unknown key
+always collapses to `unknown` regardless of its shape, while the broad
+`extra_field` category is still reported. This required threading
+`output_model` into `_build_validation_diagnostics`/`_sanitize_field_path`,
+which previously derived `field_path` from `loc` alone.
+
+**Categories** (`category`) are derived from each Pydantic error's `type`
+string, mapped through a strict, fixed allowlist
+(`_VALIDATION_EXPLICIT_CATEGORY_MAP`/`_VALIDATION_TYPE_INVALID_TYPES`) into
+one of: `string_too_long`, `string_too_short`, `too_many_items`,
+`too_few_items`, `missing_field`, `extra_field`, `literal_or_enum_invalid`,
+`type_invalid`, or `other`. The raw Pydantic `type` string itself is used
+only as an internal lookup key and is **never** included in any output --
+an unrecognized/unlisted type string (including a future Pydantic version's
+new error type) always falls back to `"other"`.
+
+**Never included, anywhere:** a Pydantic error's `input` or `ctx`, a raw
+error message (`msg`), an exception type name or `repr`, a model-authored
+field value, response text/body, evidence content, credentials, URLs, or
+headers. `ValidationIssue`/`ValidationDiagnostics` structurally cannot carry
+any of these -- they have no field for them.
+
+**Fallback (`available=False`).** If the installed OpenAI SDK wraps or
+strips the underlying `pydantic.ValidationError` so `errors()` is missing,
+not callable, raises, or returns something other than a list, or if
+anything else about extraction fails, `_build_validation_diagnostics`
+returns `available=False` (with `issue_count=0`, `issues=()`) rather than
+raising or guessing. This never reaches into any private SDK module -- it
+only ever calls the public `ValidationError.errors()` method and handles
+its absence/failure gracefully. `OpenAIParseFailureError`'s fixed message
+and category are completely unaffected either way; a caller (or test) that
+never passes `diagnostics=` at all also gets this same unavailable default.
+
+### Where diagnostics surface
+
+`scripts/run_macro_analyst.py`'s sanitized `agent_error` JSON payload
+includes `diagnostics_available` whenever the raised error carries a
+`diagnostics` attribute, and, only when `True`, `validation_issue_count`
+and `validation_issues` (a list of `{"field_path": ..., "category": ...}`
+objects, already bounded and sanitized as described above). No other field
+is ever added. The Market Evidence Agent and News Analyst automatically
+carry the same diagnostics on any `OpenAIParseFailureError` they propagate
+(both already re-raise `OpenAIStructuredError` unchanged -- see
+`market_evidence_agent.py`/`news_analyst.py`), with no per-agent code
+change required; their own CLI scripts were not changed as part of this
+work.
+
+### Testing
+
+`market_intelligence/tests/test_openai_structured.py` covers, entirely
+offline: `_sanitize_field_path`/`_normalize_validation_category`/
+`_build_validation_diagnostics` directly, using a small local test-only
+Pydantic schema (`_DiagModel`, including a nested `_DiagChild` model) to
+reproduce one real `pydantic.ValidationError` per required category
+(oversized/undersized string, too many/too few list items, a missing
+required field, a forbidden extra field, an invalid literal, a wrong Python
+type, and a nested list-index path); the **schema-validated field-path
+fix** specifically -- a parametrized sweep proving a forbidden extra key
+named with a secret, credential, URL, SQL, path-traversal, or code-injection
+marker is never reproduced (always `unknown`, category still `extra_field`)
+regardless of whether the key happens to be identifier-shaped; that valid
+top-level and nested schema fields, and valid list indexes, remain visible
+(not collapsed) once schema-validated; that out-of-range/malformed schema
+paths (a real field name in the wrong position, a string where an index is
+required, a segment past a leaf type, a field that isn't declared anywhere
+in the schema) remain `unknown`; and that an ambiguous union annotation
+(more than one non-`None` member type) is never guessed, only ever
+collapsed to `unknown`; deterministic ordering/deduplication/bounds using
+both a real multi-violation `ValidationError` and a fabricated duck-typed
+stand-in (using genuinely distinct, schema-valid field names so the bound
+is exercised on real resolvable issues, not incidentally collapsed by
+schema validation); that a malicious or malformed `loc` (injection-shaped
+strings, non-str/int segments, oversized indexes, excessive depth/length)
+always collapses to `"unknown"`; that a `ValidationError`'s own embedded
+secret-shaped `input`/`msg`/`ctx` never appears anywhere in the resulting
+diagnostics; that a missing/non-callable/raising/non-list `errors()`, and a
+non-`BaseModel` `output_model`, all fall back to `available=False`/`unknown`
+without raising; that `generate()` attaches diagnostics without changing
+the fixed message/category, with exactly one SDK call and no retry; and
+dedicated regression coverage using the real, production
+`MacroAnalystModelAnalysis` schema (a locally constructed seven-series
+stress fixture proving a valid full-basket response still parses
+successfully, plus separate invalid fixtures for an oversized
+`claim_summary` and excessive `macro_claims` -- reproducible possibilities,
+not the proven live cause). The existing
+`MarketEvidenceModelAnalysis`/`NewsAnalystModelAnalysis` regression tests
+were also extended to assert they now carry the same schema-validated
+diagnostics, proving the shared boundary requires no per-agent change.
+`market_intelligence/tests/test_run_macro_analyst.py` covers the CLI's
+sanitized `diagnostics_available`/`validation_issue_count`/
+`validation_issues` output, including the `diagnostics_available: false`
+case (no count or issue list included) and that only the already-sanitized
+strings on the diagnostics object are ever printed.
+
 ## Settings
 
 Three new non-secret fields on `Settings`
@@ -372,6 +558,39 @@ mirroring the mitigation already applied to the Market Evidence Agent.
 future request will pass validation.** See `PROJECT_STATE.md` for the full,
 dated record.
 
+## Known structured-output validation failure (Macro Analyst, seven-series, 2026-08-25)
+
+On 2026-08-25, a separately authorized seven-series Core Macro Basket dry
+run against the real local database passed the deterministic preflight
+(`eligible: true`, every flag list empty). A separately authorized
+`--execute` attempt was then made against the same seven series
+(`FEDFUNDS`, `GS10`, `CPIAUCSL`, `PCEPI`, `UNRATE`, `INDPRO`, `GDPC1`): it
+passed preflight and reached OpenAI, but the response failed with the same
+`OpenAIParseFailureError` ("OpenAI response failed structured-output
+validation.", category `response_validation_failed`) already documented
+above for the Market Evidence Agent and News Analyst -- **before any Macro
+Analyst post-response validator ran** (this category is raised entirely
+inside `OpenAIStructuredClient.generate()`, upstream of every
+`MacroAnalyst`-owned check). **No report was accepted from this attempt,
+and no retry was made.** This is a distinct live failure from the
+seven-series `transmission_channel_invalid` rejection documented in
+[docs/MACRO_ANALYST.md](MACRO_ANALYST.md)'s "Known limitations" (that
+attempt *did* receive a response that reached and was rejected by a
+post-response validator; this attempt's response never reached one).
+
+At the time of this attempt, the structured-output validation diagnostics
+described above did not yet exist, so the exact schema field/value that
+failed re-validation for this specific occurrence is unavailable and
+unrecoverable -- exactly as for the two 2026-08-24 failures above. This
+attempt is the direct motivation for adding the diagnostics feature
+described in this document: no bound, citation check, coverage check,
+content-scope check, comparison check, frequency-wording check,
+transmission-channel check, or output-policy check was weakened or changed
+in response, and no live request was made to test the new diagnostics
+against a real failure (making another live request was explicitly out of
+scope for that change). See [docs/MACRO_ANALYST.md](MACRO_ANALYST.md)'s
+"Known limitations" and `PROJECT_STATE.md` for the full, dated record.
+
 ## Known limitations
 
 - **As of 2026-08-23:** no live request or connectivity check had been made
@@ -388,3 +607,13 @@ dated record.
   instruction string, one evidence dict, one Pydantic output model per
   call). Batch requests, streaming, and multi-turn conversations are out of
   scope.
+- The structured-output validation diagnostics described above
+  (`ValidationDiagnostics`) were added on 2026-08-25, **after** every live
+  `response_validation_failed` failure documented in this file (Market
+  Evidence Agent and News Analyst on 2026-08-24; Macro Analyst's seven-series
+  Core Macro Basket attempt, most recently). They do not retroactively
+  recover the exact field/value that failed re-validation in any of those
+  past attempts -- that information was never captured and remains
+  permanently unavailable for those specific occurrences. They apply only to
+  a `response_validation_failed` failure that occurs from this point
+  forward.

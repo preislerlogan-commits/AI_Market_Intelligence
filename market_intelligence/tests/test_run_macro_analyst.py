@@ -334,6 +334,102 @@ def test_execute_prints_response_validation_failed_category_for_parse_failure(ca
     assert output["category"] == CATEGORY_RESPONSE_VALIDATION_FAILED
 
 
+def test_execute_prints_diagnostics_when_parse_failure_carries_them(capsys):
+    from market_intelligence.model_clients.openai_structured import (
+        VALIDATION_CATEGORY_STRING_TOO_LONG,
+        ValidationDiagnostics,
+        ValidationIssue,
+    )
+
+    module = load_script_module()
+    diagnostics = ValidationDiagnostics(
+        available=True,
+        issue_count=1,
+        issues=(
+            ValidationIssue(
+                field_path="macro_claims[0].claim_summary",
+                category=VALIDATION_CATEGORY_STRING_TOO_LONG,
+            ),
+        ),
+    )
+    fake_agent = FakeAgent(
+        run_exception=OpenAIParseFailureError(
+            "OpenAI response failed structured-output validation.",
+            diagnostics=diagnostics,
+        )
+    )
+
+    exit_code = module.main(["--series", "FEDFUNDS", "--execute"], agent=fake_agent)
+
+    assert exit_code == 1
+    output = json.loads(capsys.readouterr().out)
+    assert output["error"] == "agent_error"
+    assert output["category"] == CATEGORY_RESPONSE_VALIDATION_FAILED
+    assert output["diagnostics_available"] is True
+    assert output["validation_issue_count"] == 1
+    assert output["validation_issues"] == [
+        {"field_path": "macro_claims[0].claim_summary", "category": "string_too_long"}
+    ]
+
+
+def test_execute_prints_diagnostics_available_false_when_parse_failure_has_no_diagnostics(capsys):
+    """The default (no ``diagnostics=`` kwarg, exactly as this codebase's own
+    other call sites still construct this error) must report
+    ``diagnostics_available: false`` and never a count or issue list."""
+    module = load_script_module()
+    fake_agent = FakeAgent(
+        run_exception=OpenAIParseFailureError(
+            "OpenAI response failed structured-output validation."
+        )
+    )
+
+    exit_code = module.main(["--series", "FEDFUNDS", "--execute"], agent=fake_agent)
+
+    assert exit_code == 1
+    output = json.loads(capsys.readouterr().out)
+    assert output["diagnostics_available"] is False
+    assert "validation_issue_count" not in output
+    assert "validation_issues" not in output
+
+
+def test_execute_diagnostics_never_leak_a_model_authored_value(capsys):
+    """Defense in depth at the CLI boundary: even a maliciously-shaped
+    field_path/category on the diagnostics object is printed only as
+    whatever sanitized strings ``ValidationDiagnostics`` already carries --
+    this script performs no additional escaping/filtering of its own, so
+    this test also documents that ``openai_structured.py``'s own
+    sanitization (never this script's) is what prevents a leak."""
+    from market_intelligence.model_clients.openai_structured import (
+        UNKNOWN_FIELD_PATH,
+        VALIDATION_CATEGORY_OTHER,
+        ValidationDiagnostics,
+        ValidationIssue,
+    )
+
+    module = load_script_module()
+    diagnostics = ValidationDiagnostics(
+        available=True,
+        issue_count=1,
+        issues=(
+            ValidationIssue(field_path=UNKNOWN_FIELD_PATH, category=VALIDATION_CATEGORY_OTHER),
+        ),
+    )
+    fake_agent = FakeAgent(
+        run_exception=OpenAIParseFailureError(
+            "OpenAI response failed structured-output validation.",
+            diagnostics=diagnostics,
+        )
+    )
+
+    exit_code = module.main(["--series", "FEDFUNDS", "--execute"], agent=fake_agent)
+
+    assert exit_code == 1
+    raw_output = capsys.readouterr().out
+    assert _UNEXPECTED_FAILURE_MARKER not in raw_output
+    output = json.loads(raw_output)
+    assert output["validation_issues"] == [{"field_path": "unknown", "category": "other"}]
+
+
 def test_dry_run_prints_category_for_macro_analyst_errors(capsys):
     module = load_script_module()
     fake_agent = FakeAgent(
