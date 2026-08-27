@@ -18,15 +18,15 @@ normalized FEDFUNDS macro observations (see "Local Storage" below). A
 first authorized live ingestion-orchestration run (2026-08-23) has since
 run all three of these pipelines together through explicit job contracts
 (see "Local Storage" below); this confirms one controlled orchestrated
-run, not scheduling, continuous operation, or dataset completeness. A
-separately authorized live Core Macro Basket run (2026-08-25) has since
-stored 1 `GS10` metadata row and 13 `GS10` observation rows via
-`scripts/ingest_core_macro_basket.py` (see "Local Storage" below); this
-confirms one bounded, controlled ingestion for one series, not dataset
-completeness. Each
-collection verifies one ingestion run; none is a complete, gap-free, or
-validated dataset — connectivity, or a single ingestion run, is not the
-same as a validated data pipeline. No code in
+run, not scheduling, continuous operation, or dataset completeness. Separately
+authorized live Core Macro Basket runs (`scripts/ingest_core_macro_basket.py`,
+2026-08-24 and 2026-08-25) have since stored observations and series metadata
+for all seven approved FRED series (`FEDFUNDS`, `GS10`, `CPIAUCSL`, `PCEPI`,
+`UNRATE`, `INDPRO`, `GDPC1`); the per-dataset detail, actual coverage, and
+freshness limitations are recorded under "Dataset Records" below. Each
+collection verifies one or a small number of bounded ingestion runs; none is
+a complete, gap-free, or validated dataset — connectivity, or a single
+ingestion run, is not the same as a validated data pipeline. No code in
 this repository may access files outside the repository unless the user
 explicitly authorizes a specific source. Future data will come through
 this project's own reviewed connectors under
@@ -477,8 +477,9 @@ run is reproduced in this catalog. See
 [docs/INGESTION_ORCHESTRATION.md](docs/INGESTION_ORCHESTRATION.md) for
 full detail.
 
-**Macro series metadata: code/tests only, not yet run live (2026-08-24).** A
-narrow, reviewed data contract now also exists for FRED series-level
+**Macro series metadata: migration `0008` applied, seven-series metadata
+ingested live (superseding the 2026-08-24 "code/tests only" status below).**
+A narrow, reviewed data contract exists for FRED series-level
 *metadata* (title, units, frequency, seasonal adjustment, popularity, notes,
 observation date range, last-updated timestamp) -- distinct from
 `macro_observations`, which stores a series' *values*. Migration `0008`
@@ -507,11 +508,25 @@ FRED's own perspective. `MacroEvidenceBuilder`
 this table (read-only) and adds `metadata_available` plus `title`,
 `frequency`, `units`, `seasonal_adjustment` to each series entry in its
 snapshot, plus an aggregate `missing_metadata_series` flag -- so a future
-Macro Analyst never interprets an unlabeled number. **As of this entry, this
-capability exists in code and tests only** (temporary DuckDB files, mocked
-HTTP transports -- no live FRED request, no write to the real database).
-Migration `0008` has not been applied to the real local database, which
-remains at migration `0007` and unchanged. See
+Macro Analyst never interprets an unlabeled number.
+
+**Superseded history (accurate only as of 2026-08-24):** when this
+subsection was first written, this capability existed in code and tests only
+(temporary DuckDB files, mocked HTTP transports -- no live FRED request, no
+write to the real database), and migration `0008` had not been applied to
+the real local database, which remained at migration `0007`. That statement
+is preserved here as an honest, time-scoped diagnostic record and is **not**
+retracted.
+
+**Current status:** migration `0008` has since been applied to the real
+local database (independently confirmed by a 2026-08-25 read-only health
+check reporting schema version `0008`, `healthy=True`), and metadata rows
+for all seven Core Macro Basket series have been ingested live through
+`MacroSeriesMetadataRepository` (see the "Seven-series macro series
+metadata" dataset record below and item 25 of `PROJECT_STATE.md`). The
+standalone `scripts/ingest_fred_series_metadata.py` has still never been run
+live -- the metadata rows were written via `scripts/ingest_core_macro_basket.py`,
+which uses the same repository. See
 [docs/STORAGE_ARCHITECTURE.md](docs/STORAGE_ARCHITECTURE.md) and
 [docs/MACRO_EVIDENCE_SNAPSHOT.md](docs/MACRO_EVIDENCE_SNAPSHOT.md) for full
 detail.
@@ -622,6 +637,179 @@ this run or this documentation update. See
 No forecast or trade table has been created — each requires its own
 reviewed data contract and a corresponding versioned migration before it
 is added.
+
+## Dataset Records
+
+These are the datasets that have actually been ingested into local storage,
+recorded in the format required by "Required Fields for Every Future Dataset"
+below. **None of these is complete, gap-free, or research-validated.** Each is
+one or a small number of bounded, explicitly authorized ingestion runs with
+deliberately limited coverage. "Validation status" below always means
+*pipeline* validation (connectivity, response normalization, transactional
+storage) — never validation of the data's economic correctness, completeness,
+or analytical usefulness.
+
+OpenAI is **not** a data provider and is not cataloged here; it is a
+model-provider boundary only, documented in
+[docs/OPENAI_PROVIDER_BOUNDARY.md](docs/OPENAI_PROVIDER_BOUNDARY.md).
+
+### SPY 5-minute IEX market bars
+
+- **Source** — Alpaca market-data API (`https://data.alpaca.markets`,
+  `/v2/stocks/SPY/bars`), via `AlpacaBarsClient`. Fixed request provenance:
+  `feed=iex`, `adjustment=raw`, `currency=USD`.
+- **Status** — connected; two controlled ingestion runs; **not validated as a
+  dataset**.
+- **Provenance** — (1) 2026-08-21 standalone run
+  (`scripts/ingest_alpaca_bars.py`), requested interval
+  2026-08-15T00:00:00Z–2026-08-20T00:00:00Z, `limit=500`, `max_pages=1`: 248
+  received, 248 inserted, 0 failed. (2) 2026-08-23 orchestrated run
+  (`alpaca_bars_spy_5min` job, `lookback_days=5`): 334 received, 169 inserted,
+  165 existing/updated, 0 failed.
+- **Schema / table** — `market_bars` (migration `0005`): `provider`, `symbol`,
+  `timeframe`, `feed`, `adjustment`, `currency`, `bar_timestamp` (UTC),
+  `open`/`high`/`low`/`close`/`vwap` (`DECIMAL(18,6)`, `vwap` nullable),
+  `volume`/`trade_count` (`BIGINT`, `trade_count` nullable), `retrieved_at`,
+  `first_ingested_at`, `last_seen_at`, `ingestion_run_id`. Primary key
+  `(provider, symbol, timeframe, feed, adjustment, currency, bar_timestamp)`.
+  No indicator, return, label, sentiment, prediction, or order field.
+- **Coverage** — SPY only; `5Min` only; IEX feed only. The first run's 248
+  rows were verified by read-only query to cover 2026-08-17T12:25:00Z through
+  2026-08-19T20:00:00Z. The later orchestrated run added 169 further bars
+  within its own bounded 5-day window; the combined stored set has not had an
+  end-to-end coverage/gap inspection. Roughly 3–4 trading days total. No other
+  symbol, timeframe, or date range is stored.
+- **Known limitations** — IEX is a single exchange's feed, not the
+  consolidated SIP tape: narrower coverage (fewer trades, potentially
+  different prices/volume). SIP connectivity has never been verified. Bars are
+  provider-returned unfiltered and may include pre-market/after-hours
+  observations (no regular-trading-hours filter is applied anywhere). Single
+  vendor, no cross-source check. **Freshness:** this data is a static snapshot
+  from mid-August 2026 and is now well past the market-context snapshot
+  layer's 72-hour bars-staleness threshold — the Market Evidence Agent's
+  preflight would currently abstain with `bars_stale` until a fresh ingestion.
+- **Validation status** — connectivity and response normalization verified on
+  IEX; two controlled runs verified transactional, idempotent storage. No gap
+  analysis, no completeness claim, no economic cross-check.
+
+### SPY news
+
+- **Source** — Alpaca news endpoint (`https://data.alpaca.markets`,
+  `/v1beta1/news`), via `AlpacaNewsClient`.
+- **Status** — connected; two controlled ingestion runs; **not validated as a
+  dataset**.
+- **Provenance** — (1) 2026-08-20 standalone run
+  (`scripts/ingest_alpaca_news.py`, single-symbol SPY, default limit): 10
+  received, 10 inserted, 0 failed. (2) 2026-08-23 orchestrated run
+  (`alpaca_news_spy` job): 10 received, 10 inserted, 0 existing/updated, 0
+  failed. A 2026-08-24 read-only sanity check reported 20 stored articles for
+  SPY.
+- **Schema / table** — `news_articles` (migration `0004`): `provider`,
+  `provider_article_id`, `headline`, `source`, `article_url`, `summary`
+  (nullable), `created_at`/`updated_at` (nullable — provider
+  publication/update timestamps), `related_symbols` (`VARCHAR[]`, stored
+  sorted/deduplicated), `retrieved_at`, `first_ingested_at`, `last_seen_at`,
+  `ingestion_run_id`. Primary key `(provider, provider_article_id)`. No
+  sentiment, impact, direction, confidence, or model-output field.
+- **Coverage** — SPY only; approximately 20 articles with publication
+  timestamps in mid-to-late August 2026 (the exact publication-date range has
+  not been inspected or recorded in this catalog). No historical archive.
+- **Known limitations** — rolling recent-news window only; a single vendor's
+  editorial selection; article content has never been inspected or recorded
+  here. **Freshness:** static snapshot from ~2026-08-23; the News Evidence
+  snapshot layer uses a 168-hour (7-day) staleness threshold, so this data is
+  now stale and the News Analyst's preflight would currently abstain with
+  `news_stale`. **Uncertainty rating:** `news_articles` retains source
+  provenance (provider name, `article_url`, `retrieved_at`, and provider
+  publication timestamps kept distinct from retrieval time), but there is no
+  explicit uncertainty/verification-confidence field — a known gap against
+  [SOURCE_POLICY.md](SOURCE_POLICY.md)'s "Required Fields for Every Sourced
+  Item", not something already solved.
+- **Validation status** — connectivity and response normalization verified;
+  two controlled runs verified transactional, idempotent storage. No
+  dedup-at-scale validation, no completeness claim, and this system never
+  assesses whether a provider-reported claim is itself true.
+
+### Seven-series macro observations
+
+- **Source** — FRED series-observations API
+  (`https://api.stlouisfed.org`), via `FredMacroDataClient.get_observations()`.
+  Every page sends fixed `realtime_start=1776-07-04`,
+  `realtime_end=9999-12-31`, `output_type=1`, `units=lin`.
+- **Series** — `FEDFUNDS`, `GS10`, `CPIAUCSL`, `PCEPI`, `UNRATE`, `INDPRO`,
+  `GDPC1` (the committed Core Macro Basket).
+- **Status** — connected; one to two controlled ingestion runs per series;
+  **not validated as a dataset**.
+- **Provenance** — `FEDFUNDS`: 2026-08-21 standalone
+  (`scripts/ingest_fred_observations.py`, range 2025-08-01–2026-07-31): 12
+  received, 12 inserted; plus 2026-08-23 orchestrated (`fred_fedfunds_observations`):
+  3 received, 0 inserted, 3 existing/updated. `CPIAUCSL`, `PCEPI`, `UNRATE`,
+  `INDPRO`, `GDPC1`: first Core Macro Basket `--execute` run (2026-08-24,
+  `scripts/ingest_core_macro_basket.py`) — succeeded for these five (the same
+  run's `DGS10` observations request failed with sanitized category
+  `provider_error`, which led to `DGS10` being replaced by `GS10`). `GS10`:
+  2026-08-25 Core Macro Basket `--execute` run: 13 received, 13 inserted, 0
+  failed.
+- **Schema / table** — `macro_observations` (migration `0006`): `provider`
+  (fixed `"fred"`), `series_id`, `observation_date` (`DATE`),
+  `realtime_start`/`realtime_end` (`DATE`), `value` (`DECIMAL(20,6)`,
+  nullable), `is_missing` (`BOOLEAN`), `retrieved_at`, `first_ingested_at`,
+  `last_seen_at`, `ingestion_run_id`. Primary key
+  `(provider, series_id, observation_date, realtime_start, realtime_end)`. A
+  `CHECK` enforces missing ⟺ (`value IS NULL` and `is_missing = TRUE`). No
+  prediction, direction, or recommendation field.
+- **Coverage** — verified by read-only query only for `FEDFUNDS` (12 rows,
+  2025-08-01 through 2026-07-01, 0 missing; plus 3 idempotent-overlap rows
+  from orchestration) and `GS10` (13 rows, 2025-07-01 through 2026-07-01, 0
+  missing). The other five series were ingested in a single Core Macro Basket
+  run bounded by per-series lookback ceilings (400 days for the monthly
+  series; 1,100 days for the quarterly `GDPC1`); this catalog has **not**
+  recorded their per-series verified row counts or coverage windows. A
+  2026-08-25 seven-series Macro Analyst dry run passing preflight confirms
+  each of the seven has a stored, non-stale, non-future observation with
+  metadata, but that is a preflight pass, not a coverage inspection.
+- **Known limitations** — roughly 12 months of monthly history per monthly
+  series; `GDPC1` is quarterly. Only one vintage per observation date is
+  stored, even though the primary key is vintage-aware and FRED routinely
+  revises published values. No gap/quality analysis. Economic correctness
+  never independently checked.
+- **Validation status** — bounded fetch, response normalization, and
+  transactional storage verified for at least one run per series; `FEDFUNDS`
+  and `GS10` additionally re-verified by read-only query.
+
+### Seven-series macro series metadata
+
+- **Source** — FRED series endpoint
+  (`https://api.stlouisfed.org/fred/series`), via
+  `FredMacroDataClient.get_series_metadata()`.
+- **Series** — the same seven Core Macro Basket series.
+- **Status** — connected; ingested via the Core Macro Basket runs; **not
+  validated as a dataset**.
+- **Provenance** — metadata rows written through `MacroSeriesMetadataRepository`
+  by `scripts/ingest_core_macro_basket.py` (six series incl. the then-`DGS10`
+  metadata on 2026-08-24; `GS10` on 2026-08-25). The standalone
+  `scripts/ingest_fred_series_metadata.py` has never been run live.
+- **Schema / table** — `macro_series_metadata` (migration `0008`): `provider`
+  (fixed `"fred"`), `series_id`, `title`, `observation_start`/`observation_end`
+  (`DATE`), `frequency`/`frequency_short`, `units`/`units_short`,
+  `seasonal_adjustment`/`seasonal_adjustment_short`, `last_updated`
+  (`TIMESTAMP`, UTC), `popularity` (`BIGINT`), `notes` (`VARCHAR`, nullable),
+  `retrieved_at_utc`, `first_ingested_at`, `last_seen_at`, `ingestion_run_id`.
+  Primary key `(provider, series_id)`; a repeat ingestion refreshes every
+  mutable column in place (no vintage history).
+- **Coverage** — one metadata row per current basket series (all seven
+  present, as implied by the passing seven-series preflight, which requires
+  `metadata_available` for every requested series). Only `GS10`'s row has been
+  independently verified by a read-only query (2026-08-25). A `DGS10` metadata
+  row may also remain from the 2026-08-24 run that preceded its replacement by
+  `GS10`; this catalog does not confirm its presence or absence.
+- **Known limitations** — FRED's series endpoint always reports *current*
+  metadata; this table is not a historical record of past metadata states.
+  `last_updated` reflects FRED's own metadata-revision timestamp, not
+  observation recency.
+- **Validation status** — fetch, normalization, and transactional storage
+  verified for at least one run; `GS10`'s row re-verified by read-only query.
+  Not a complete or validated metadata set.
 
 ## Required Fields for Every Future Dataset
 

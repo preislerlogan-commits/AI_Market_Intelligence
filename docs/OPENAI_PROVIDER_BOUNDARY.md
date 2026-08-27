@@ -5,19 +5,29 @@ This document describes the OpenAI provider boundary added under
 infrastructure only — see [PROJECT_STATE.md](../PROJECT_STATE.md) for what
 has (and has not) actually been exercised.
 
-**Status (as of 2026-08-23): code and mocked tests only. No live OpenAI
-request or connectivity check has been made from this branch.** No agent,
-prompt, market bias, forecast, recommendation, or brokerage integration is
-built on top of this boundary — it is a single, narrow, defensive client for
-one structured-output request at a time, intended as groundwork for a
-future, separately reviewed agent.
+**Status.** Live connectivity is verified: an authorized minimal
+connectivity check succeeded on 2026-08-24 (see "First authorized live
+connectivity check (2026-08-24)" below). Three callers now use this boundary
+— the Market Evidence Agent, the News Analyst, and the seven-series Macro
+Analyst — and **each has had exactly one accepted live `--execute` run**
+(Market Evidence Agent and News Analyst on 2026-08-24; Macro Analyst on
+2026-08-26), alongside a dated history of failed and rejected attempts
+preserved in the "Known structured-output validation failure" sections below
+and in `PROJECT_STATE.md`.
 
-**This "no live request" status has since been superseded: on 2026-08-24, a
-first authorized live connectivity check succeeded — see "First authorized
-live connectivity check (2026-08-24)" below.** That check confirms live
-connectivity and response normalization only; it remains true, unchanged by
-that check, that no agent, prompt, market bias, forecast, recommendation, or
-brokerage integration is built on top of this boundary.
+**This does not establish output accuracy or repeatability.** One accepted
+run per agent proves the deterministic scaffolding around a single bounded
+model call can complete end to end; it is not a validated evaluation
+methodology and not a claim that any agent's output is factually correct or
+stable across re-runs (see [PHASE_0_EXIT.md](PHASE_0_EXIT.md), criterion
+P0-7). This remains a single, narrow, defensive client for one
+structured-output request at a time: no tools, no automatic retry, no
+server-side persistence, no prompt library, and no forecast, recommendation,
+market bias, or brokerage integration is built on top of it.
+
+**The earlier status was different, and its history is preserved.** As of
+2026-08-23 this boundary was code and mocked tests only, with no live request
+made; the dated failure records below are unchanged.
 
 ## Purpose and scope
 
