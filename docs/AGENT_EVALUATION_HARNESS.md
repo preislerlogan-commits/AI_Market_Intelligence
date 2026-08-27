@@ -1,21 +1,30 @@
 # Agent Evaluation Harness — Scope Boundary
 
-**Status: offline foundation implemented; methodology (P0-7) not complete, and
-no agent has been evaluated.** This document records the intent and the hard
-boundaries for the offline-first agent evaluation harness named in
+**Status: offline foundation implemented; the first (Macro-Analyst-only)
+deterministic factual-transcription check implemented over synthetic inputs;
+methodology (P0-7) not complete, and no real agent output has been evaluated.**
+This document records the intent and the hard boundaries for the offline-first
+agent evaluation harness named in
 [PROJECT_STATE.md](../PROJECT_STATE.md)'s "Next Planned Work" (item 2) and
 [docs/PHASE_0_EXIT.md](PHASE_0_EXIT.md) (criterion P0-7).
 
-A first, deliberately narrow slice now exists as code, tests, and synthetic
+Two deliberately narrow slices now exist as code, tests, and synthetic
 fixtures under `market_intelligence/evaluation/` — see "Implemented foundation"
-below. It is **only** the safe, offline data foundation: strict contracts, a
-deterministic rubric-completeness validator, and a symlink-refusing,
-no-overwrite, atomic, bounded local JSON round trip. It performs **no**
-factual-transcription extraction, **no** lexical-overlap scoring, **no**
-repeatability requests, and **no** live-output recording, and it has **not**
-evaluated any agent. There is no factual-transcription result and no
-citation-support adjudication of any real agent output anywhere in this
-repository. The rest of this file remains the agreed boundary for the work
+and "Implemented: Macro Analyst deterministic factual-transcription check"
+below. Together they provide the safe, offline data foundation (strict
+contracts, a deterministic rubric-completeness validator, a symlink-refusing,
+no-overwrite, atomic, bounded local JSON round trip) **plus** the first
+deterministic factual-transcription check — Macro Analyst only, exercised only
+against hand-authored synthetic claim/evidence inputs.
+
+They still perform **no** lexical-overlap scoring, **no** citation-support
+adjudication, **no** abstention matrix, **no** cross-agent consistency, **no**
+repeatability requests, **no** live-output recording, and **no**
+factual-transcription check for the Market Evidence Agent or News Analyst, and
+**no real agent output has been evaluated**. There is no factual-transcription
+result of any live agent run and no citation-support adjudication of any real
+agent output anywhere in this repository, and no first characterization has
+been recorded. The rest of this file remains the agreed boundary for the work
 still to come.
 
 ## Implemented foundation (`market_intelligence/evaluation/`)
@@ -95,13 +104,94 @@ any agent, provider, schema, or migration.
   fresh-interpreter proof that no connector, OpenAI client, database, agent, or
   network import occurs.
 
+## Implemented: Macro Analyst deterministic factual-transcription check
+
+Added as code, tests, and synthetic fixtures only
+(`market_intelligence/evaluation/macro_factual_transcription.py`,
+`market_intelligence/evaluation/fixtures/macro_transcription.py`,
+`market_intelligence/tests/test_evaluation_macro_transcription.py`). No
+connector, OpenAI, DuckDB, agent, or orchestration import; no network request;
+no agent-behaviour, schema, migration, or dependency change. This is
+**Macro-Analyst-only** and **offline / synthetic only** — the first slice of the
+"Deterministic factual-transcription checks" bullet under "In scope" below. It
+does **not** yet apply to the Market Evidence Agent or News Analyst.
+
+- **Input (`MacroTranscriptionInput`).** One evaluation-specific, sanitized
+  shape: a local `claim_id`, the claim's declared `claim_series_id`, the
+  `claim_summary` string, and one or two `cited_facts`
+  (`TranscriptionEvidenceFact`: `citation_id`, `series_id`, `observation_date`,
+  a `Decimal` `value`, a `frequency` word, and optional `units`). It never
+  carries a raw model response, a provider response ID, a credential, a URL, or
+  a database path, and every field is strictly bounded (`extra="forbid"`).
+
+- **Recognized grammar (exactly two controlled forms).** Both are matched by a
+  single, fully anchored regular expression with fixed connective text — never
+  generic number scraping, never fuzzy or semantic matching:
+
+  1. **Single stored observation:**
+     `The stored <frequency> observation dated <YYYY-MM-DD> (is|was) <value>[ <units>][, per official FRED metadata|, as stored].`
+  2. **Two-observation comparison** — the Macro Analyst's canonical wording:
+     the latest stored observation stated first, then the immediately preceding
+     one, with a single direction verb:
+     `The stored <frequency> observation dated <latest-date> was <latest-value>; it (increased|decreased) from the stored <frequency> observation dated <previous-date>, which was <previous-value>[, per official FRED metadata|, as stored].`
+     and the unchanged variant
+     `The stored <frequency> observation dated <latest-date> was <latest-value>; it was unchanged from the stored <frequency> observation dated <previous-date>, which was <previous-value>[, …].`
+     There is **no** `Comparing the stored observations dated X and Y, …` form —
+     that phrasing is not part of the canonical wording and is reported as
+     unrecognized.
+
+  `<frequency>` is one of `daily`, `weekly`, `biweekly`, `monthly`,
+  `quarterly`, `semiannual`, `annual` (the seven words the Macro Analyst's own
+  `FREQUENCY_SHORT_WORDS` maps to). `<units>` is a fixed closed vocabulary. The
+  grammar has no free-text region, so any sentence carrying a digit outside the
+  date / value slots simply fails to match and is reported as unrecognized
+  wording (see outcomes). Because every value/date token is read from a named
+  capture group, extra digit runs elsewhere in a recognized sentence (e.g. the
+  two dates in a comparison) are never scraped as a value.
+
+- **Deterministic verification.** For a recognized claim: the declared
+  `claim_series_id` against every cited fact's `series_id`; the observation
+  date; the `Decimal` value (by numeric equality, so trailing-zero formatting
+  differences are not a mismatch); the frequency word; the units **only when
+  the claim states them**; for a comparison, the previous observation's date
+  and value (facts are ordered previous→latest by `observation_date`) and that
+  the stated `increased`/`decreased`/`unchanged` direction agrees with the two
+  cited values.
+
+- **Outcomes (one `EvaluationFinding` per claim).**
+  - **Exact match** → an `info` `factual_transcription` finding. A match is
+    **not** a validation — see `MATCH_IS_NOT_VALIDATION`: it confirms only that
+    the recognized tokens transcribe the cited synthetic fact.
+  - **Mismatch** → a `failure` `factual_transcription` finding naming only the
+    broad mismatch *categories* (fixed code slugs: `series_id`,
+    `observation_date`, `value`, `frequency`, `units`,
+    `previous_observation_date`, `previous_value`, `comparison_direction`,
+    `citation_structure`). The finding never reproduces any claim or evidence
+    text or value.
+  - **Unrecognized / unparseable wording** → a `warning` `factual_transcription`
+    finding requiring human citation-support review. This is **never** treated
+    as a pass.
+  - There is no universal "agent passes" or "validated" result at any level:
+    `MacroTranscriptionResult` carries no `passed` / `validated` attribute.
+
+- **Synthetic fixtures only.** `MACRO_TRANSCRIPTION_FIXTURES` covers an exact
+  single-observation match, a wrong value, a wrong date, a wrong series, wrong
+  units + frequency, an incorrect comparison direction, unsupported wording, a
+  comparison whose sentence carries extra unrelated digit runs (which must not
+  be scraped), and an exact comparison match. Every fixture is hand-authored
+  and contains no real claim/evidence text, live-run evidence IDs, live
+  observation values, credentials, or model output (see
+  `fixtures/PROVENANCE.md`).
+
 ## Still not implemented (unchanged boundary below)
 
-The deterministic factual-transcription checks, the lexical-overlap triage, the
-abstention matrix, cross-agent consistency, the repeatability characterization,
-any live-output capture / `--record`, any LLM judge, and the first recorded
-characterization of a real agent all remain to be built. The sections that
-follow are the agreed design for that work.
+A deterministic factual-transcription check for the **Market Evidence Agent**
+and the **News Analyst**, the lexical-overlap triage, the human
+citation-support adjudication, the abstention matrix, cross-agent consistency,
+the repeatability characterization, any live-output capture / `--record`, any
+LLM judge, and the first recorded characterization of a real agent all remain
+to be built. **Phase 0 remains open** (P0-7 unmet). The sections that follow
+are the agreed design for that work.
 
 ## Purpose
 
