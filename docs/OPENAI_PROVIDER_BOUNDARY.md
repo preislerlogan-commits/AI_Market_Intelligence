@@ -591,6 +591,21 @@ against a real failure (making another live request was explicitly out of
 scope for that change). See [docs/MACRO_ANALYST.md](MACRO_ANALYST.md)'s
 "Known limitations" and `PROJECT_STATE.md` for the full, dated record.
 
+**Superseded for the seven-series request shape (2026-08-26).** A later,
+separately authorized post-compaction seven-series Core Macro Basket
+`--execute` run (`FEDFUNDS`, `GS10`, `CPIAUCSL`, `PCEPI`, `UNRATE`,
+`INDPRO`, `GDPC1`) was accepted end to end: the response passed this
+client's SDK-side structured-output re-validation against
+`MacroAnalystModelAnalysis` and then every Macro Analyst post-response
+validator, with `status="completed"`, exactly one request, and no retry
+(`input_tokens=3829`, `output_tokens=3272`, `total_tokens=7101`; model
+`gpt-5-mini`). This does not retract the 2026-08-25 failure above -- that
+attempt genuinely failed and remains recorded -- nor does it recover the
+field/value that failed re-validation then; it only records that this
+request shape has since completed successfully once. See
+[docs/MACRO_ANALYST.md](MACRO_ANALYST.md)'s "Known limitations" and
+`PROJECT_STATE.md` item 34 for the full sanitized record.
+
 ## Known limitations
 
 - **As of 2026-08-23:** no live request or connectivity check had been made
