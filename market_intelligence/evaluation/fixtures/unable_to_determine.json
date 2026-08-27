@@ -1,0 +1,49 @@
+{
+  "adjudications": [
+    {
+      "adjudicated_at": "2026-01-02T03:04:05Z",
+      "citation_id": "cite-1",
+      "claim_id": "claim-alpha",
+      "classification": "supported",
+      "reason": "value_matches_evidence",
+      "reviewer": "reviewer-1",
+      "reviewer_note": null
+    },
+    {
+      "adjudicated_at": "2026-01-02T03:04:05Z",
+      "citation_id": "cite-2",
+      "claim_id": "claim-beta",
+      "classification": "unable_to_determine",
+      "reason": "sanitized_material_insufficient",
+      "reviewer": "reviewer-1",
+      "reviewer_note": null
+    }
+  ],
+  "agent": "macro_analyst",
+  "characterization_label": "synthetic-unable-to-determine",
+  "created_at": "2026-01-02T03:04:05Z",
+  "evidence_fixture_name": "synthetic/redacted-insufficient-shape",
+  "expected_pairs": [
+    {
+      "citation_id": "cite-1",
+      "claim_id": "claim-alpha"
+    },
+    {
+      "citation_id": "cite-2",
+      "claim_id": "claim-beta"
+    }
+  ],
+  "findings": [
+    {
+      "category": "rubric_completeness",
+      "citation_id": "cite-2",
+      "claim_id": "claim-beta",
+      "detail": null,
+      "severity": "info",
+      "summary": "One synthetic pair is unable_to_determine and is preserved as-is."
+    }
+  ],
+  "run_id": "evalrun-209a70c696405a349b7c8274",
+  "schema_version": "evaluation-foundation-1",
+  "summary": "Synthetic characterization where redaction removed what the reviewer needed."
+}

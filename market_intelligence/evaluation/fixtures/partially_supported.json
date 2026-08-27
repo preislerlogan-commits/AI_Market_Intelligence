@@ -1,0 +1,49 @@
+{
+  "adjudications": [
+    {
+      "adjudicated_at": "2026-01-02T03:04:05Z",
+      "citation_id": "cite-1",
+      "claim_id": "claim-alpha",
+      "classification": "supported",
+      "reason": "value_matches_evidence",
+      "reviewer": "reviewer-1",
+      "reviewer_note": null
+    },
+    {
+      "adjudicated_at": "2026-01-02T03:04:05Z",
+      "citation_id": "cite-2",
+      "claim_id": "claim-beta",
+      "classification": "partially_supported",
+      "reason": "claim_adds_unsupported_characterization",
+      "reviewer": "reviewer-1",
+      "reviewer_note": null
+    }
+  ],
+  "agent": "news_analyst",
+  "characterization_label": "synthetic-partially-supported",
+  "created_at": "2026-01-02T03:04:05Z",
+  "evidence_fixture_name": "synthetic/redacted-headline-shape",
+  "expected_pairs": [
+    {
+      "citation_id": "cite-1",
+      "claim_id": "claim-alpha"
+    },
+    {
+      "citation_id": "cite-2",
+      "claim_id": "claim-beta"
+    }
+  ],
+  "findings": [
+    {
+      "category": "citation_support",
+      "citation_id": "cite-2",
+      "claim_id": "claim-beta",
+      "detail": null,
+      "severity": "warning",
+      "summary": "One synthetic claim overstates its synthetic evidence."
+    }
+  ],
+  "run_id": "evalrun-c7f41e7ffe0dbb627177f8ec",
+  "schema_version": "evaluation-foundation-1",
+  "summary": "Synthetic characterization where one claim adds a characterization the evidence lacks."
+}

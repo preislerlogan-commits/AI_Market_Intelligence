@@ -1,12 +1,107 @@
 # Agent Evaluation Harness — Scope Boundary
 
-**Status: planned, not implemented.** This document records the intent and the
-hard boundaries for the offline-first agent evaluation harness named in
+**Status: offline foundation implemented; methodology (P0-7) not complete, and
+no agent has been evaluated.** This document records the intent and the hard
+boundaries for the offline-first agent evaluation harness named in
 [PROJECT_STATE.md](../PROJECT_STATE.md)'s "Next Planned Work" (item 2) and
-[docs/PHASE_0_EXIT.md](PHASE_0_EXIT.md) (criterion P0-7). No harness code,
-tests, fixtures, or CLI exist yet. This file exists so the boundaries are
-agreed before implementation starts; it is documentation only and adds no
-behaviour.
+[docs/PHASE_0_EXIT.md](PHASE_0_EXIT.md) (criterion P0-7).
+
+A first, deliberately narrow slice now exists as code, tests, and synthetic
+fixtures under `market_intelligence/evaluation/` — see "Implemented foundation"
+below. It is **only** the safe, offline data foundation: strict contracts, a
+deterministic rubric-completeness validator, and a symlink-refusing,
+no-overwrite, atomic, bounded local JSON round trip. It performs **no**
+factual-transcription extraction, **no** lexical-overlap scoring, **no**
+repeatability requests, and **no** live-output recording, and it has **not**
+evaluated any agent. There is no factual-transcription result and no
+citation-support adjudication of any real agent output anywhere in this
+repository. The rest of this file remains the agreed boundary for the work
+still to come.
+
+## Implemented foundation (`market_intelligence/evaluation/`)
+
+Added as code, tests, and synthetic fixtures only — no connector, OpenAI, or
+DuckDB access; no agent call; no `--record` flag; no LLM judge; no change to
+any agent, provider, schema, or migration.
+
+- **`contracts.py` — strict Pydantic v2 shapes** (`extra="forbid"`, every
+  string and list bounded, timestamps timezone-aware and normalized to UTC,
+  no field for a raw model response / provider response ID / credential / URL /
+  database path / free metadata dict):
+  - `AgentIdentifier` — `market_evidence` / `news_analyst` / `macro_analyst`.
+  - `FindingSeverity` — `info` / `warning` / `failure`.
+  - `CitationClassification` — `supported` / `partially_supported` /
+    `unsupported` / `unable_to_determine`.
+  - `CitationReason` — the eight fixed reasons from "Citation-support rubric"
+    below (`value_matches_evidence`, `value_absent_from_evidence`,
+    `value_conflicts_with_evidence`, `evidence_is_off_topic`,
+    `claim_adds_unsupported_characterization`,
+    `claim_scope_exceeds_single_observation`,
+    `sanitized_material_insufficient`, `other`).
+  - `FindingCategory` — fixed bounded enum (`factual_transcription`,
+    `citation_support`, `abstention_behavior`, `cross_agent_consistency`,
+    `repeatability`, `rubric_completeness`, `scope_boundary`, `other`).
+  - `ClaimCitationPair`, `CitationAdjudication` (one human adjudication;
+    `reason="other"` requires a short bounded `reviewer_note`, every other
+    reason forbids one; `classification` and `reason` must additionally be a
+    permitted pairing — see "Classification / reason compatibility matrix"
+    below), `EvaluationFinding` (one finding), and `EvaluationRunRecord` (one
+    run) with a locally, deterministically generated `run_id` (`build_run_id`,
+    a digest of agent + label + UTC timestamp — never a provider ID).
+  - `unable_to_determine` is a permitted, permanent classification. Nothing in
+    the contracts or the rubric converts it into a pass or a failure.
+  - `CLASSIFICATION_REASON_MATRIX` — one explicit, immutable
+    (`MappingProxyType` of `frozenset`s) mapping of each `CitationClassification`
+    to the `CitationReason` values it may pair with, enforced by a
+    `CitationAdjudication` model validator. An incompatible pairing raises with
+    the fixed `INCOMPATIBLE_CLASSIFICATION_REASON_MESSAGE`, which never
+    reproduces a reviewer note, an identifier, a path, or record content. See
+    the table in "Classification / reason compatibility matrix" below.
+- **`rubric.py` — deterministic rubric-completeness validator.**
+  `check_rubric_completeness(record)` returns a `RubricCompletenessResult`
+  reporting, with stable lexical ordering, whether every expected
+  (claim, citation) pair has exactly one adjudication, plus any missing,
+  unexpected, duplicate-adjudication, or duplicate-expected pairs. Completeness
+  depends only on the pair sets — never on classifications, reasons, or
+  findings — so a run whose adjudications are entirely
+  `unsupported` / `partially_supported` / `unable_to_determine`, or which
+  carries `failure` findings, is still a valid *completed* characterization.
+  `COMPLETION_IS_NOT_VALIDATION` states plainly that a complete rubric does not
+  mean the agent is validated or that the run universally passes.
+- **`serialization.py` — safe local round trip.** `to_json_str` / `from_json_str`
+  are pure. `write_record(record, path)` takes an explicit caller path, requires
+  the parent directory to already exist, refuses a symlinked target or parent,
+  refuses overwrite unless `overwrite=True`, and writes atomically via a
+  uniquely named temp file in the same directory. `read_record(path)` refuses a
+  symlink and a file larger than `MAX_RECORD_BYTES` before reading. Every
+  failure raises `EvaluationSerializationError` with a fixed message that never
+  contains the path, the file bytes, or the record content. No database write;
+  no automatic output directory.
+- **`fixtures/` — synthetic fixtures only.** Six hand-authored
+  `EvaluationRunRecord` JSON files (fully supported / partially supported /
+  unsupported / unable to determine / incomplete rubric /
+  duplicate-and-unexpected adjudication) plus `PROVENANCE.md`. They contain no
+  real article text, URLs, live-run evidence IDs or observation values,
+  credentials, response IDs, or copied model output, and are not evidence of
+  any agent's quality.
+- **Tests** (`market_intelligence/tests/test_evaluation_*.py`) cover strict
+  enum/schema/bounds behaviour, timezone enforcement, the `other`
+  note-required / note-forbidden rule, the full classification × reason
+  compatibility matrix (a parametrized sweep over every combination, plus
+  direct regressions for the contradictory pairings), every
+  rubric-completeness case, deterministic ordering and JSON round trip,
+  path-traversal / symlink / overwrite / oversized-file / malformed-JSON /
+  leak-sanitization behaviour, synthetic fixture validation, and a static +
+  fresh-interpreter proof that no connector, OpenAI client, database, agent, or
+  network import occurs.
+
+## Still not implemented (unchanged boundary below)
+
+The deterministic factual-transcription checks, the lexical-overlap triage, the
+abstention matrix, cross-agent consistency, the repeatability characterization,
+any live-output capture / `--record`, any LLM judge, and the first recorded
+characterization of a real agent all remain to be built. The sections that
+follow are the agreed design for that work.
 
 ## Purpose
 
@@ -84,6 +179,27 @@ lexical-overlap score.
   - `claim_scope_exceeds_single_observation`
   - `sanitized_material_insufficient`
   - `other` — a short free-text note is required.
+- **Classification / reason compatibility matrix.** The reason must be
+  compatible with the classification. This is a deterministic, closed matrix,
+  encoded as the immutable `CLASSIFICATION_REASON_MATRIX` in
+  `market_intelligence/evaluation/contracts.py` and enforced by a
+  `CitationAdjudication` model validator. It is deliberately the narrowest set
+  that excludes only contradictory pairings:
+
+  | Classification | Allowed reasons |
+  |---|---|
+  | `supported` | `value_matches_evidence`; `other` (+ note) |
+  | `partially_supported` | `value_absent_from_evidence`; `claim_adds_unsupported_characterization`; `claim_scope_exceeds_single_observation`; `other` (+ note) |
+  | `unsupported` | `value_absent_from_evidence`; `value_conflicts_with_evidence`; `evidence_is_off_topic`; `claim_adds_unsupported_characterization`; `claim_scope_exceeds_single_observation`; `other` (+ note) |
+  | `unable_to_determine` | `sanitized_material_insufficient`; `other` (+ note) |
+
+  `other` (with its required bounded note) is the escape hatch for every
+  classification. `unable_to_determine` keeps its own narrow allowed set and
+  remains a valid first-class outcome. An incompatible pairing is rejected with
+  the fixed `INCOMPATIBLE_CLASSIFICATION_REASON_MESSAGE`, which reproduces no
+  reviewer note, identifier, path, or record content. This matrix is a
+  data-shape constraint only — it does not, and cannot, judge whether a chosen
+  classification is *correct*; that remains the human reviewer's call.
 - **Rules.**
   - Review **every** claim in the first characterization, not only low-overlap
     claims.

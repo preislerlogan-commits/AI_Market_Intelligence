@@ -1,0 +1,49 @@
+{
+  "adjudications": [
+    {
+      "adjudicated_at": "2026-01-02T03:04:05Z",
+      "citation_id": "cite-1",
+      "claim_id": "claim-alpha",
+      "classification": "supported",
+      "reason": "value_matches_evidence",
+      "reviewer": "reviewer-1",
+      "reviewer_note": null
+    },
+    {
+      "adjudicated_at": "2026-01-02T03:04:05Z",
+      "citation_id": "cite-2",
+      "claim_id": "claim-beta",
+      "classification": "unsupported",
+      "reason": "evidence_is_off_topic",
+      "reviewer": "reviewer-1",
+      "reviewer_note": null
+    }
+  ],
+  "agent": "market_evidence",
+  "characterization_label": "synthetic-unsupported",
+  "created_at": "2026-01-02T03:04:05Z",
+  "evidence_fixture_name": "synthetic/redacted-price-fact-shape",
+  "expected_pairs": [
+    {
+      "citation_id": "cite-1",
+      "claim_id": "claim-alpha"
+    },
+    {
+      "citation_id": "cite-2",
+      "claim_id": "claim-beta"
+    }
+  ],
+  "findings": [
+    {
+      "category": "citation_support",
+      "citation_id": "cite-2",
+      "claim_id": "claim-beta",
+      "detail": "Synthetic: the cited fact describes a different synthetic series entirely.",
+      "severity": "failure",
+      "summary": "One synthetic claim cites synthetic evidence about a different fact."
+    }
+  ],
+  "run_id": "evalrun-76cab428d19522a90d197090",
+  "schema_version": "evaluation-foundation-1",
+  "summary": "Synthetic characterization where a claim cites off-topic evidence."
+}
