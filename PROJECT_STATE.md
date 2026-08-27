@@ -17,8 +17,8 @@ Last updated: 2026-08-26
 | Orchestration | Deterministic, manually invoked ingestion path: dry-run-first CLI over the three reviewed jobs, per-job failure isolation, fail-closed overlap lock, persistent audit trail; one authorized `--execute` run. Meets the Phase 0 ingestion criterion (with limited-verification caveats). Scheduling, unattended operation, automatic stale-lock recovery, and freshness monitoring are Phase 1 / later and unimplemented. |
 | Model boundary | One OpenAI structured-output client (no tools, no retry, `store=False`); live-connectivity-verified. |
 | Agents | Market Evidence Agent, News Analyst, seven-series Macro Analyst. Each has exactly one accepted live run. Non-directional guarantee is structurally enforced. |
-| Trust layer | **Partial — offline foundation only; P0-7 not met.** `market_intelligence/evaluation/` now provides the safe, offline foundation for the methodology: strict Pydantic v2 contracts (agent/severity/citation-classification/citation-reason/finding-category enums, one finding, one human citation adjudication, one evaluation-run record), a deterministic rubric-completeness validator, a symlink-refusing / no-overwrite / atomic / bounded local JSON round trip, and synthetic fixtures. It performs **no** factual-transcription extraction, **no** lexical-overlap scoring, **no** repeatability requests, and **no** live-output recording. **No agent has been evaluated; no factual-transcription or citation-support result of any real agent output exists.** Completing P0-7 (the factual-transcription checks, the human rubric applied to a real first characterization, and preserved findings) remains the **only remaining blocker to closing Phase 0** (see [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md) and [docs/AGENT_EVALUATION_HARNESS.md](docs/AGENT_EVALUATION_HARNESS.md)). |
-| Test baseline | 2,268 tests (`python -m pytest`): 2,266 passing, 2 skipped (the evaluation-foundation symlink-refusal tests skip where the OS disallows creating a symlink). |
+| Trust layer | **Partial — offline foundation + first Macro-only transcription check; P0-7 not met.** `market_intelligence/evaluation/` provides the safe, offline foundation for the methodology: strict Pydantic v2 contracts (agent/severity/citation-classification/citation-reason/finding-category enums, one finding, one human citation adjudication, one evaluation-run record), a deterministic rubric-completeness validator, a symlink-refusing / no-overwrite / atomic / bounded local JSON round trip, and synthetic fixtures. It now **also** provides the **first deterministic factual-transcription check — Macro Analyst only, over synthetic inputs** (`macro_factual_transcription.py`): it recognizes only the two exact controlled Macro Analyst statement forms (single stored observation; increase/decrease/unchanged two-observation comparison), verifies series ID / observation date / `Decimal` value / frequency wording / units-when-stated / previous observation / comparison direction, and emits one `info` (exact match — *not* a validation) / `failure` (mismatch, broad category only, no text reproduced) / `warning` (unrecognized wording → human review) finding. It still performs **no** lexical-overlap scoring, **no** citation-support adjudication, **no** abstention matrix, **no** cross-agent or repeatability checks, **no** live-output recording, and **no** transcription check for the Market Evidence Agent or News Analyst. **No real agent output has been evaluated; no factual-transcription result of any live agent run and no citation-support adjudication of any real agent output exists; no first characterization has been recorded.** Completing P0-7 (the remaining factual-transcription checks, the human rubric applied to a real first characterization covering every claim, and preserved findings) remains the **only remaining blocker to closing Phase 0** (see [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md) and [docs/AGENT_EVALUATION_HARNESS.md](docs/AGENT_EVALUATION_HARNESS.md)). |
+| Test baseline | `python -m pytest`: **2,335 passed, 2 skipped** (2,337 collected). The 2 skipped are the evaluation-foundation symlink-refusal tests, which skip where the OS disallows creating a symlink; they are not passing tests. |
 | Not built | Predictive/forecast model, forecast records, agent orchestrator / combined brief, dashboard, trade journal, options-data pipeline, scheduler, brokerage execution. |
 
 ## Current Phase
@@ -3659,6 +3659,100 @@ entry describes something that has already been built, ingested, or attempted;
     parametrized sweep plus contradictory-pair regressions. No other
     behavioural change.
 
+36. **First deterministic factual-transcription check added — Macro Analyst
+    only, offline/synthetic (2026-08-26, code/tests/synthetic fixtures/docs
+    only — no connector, OpenAI, DuckDB, agent, orchestration, migration,
+    schema, dependency, or `.env` change; no live request; no agent-behaviour
+    change; no commit or push).** This is *further partial* progress on P0-7
+    (see [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md) and
+    [docs/AGENT_EVALUATION_HARNESS.md](docs/AGENT_EVALUATION_HARNESS.md)).
+    **Phase 0 remains open; P0-7 is not met.**
+
+    `market_intelligence/evaluation/macro_factual_transcription.py` adds a pure
+    evaluator (`evaluate_macro_transcription`) taking one evaluation-specific
+    input — a sanitized local `claim_id`, the claim's declared
+    `claim_series_id`, the `claim_summary` string, and one or two cited
+    *synthetic* evidence facts (`series_id`, `observation_date`, a `Decimal`
+    `value`, a `frequency` word, optional `units`). It imports no connector,
+    database, OpenAI client, or agent runtime and makes no network request
+    (the existing `test_evaluation_offline.py` AST + fresh-interpreter guard
+    now also covers it).
+
+    **Exact supported grammar (the only two recognized forms).** Both are
+    matched by a single fully anchored regular expression with fixed
+    connective text — no generic number scraping, no fuzzy/semantic matching:
+
+    - single stored observation —
+      `The stored <frequency> observation dated <YYYY-MM-DD> (is|was) <value>[ <units>][, per official FRED metadata|, as stored].`
+    - two-observation comparison, in the Macro Analyst's canonical wording
+      (latest observation first, then the immediately preceding one, one
+      direction verb) —
+      `The stored <frequency> observation dated <latest-date> was <latest-value>; it (increased|decreased) from the stored <frequency> observation dated <previous-date>, which was <previous-value>[, …].`
+      plus the unchanged variant
+      `The stored <frequency> observation dated <latest-date> was <latest-value>; it was unchanged from the stored <frequency> observation dated <previous-date>, which was <previous-value>[, …].`
+      There is no `Comparing the stored observations dated X and Y, …` form —
+      that phrasing is not part of the canonical wording and is reported as
+      unrecognized.
+
+    `<frequency>` ∈ {`daily`, `weekly`, `biweekly`, `monthly`, `quarterly`,
+    `semiannual`, `annual`} (the seven words the Macro Analyst's own
+    `FREQUENCY_SHORT_WORDS` maps to); `<units>` is a fixed closed vocabulary.
+    Every value/date token is read from a named capture group, so extra digit
+    runs elsewhere in a recognized sentence are never scraped.
+
+    **Deterministic verification:** declared `claim_series_id` vs every cited
+    fact's `series_id`; observation date; `Decimal` value (numeric equality,
+    tolerant of trailing-zero formatting); frequency word; units *only when the
+    claim states them*; for a comparison, the previous observation's date and
+    value (facts ordered previous→latest by `observation_date`) and that the
+    stated `increased`/`decreased`/`unchanged` direction agrees with the two
+    cited values.
+
+    **Evaluator outcomes (one `EvaluationFinding` per claim):**
+    - exact match → an `info` `factual_transcription` finding.
+      `MATCH_IS_NOT_VALIDATION` states this is *not* a validation — it confirms
+      only that the recognized tokens transcribe the cited synthetic fact.
+    - mismatch → a `failure` finding naming only broad category slugs
+      (`series_id`, `observation_date`, `value`, `frequency`, `units`,
+      `previous_observation_date`, `previous_value`, `comparison_direction`,
+      `citation_structure`) — never any claim or evidence text or value.
+    - unrecognized / unparseable wording → a `warning` finding requiring human
+      citation-support review; **never** treated as a pass.
+    - no universal "agent passes"/"validated" result: `MacroTranscriptionResult`
+      has no `passed`/`validated` attribute.
+
+    **Synthetic fixtures** (`fixtures/macro_transcription.py`,
+    `MACRO_TRANSCRIPTION_FIXTURES`): exact single-observation match; wrong
+    value; wrong date; wrong series; wrong units + frequency; incorrect
+    comparison direction; unsupported wording; a comparison sentence carrying
+    extra unrelated digit runs (which must not be scraped); and an exact
+    comparison match. All hand-authored — no real claim/evidence text, live
+    evidence IDs, live observation values, credentials, or model output (see
+    `fixtures/PROVENANCE.md`).
+
+    **Tests** (`market_intelligence/tests/test_evaluation_macro_transcription.py`,
+    57 tests, all passing): every fixture's outcome/form/categories and finding
+    severity; the two-forms-only canonical grammar (recognized phrasings match;
+    everything else — including the non-canonical `Comparing the stored
+    observations dated X and Y, …` form and paraphrase verbs like "has a value
+    of" — is routed to human review); units-only-when-stated; `Decimal`
+    trailing-zero tolerance; extra numbers not scraped; comparison direction
+    agreement and the unchanged variant; previous-observation date/value checks;
+    citation-structure guards; input bounds (`cited_facts` 1–2, frequency
+    enum, ISO-date validation, `claim_summary` length, `extra="forbid"`);
+    deterministic equality and batch input-order preservation; and that no
+    finding (`model_dump_json`) reproduces a synthetic claim value or date.
+
+    **What this establishes and what it does not.** It establishes that a
+    deterministic, non-scraping, fail-closed transcription check for the two
+    controlled Macro Analyst statement forms exists and behaves as documented
+    against synthetic inputs. **It does not evaluate any real agent output.**
+    Citation-support adjudication, the same check for the Market Evidence Agent
+    and News Analyst, lexical-overlap triage, the abstention matrix,
+    cross-agent consistency, repeatability, and — the actual closure condition
+    — a recorded first characterization of a real agent covering every claim
+    all remain unimplemented. Phase 0 stays open.
+
 ## Next Planned Work
 
 This is the forward plan. It replaces the historical content now under
@@ -3687,16 +3781,24 @@ This is the forward plan. It replaces the historical content now under
    adjudication, one evaluation-run record with a locally, deterministically
    generated run ID), a deterministic rubric-completeness validator, pure
    JSON helpers plus a symlink-refusing / no-overwrite / atomic / bounded
-   local file round trip, and six synthetic fixtures. See item 35 in the
-   Completed Work Log. **This PR did not evaluate any agent** and added no
-   factual-transcription extraction, lexical-overlap scoring, repeatability
-   requests, live-output recording, `--record` flag, or LLM judge. What
-   remains for P0-7: the deterministic factual-transcription checks, the
-   lexical-overlap triage, the abstention matrix, cross-agent consistency,
-   the repeatability characterization, and — the actual closure condition —
-   at least one recorded first characterization of a real agent, covering
-   every claim, with findings / failures / `unable_to_determine` results
-   preserved.
+   local file round trip, and six synthetic fixtures (see item 35), **plus**
+   the first deterministic factual-transcription check — Macro Analyst only,
+   over synthetic claim/evidence inputs
+   (`macro_factual_transcription.py`): it recognizes only the two exact
+   controlled Macro Analyst statement forms, verifies series ID / observation
+   date / `Decimal` value / frequency wording / units-when-stated / previous
+   observation / comparison direction, and emits one `info` (match, *not* a
+   validation) / `failure` (mismatch, broad category only) / `warning`
+   (unrecognized wording → human review) finding (see item 36). See items 35
+   and 36 in the Completed Work Log. **No PR to date has evaluated any real
+   agent output**, and none added lexical-overlap scoring, a `--record` flag,
+   or an LLM judge. What remains for P0-7: the same deterministic
+   factual-transcription check for the Market Evidence Agent and News Analyst,
+   the human citation-support adjudication, the lexical-overlap triage, the
+   abstention matrix, cross-agent consistency, the repeatability
+   characterization, and — the actual closure condition — at least one
+   recorded first characterization of a real agent, covering every claim, with
+   findings / failures / `unable_to_determine` results preserved.
    [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md), criterion P0-7, and
    [docs/AGENT_EVALUATION_HARNESS.md](docs/AGENT_EVALUATION_HARNESS.md)). The
    three agents each have exactly one accepted live run; there is no
