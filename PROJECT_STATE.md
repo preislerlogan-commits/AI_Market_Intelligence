@@ -3972,8 +3972,9 @@ entry describes something that has already been built, ingested, or attempted;
     rerun; no commit or push. All real artifacts live only under gitignored
     `data/evaluations/local/` and are not committed.
 
-    - **Session 1 — build.** The accepted seven-claim Macro report (series
-      `UNRATE`, `CPIAUCSL`, `INDPRO`, `FEDFUNDS`, `GS10`, `GDPC1`, `PCEPI`; each
+    - **Session 1 — build.** The accepted seven-claim Macro report (one claim
+      per Core Macro Basket series — `FEDFUNDS`, `GS10`, `CPIAUCSL`, `PCEPI`,
+      `UNRATE`, `INDPRO`, `GDPC1`; each
       claim a two-observation comparison citing two evidence IDs, 14 IDs total)
       was resolved against the real `macro_observations` / `macro_series_metadata`
       rows: all 14 cited evidence IDs exist. Only the sanitized evidence facts
@@ -3990,7 +3991,7 @@ entry describes something that has already been built, ingested, or attempted;
       worksheet with all 14 pairs (blank classification / reason / note) was
       produced for the reviewer; no classification was generated, recommended,
       inferred, or prefilled.
-    - **Session 2 — completion.** Reviewer Logan Preisler adjudicated all 14
+    - **Session 2 — completion.** The human reviewer adjudicated all 14
       pairs as `partially_supported` / `claim_scope_exceeds_single_observation`
       with no reviewer note. A `MacroAdjudicationInput` (scaffold `run_id` + 14
       `CitationAdjudication` records, claim/citation IDs copied exactly from the

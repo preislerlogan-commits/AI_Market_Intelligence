@@ -708,8 +708,21 @@ the same as a described observation being factually correct.** A
 syntactically valid, correctly-cited, policy-passing `MacroAnalystReport`
 only proves the model followed the citation, shape, series, content-scope,
 and known-phrasing rules -- it is not a claim that any `claim_summary`
-accurately transcribes the underlying stored value or metadata. No automated
-evaluation of factual accuracy exists in this repository.
+accurately transcribes the underlying stored value or metadata. A narrow,
+deterministic factual-transcription check does now exist for the recognized
+Macro claim grammar
+(`market_intelligence/evaluation/macro_factual_transcription.py` -- see
+[AGENT_EVALUATION_HARNESS.md](AGENT_EVALUATION_HARNESS.md)): for the two exact
+controlled claim forms it recognizes (single stored observation;
+increase/decrease/unchanged two-observation comparison), it checks that a
+claim's stated series ID, observation date, `Decimal` value, frequency wording,
+units-when-stated, and -- for a comparison -- the previous observation and
+direction match the cited stored evidence, emitting `info` on an exact match,
+`failure` on a mismatch, or `warning` on wording it does not recognize. This is
+**not** general semantic verification, source-truth validation, agent
+validation, or proof of factual accuracy: an exact match is explicitly not a
+validation, unrecognized wording is deferred to human review, and no check of
+this kind exists for any other agent.
 
 An *offline* workflow to **characterize** one Macro Analyst report exists
 (`market_intelligence/evaluation/macro_characterization_workflow.py`,
