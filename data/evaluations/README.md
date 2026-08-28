@@ -43,6 +43,13 @@ characterization inputs and outputs.
 
 ## Status
 
-**No real characterization has been performed.** The offline workflow exists;
-P0-7 and Phase 0 remain open. The next step after this workflow merges is one
-separately authorized local characterization run.
+**The first real characterization has been performed and recorded (2026-08-28):**
+the first human-reviewed offline Macro Analyst characterization — 14 claim/
+citation pairs, 14 human adjudications, rubric complete, all pairs
+`partially_supported`. This satisfied criterion P0-7 and **Phase 0 is closed**
+(see [`docs/PHASE_0_EXIT.md`](../../docs/PHASE_0_EXIT.md) and
+[`docs/AGENT_EVALUATION_HARNESS.md`](../../docs/AGENT_EVALUATION_HARNESS.md)). It
+is not a claim that the Macro Analyst or any other agent is validated, accurate,
+repeatable, or profitable, and only the Macro Analyst has been characterized.
+Its real input/scaffold/adjudication/completed-record artifacts live here under
+`local/` and remain gitignored and uncommitted.
