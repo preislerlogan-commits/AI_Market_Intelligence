@@ -1,34 +1,50 @@
 # Agent Evaluation Harness — Scope Boundary
 
-**Status: offline foundation implemented; the first (Macro-Analyst-only)
-deterministic factual-transcription check implemented over synthetic inputs;
-the offline Macro characterization workflow (builder + completion step + a
-build CLI and a completion CLI) implemented over synthetic inputs; methodology
-(P0-7) not complete, and no real agent output has been evaluated — no real
-characterization has been performed.**
+**Status: offline foundation implemented; the Macro-Analyst-only deterministic
+factual-transcription check implemented; the offline Macro characterization
+workflow (builder + completion step + a build CLI and a completion CLI)
+implemented. The first real, human-reviewed offline Macro Analyst
+characterization was completed and recorded on 2026-08-28 — this satisfies
+criterion P0-7 and Phase 0 is closed. "Rubric complete" is not "supported" and
+is not "validated"; no agent is validated by this, and only the Macro Analyst
+has been characterized.**
 This document records the intent and the hard boundaries for the offline-first
 agent evaluation harness named in
-[PROJECT_STATE.md](../PROJECT_STATE.md)'s "Next Planned Work" (item 2) and
+[PROJECT_STATE.md](../PROJECT_STATE.md)'s "Next Planned Work" and
 [docs/PHASE_0_EXIT.md](PHASE_0_EXIT.md) (criterion P0-7).
 
-Two deliberately narrow slices now exist as code, tests, and synthetic
-fixtures under `market_intelligence/evaluation/` — see "Implemented foundation"
-and "Implemented: Macro Analyst deterministic factual-transcription check"
-below. Together they provide the safe, offline data foundation (strict
-contracts, a deterministic rubric-completeness validator, a symlink-refusing,
-no-overwrite, atomic, bounded local JSON round trip) **plus** the first
-deterministic factual-transcription check — Macro Analyst only, exercised only
-against hand-authored synthetic claim/evidence inputs.
+The narrow slices under `market_intelligence/evaluation/` — see "Implemented
+foundation" and "Implemented: Macro Analyst deterministic
+factual-transcription check" below — provide the safe, offline data foundation
+(strict contracts, a deterministic rubric-completeness validator, a
+symlink-refusing, no-overwrite, atomic, bounded local JSON round trip) **plus**
+the deterministic factual-transcription check (Macro Analyst only) **plus** the
+offline Macro characterization workflow.
 
-They still perform **no** lexical-overlap scoring, **no** citation-support
-adjudication, **no** abstention matrix, **no** cross-agent consistency, **no**
-repeatability requests, **no** live-output recording, and **no**
-factual-transcription check for the Market Evidence Agent or News Analyst, and
-**no real agent output has been evaluated**. There is no factual-transcription
-result of any live agent run and no citation-support adjudication of any real
-agent output anywhere in this repository, and no first characterization has
-been recorded. The rest of this file remains the agreed boundary for the work
-still to come.
+**First real characterization (2026-08-28).** Using only these existing
+workflows, one accepted seven-claim Macro Analyst report was characterized:
+14 expected claim/citation pairs, 14 human adjudications (one per pair, none
+missing/duplicated/unexpected), `rubric_complete: true`, classification tally
+`supported: 0` / `partially_supported: 14` / `unsupported: 0` /
+`unable_to_determine: 0`, all 14 reasons `claim_scope_exceeds_single_observation`,
+finding tally `info: 8` / `warning: 0` / `failure: 0` (seven exact
+factual-transcription matches; one preserved scope-boundary information
+finding). Every classification was the human reviewer's; no LLM judge generated,
+recommended, or changed one; no live request and no Macro Analyst rerun
+occurred. The real input, scaffold, adjudication, and completed-record
+artifacts are gitignored under `data/evaluations/local/` and are not committed.
+**A complete rubric is not a statement that any citation is `supported`, and
+neither is a statement that the Macro Analyst is validated, accurate,
+repeatable, or profitable** (see "Citation-support rubric (human review)" and
+"Out of scope for the first version" below).
+
+The harness still performs **no** lexical-overlap scoring, **no** abstention
+matrix, **no** cross-agent consistency, **no** repeatability requests, **no**
+live-output recording, and **no** factual-transcription check or
+citation-support adjudication for the Market Evidence Agent or News Analyst.
+Those, plus repeatability studies and broader evaluation, remain future work;
+they do **not** reopen Phase 0. The rest of this file remains the agreed
+boundary for that work.
 
 ## Implemented foundation (`market_intelligence/evaluation/`)
 
@@ -310,23 +326,27 @@ characterization has been performed**.
 
 **What this does and does not establish.** It establishes that an offline
 workflow to build and complete one Macro characterization record exists and
-behaves as documented against synthetic inputs. It does **not** evaluate any
-real agent output. Citation-support adjudication of real output, the
-lexical-overlap triage, the abstention matrix, cross-agent consistency,
-repeatability, the same transcription check for the Market Evidence Agent and
-News Analyst, and — the actual closure condition — a recorded first
-characterization of a real agent covering every claim all remain unimplemented.
-**Phase 0 remains open (P0-7 unmet).** The next step after this workflow merges
-is one separately authorized local characterization run.
+behaves as documented. It was first exercised against synthetic inputs, and on
+**2026-08-28 it was used for the first real, human-reviewed Macro Analyst
+characterization** (see the "First real characterization" note near the top of
+this document) — which **satisfies P0-7 and closes Phase 0**. It does **not**
+evaluate the Market Evidence Agent or News Analyst, and it does not certify the
+Macro Analyst. Citation-support adjudication of the other agents' real output,
+the lexical-overlap triage, the abstention matrix, cross-agent consistency, the
+repeatability characterization, and the same transcription check for the Market
+Evidence Agent and News Analyst all remain unimplemented — as future work that
+does **not** reopen Phase 0.
 
 ## Still not implemented (unchanged boundary below)
 
 A deterministic factual-transcription check for the **Market Evidence Agent**
 and the **News Analyst**, the lexical-overlap triage, the human
-citation-support adjudication, the abstention matrix, cross-agent consistency,
-the repeatability characterization, any live-output capture / `--record`, any
-LLM judge, and the first recorded characterization of a real agent all remain
-to be built. **Phase 0 remains open** (P0-7 unmet). The sections that follow
+citation-support adjudication of those two agents' real output, the abstention
+matrix, cross-agent consistency, the repeatability characterization, any
+live-output capture / `--record`, and any LLM judge all remain to be built.
+The first recorded characterization of a real agent — the Macro Analyst — was
+completed on 2026-08-28, so **P0-7 is met and Phase 0 is closed**; the items
+listed here are future work that does not reopen it. The sections that follow
 are the agreed design for that work.
 
 ## Purpose
@@ -468,18 +488,25 @@ lexical-overlap score.
   [MARKET_EVIDENCE_AGENT.md](MARKET_EVIDENCE_AGENT.md),
   [NEWS_ANALYST.md](NEWS_ANALYST.md), [MACRO_ANALYST.md](MACRO_ANALYST.md)).
 
-## What Phase 0 closure requires of this work (P0-7)
+## What Phase 0 closure required of this work (P0-7) — satisfied 2026-08-28
 
-Closing Phase 0 on P0-7 requires all of:
+Closing Phase 0 on P0-7 required all of:
 
 - the deterministic factual-transcription harness and the human
-  citation-support rubric above both exist and are documented;
+  citation-support rubric above both exist and are documented — **done**;
 - at least one first characterization has been completed and recorded,
-  covering every claim in that characterization (not only low-overlap claims);
-- its findings, failures, and `unable_to_determine` results are preserved.
+  covering every claim in that characterization (not only low-overlap claims)
+  — **done: the Macro Analyst characterization of 2026-08-28, 14 pairs, 14
+  human adjudications, rubric complete**;
+- its findings, failures, and `unable_to_determine` results are preserved —
+  **done: `info: 8` / `warning: 0` / `failure: 0`, all preserved; no
+  `unable_to_determine` was recorded, and the classification is preserved
+  exactly as the reviewer chose it**.
 
-It does **not** require that every agent passes, and it does not imply the
-agents are validated. See [PHASE_0_EXIT.md](PHASE_0_EXIT.md), criterion P0-7.
+It did **not** require that every agent passes, and it does **not** imply any
+agent is validated, accurate, repeatable, or profitable — only that the
+methodology exists and has been exercised once on real output. See
+[PHASE_0_EXIT.md](PHASE_0_EXIT.md), criterion P0-7.
 
 ## Out of scope for the first version
 

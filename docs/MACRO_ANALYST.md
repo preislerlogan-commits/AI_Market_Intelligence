@@ -711,15 +711,33 @@ and known-phrasing rules -- it is not a claim that any `claim_summary`
 accurately transcribes the underlying stored value or metadata. No automated
 evaluation of factual accuracy exists in this repository.
 
-An *offline* workflow to **characterize** one Macro Analyst report now exists
+An *offline* workflow to **characterize** one Macro Analyst report exists
 (`market_intelligence/evaluation/macro_characterization_workflow.py`,
-`scripts/characterize_macro_report.py` -- see
+`scripts/characterize_macro_report.py`,
+`scripts/complete_macro_characterization.py` -- see
 [AGENT_EVALUATION_HARNESS.md](AGENT_EVALUATION_HARNESS.md)): it runs the
-deterministic Macro factual-transcription check for every claim and produces one
+deterministic Macro factual-transcription check for every claim, produces one
 pending human citation-support adjudication template per expected claim/citation
-pair. It makes no live request and no database access, it is exercised only
-against synthetic fixtures, and **no real characterization has been performed**
--- P0-7 and Phase 0 remain open.
+pair, and records the completed human adjudications onto the scaffold. It makes
+no live request and no database access beyond a read-only lookup to resolve
+cited evidence records.
+
+**First real characterization (2026-08-28).** One accepted seven-claim Macro
+Analyst report (each claim a two-observation comparison) was characterized with
+this workflow: 14 expected claim/citation pairs, 14 human adjudications (one per
+pair -- none missing, duplicated, or unexpected), `rubric_complete: true`,
+classification tally `supported: 0` / `partially_supported: 14` /
+`unsupported: 0` / `unable_to_determine: 0`, all 14 reasons
+`claim_scope_exceeds_single_observation`, finding tally `info: 8` / `warning: 0`
+/ `failure: 0` (seven exact factual-transcription matches; one preserved
+scope-boundary information finding). Every classification was the human
+reviewer's; no LLM judge generated, recommended, or changed one; no live request
+and no Macro Analyst rerun occurred. All 14 pairs are `partially_supported`
+because a two-observation comparison depends on both cited observations while
+each individual pair carries only one. This **satisfies P0-7 and closes Phase
+0** -- it is **not** a claim that any `claim_summary` is factually accurate or
+that the Macro Analyst is validated, repeatable, or profitable. The real
+artifacts are gitignored under `data/evaluations/local/` and are not committed.
 
 ## Error categories
 

@@ -10,19 +10,21 @@ so the design is agreed before implementation begins. It is subordinate to
 
 ## Relationship to Phase 0
 
-Phase 0 (Infrastructure Foundation) is **not closed**. Its single remaining
-requirement is unchanged by this document:
+Phase 0 (Infrastructure Foundation) is **closed as of 2026-08-28**. Its final
+requirement was met:
 
-- Complete and record **one real, human-reviewed offline agent
-  characterization**, covering every claim, with findings, failures, and
-  `unable_to_determine` results preserved (criterion P0-7 — see
-  [docs/PHASE_0_EXIT.md](PHASE_0_EXIT.md) and
+- one real, human-reviewed offline agent characterization — the Macro Analyst
+  characterization of 2026-08-28, covering every claim, with findings preserved
+  (criterion P0-7 — see [docs/PHASE_0_EXIT.md](PHASE_0_EXIT.md) and
   [docs/AGENT_EVALUATION_HARNESS.md](AGENT_EVALUATION_HARNESS.md)).
 
-**No options work begins until Phase 0 is closed.** This roadmap must not be
-used to justify starting options implementation early, and Phase 0 closure
-must not be delayed, rescoped, or blocked by anything below. The first
-implementation step (below) is closing Phase 0.
+Phase 0 closure means the required infrastructure and the required
+agent-evaluation methodology exist and have each been exercised and recorded
+once. It is **not** a claim that any agent — the future Options Strategy Agent
+included — is validated, accurate, repeatable, or profitable, and **no options
+component in this document is implemented or validated**. With Phase 0 closed,
+**Phase 1 may begin; its first implementation step is step b below (read-only
+SPY option-chain ingestion and local storage)**.
 
 ## Phase 1 objective
 
@@ -219,10 +221,12 @@ Each step is a separate, individually reviewed change. Do not begin a step
 before the previous one is complete and recorded.
 
 - **a.** Close Phase 0 by completing and recording the first real agent
-  characterization (P0-7).
-- **b.** Add **read-only** option-chain ingestion and local storage (SPY
-  only) — its own reviewed connector, sanitized, no execution surface,
-  following the existing connector/storage patterns.
+  characterization (P0-7). **Done — the Macro Analyst characterization of
+  2026-08-28; Phase 0 is closed.**
+- **b.** *(now the first Phase 1 step)* Add **read-only** option-chain
+  ingestion and local storage (SPY only) — its own reviewed connector,
+  sanitized, no execution surface, following the existing connector/storage
+  patterns.
 - **c.** Build the deterministic SPY intraday feature/regime engine (the
   feature set and classifier above). No model.
 - **d.** Test the VWAP-extension / reversion hypothesis on the underlying

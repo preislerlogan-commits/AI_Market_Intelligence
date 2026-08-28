@@ -54,19 +54,25 @@ of the current design.
 
 ## Roadmap
 
-Phase 0 (Infrastructure Foundation) is **not closed**; its one remaining
-requirement is a recorded first real, human-reviewed agent characterization
-(see [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md)).
+Phase 0 (Infrastructure Foundation) is **closed as of 2026-08-28**. Its final
+criterion (P0-7) was met when the first real, human-reviewed offline Macro
+Analyst characterization was completed and recorded (14 claim/citation pairs,
+14 human adjudications, rubric complete, all pairs `partially_supported`; see
+[docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md)). Closure means the required
+infrastructure and the required agent-evaluation methodology exist and have each
+been exercised and recorded — it is **not** a claim that any agent is
+validated, universally accurate, repeatable, or profitable, and only the Macro
+Analyst has been characterized so far.
 
-**Phase 1 (design recorded, not started): an automated, evidence-based SPY
+**Phase 1 (design recorded, ready to begin): an automated, evidence-based SPY
 options decision-support workflow** — deterministic evidence gathering and
 intraday regime classification, deterministic option-contract eligibility
 filtering, and then a bounded strategy agent that consumes only the
 validated structured outputs of the upstream stages plus the deterministic
 selector's eligible contract set and can return `no_trade`, followed by a
 recorded evaluation before any claim of usefulness. No options code,
-connector, or agent exists yet, and no options work begins until Phase 0 is
-closed. Design:
+connector, or agent exists yet. With Phase 0 closed, the first implementation
+step is **read-only SPY option-chain ingestion and local storage**. Design:
 [docs/OPTIONS_DECISION_WORKFLOW.md](docs/OPTIONS_DECISION_WORKFLOW.md).
 Manual-only execution is unchanged. The three existing analysis agents
 (Market Evidence, News, Macro) stay non-directional; the future Options
@@ -95,6 +101,13 @@ The Python environment, runtime/dev dependencies, and settings layer
   Macro Analyst) exist. Each has produced exactly one accepted live run. That
   proves bounded execution works once; it does not establish factual accuracy,
   repeatability, or predictive value.
+- **A repeatable agent-evaluation methodology** (deterministic
+  factual-transcription harness + human citation-support rubric) exists and has
+  been exercised once on real output: the first offline Macro Analyst
+  characterization (2026-08-28) — 14 claim/citation pairs, 14 human
+  adjudications, rubric complete, all pairs `partially_supported`. This is not
+  agent validation; only the Macro Analyst has been characterized. The real
+  artifacts are kept local and gitignored.
 
 None of the following exists: a predictive/forecasting model, a
 forecast-recording system, an agent orchestrator or combined market-intelligence

@@ -4,30 +4,48 @@ This document is the **authoritative source of truth** for the current status
 of AI Market Intelligence. It must be read before beginning any work in this
 repository, and updated whenever the project's status materially changes.
 
-Last updated: 2026-08-27
+Last updated: 2026-08-28
 
 ## Current State at a Glance
 
 | Area | Status |
 |---|---|
-| Phase | **Phase 0 — Infrastructure Foundation. Not closed.** |
+| Phase | **Phase 0 — Infrastructure Foundation. Closed 2026-08-28.** Phase 1 (SPY options decision-support workflow) design is recorded and may begin; its first implementation step is read-only SPY option-chain ingestion and local storage. Closure is not a validation, accuracy, repeatability, or profitability claim for any agent, and does not mean every agent has been characterized. |
 | Storage | Local DuckDB, healthy at schema version `0008` (8 migrations). |
 | Data connectors | Read-only Alpaca (bars, news, market-data snapshot) and FRED (observations, series metadata). No order/account/execution methods exist. |
 | Ingested data | SPY 5-minute IEX bars (~3 trading days); ~20 SPY news articles; 7 FRED macro series (FEDFUNDS, GS10, CPIAUCSL, PCEPI, UNRATE, INDPRO, GDPC1) observations + metadata. Each is one bounded ingestion run with limited coverage — none is complete, gap-free, or validated. |
 | Orchestration | Deterministic, manually invoked ingestion path: dry-run-first CLI over the three reviewed jobs, per-job failure isolation, fail-closed overlap lock, persistent audit trail; one authorized `--execute` run. Meets the Phase 0 ingestion criterion (with limited-verification caveats). Scheduling, unattended operation, automatic stale-lock recovery, and freshness monitoring are Phase 1 / later and unimplemented. |
 | Model boundary | One OpenAI structured-output client (no tools, no retry, `store=False`); live-connectivity-verified. |
 | Agents | Market Evidence Agent, News Analyst, seven-series Macro Analyst. Each has exactly one accepted live run. Non-directional guarantee is structurally enforced. |
-| Trust layer | **Partial — offline foundation + first Macro-only transcription check + offline Macro characterization workflow; P0-7 not met.** `market_intelligence/evaluation/` provides the safe, offline foundation for the methodology: strict Pydantic v2 contracts (agent/severity/citation-classification/citation-reason/finding-category enums, one finding, one human citation adjudication, one evaluation-run record), a deterministic rubric-completeness validator, a symlink-refusing / no-overwrite / atomic / bounded local JSON round trip, and synthetic fixtures. It **also** provides the **first deterministic factual-transcription check — Macro Analyst only, over synthetic inputs** (`macro_factual_transcription.py`): it recognizes only the two exact controlled Macro Analyst statement forms (single stored observation; increase/decrease/unchanged two-observation comparison), verifies series ID / observation date / `Decimal` value / frequency wording / units-when-stated / previous observation / comparison direction, and emits one `info` (exact match — *not* a validation) / `failure` (mismatch, broad category only, no text reproduced) / `warning` (unrecognized wording → human review) finding. It **also** provides the **offline Macro characterization workflow** (`macro_characterization_input.py`, `macro_characterization_workflow.py`, `scripts/characterize_macro_report.py`): a strict local input contract (sanitized label; Macro claim IDs; claim series IDs and summaries; the sanitized evaluation evidence facts the transcription evaluator needs; expected claim/citation pairs — and nothing else), a pure builder that runs the transcription check for every claim, creates an `EvaluationRunRecord` carrying those findings, and emits one pending human-adjudication template per expected pair (never pre-classifying citation support, never treating a transcription match as citation support), a pure completion step that attaches completed human adjudications only when every expected pair has exactly one (refusing missing/duplicate/unexpected pairs; completion is not validation), a dry-run-first, offline, explicit-path **build CLI** (`scripts/characterize_macro_report.py`: `--write` required, no overwrite, no directory creation; with `--write` the resolved output path must be strictly inside gitignored `data/evaluations/local/`, and repository-root, tracked-directory, outside-repository, `..`-traversal, and symlink-escape targets are refused; dry-run behavior is unchanged), and a dry-run-first, offline **completion CLI** (`scripts/complete_macro_characterization.py`: a strict `MacroAdjudicationInput` contract — only the scaffold `run_id` plus a bounded human `CitationAdjudication` list, `extra="forbid"`, no credential/URL/response-ID/path/raw-evidence/model-reasoning/metadata field; `--record`/`--adjudications`/`--output` all confined strictly inside `data/evaluations/local/`; requires the adjudication `run_id` to match the scaffold; records human decisions only, no LLM judge, all four classifications preserved; sanitized counts/classification-tally output only — never a reviewer note, claim ID, citation ID, path, or record text; `--write` required to serialize, no overwrite, no directory creation). Committed fixtures and tests remain synthetic-only; real sanitized evidence facts may be used only through the explicit local characterization workflow under gitignored `data/evaluations/local/`, and real characterization inputs and outputs must never be committed. It still performs **no** lexical-overlap scoring, **no** citation-support adjudication of real output, **no** abstention matrix, **no** cross-agent or repeatability checks, **no** live-output recording, and **no** transcription check for the Market Evidence Agent or News Analyst. **No real agent output has been evaluated; no factual-transcription result of any live agent run and no citation-support adjudication of any real agent output exists; no real characterization has been performed.** Completing P0-7 (the remaining factual-transcription checks, the human rubric applied to a real first characterization covering every claim, and preserved findings) remains the **only remaining blocker to closing Phase 0** (see [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md) and [docs/AGENT_EVALUATION_HARNESS.md](docs/AGENT_EVALUATION_HARNESS.md)). |
+| Trust layer | **P0-7 met (2026-08-28) — the methodology exists and the first real, human-reviewed Macro characterization is recorded; the other agents are not yet characterized.** `market_intelligence/evaluation/` provides the safe, offline foundation for the methodology: strict Pydantic v2 contracts (agent/severity/citation-classification/citation-reason/finding-category enums, one finding, one human citation adjudication, one evaluation-run record), a deterministic rubric-completeness validator, a symlink-refusing / no-overwrite / atomic / bounded local JSON round trip, and synthetic fixtures. It **also** provides the **first deterministic factual-transcription check — Macro Analyst only, over synthetic inputs** (`macro_factual_transcription.py`): it recognizes only the two exact controlled Macro Analyst statement forms (single stored observation; increase/decrease/unchanged two-observation comparison), verifies series ID / observation date / `Decimal` value / frequency wording / units-when-stated / previous observation / comparison direction, and emits one `info` (exact match — *not* a validation) / `failure` (mismatch, broad category only, no text reproduced) / `warning` (unrecognized wording → human review) finding. It **also** provides the **offline Macro characterization workflow** (`macro_characterization_input.py`, `macro_characterization_workflow.py`, `scripts/characterize_macro_report.py`): a strict local input contract (sanitized label; Macro claim IDs; claim series IDs and summaries; the sanitized evaluation evidence facts the transcription evaluator needs; expected claim/citation pairs — and nothing else), a pure builder that runs the transcription check for every claim, creates an `EvaluationRunRecord` carrying those findings, and emits one pending human-adjudication template per expected pair (never pre-classifying citation support, never treating a transcription match as citation support), a pure completion step that attaches completed human adjudications only when every expected pair has exactly one (refusing missing/duplicate/unexpected pairs; completion is not validation), a dry-run-first, offline, explicit-path **build CLI** (`scripts/characterize_macro_report.py`: `--write` required, no overwrite, no directory creation; with `--write` the resolved output path must be strictly inside gitignored `data/evaluations/local/`, and repository-root, tracked-directory, outside-repository, `..`-traversal, and symlink-escape targets are refused; dry-run behavior is unchanged), and a dry-run-first, offline **completion CLI** (`scripts/complete_macro_characterization.py`: a strict `MacroAdjudicationInput` contract — only the scaffold `run_id` plus a bounded human `CitationAdjudication` list, `extra="forbid"`, no credential/URL/response-ID/path/raw-evidence/model-reasoning/metadata field; `--record`/`--adjudications`/`--output` all confined strictly inside `data/evaluations/local/`; requires the adjudication `run_id` to match the scaffold; records human decisions only, no LLM judge, all four classifications preserved; sanitized counts/classification-tally output only — never a reviewer note, claim ID, citation ID, path, or record text; `--write` required to serialize, no overwrite, no directory creation). Committed fixtures and tests remain synthetic-only; real sanitized evidence facts may be used only through the explicit local characterization workflow under gitignored `data/evaluations/local/`, and real characterization inputs and outputs must never be committed. On 2026-08-28 the **first real, human-reviewed offline Macro Analyst characterization** was completed and recorded with the completion CLI, covering every claim: agent `macro_analyst`, 14 expected claim/citation pairs, 14 human adjudications (one per pair — none missing, duplicated, or unexpected), `rubric_complete: true`, classification tally `supported: 0` / `partially_supported: 14` / `unsupported: 0` / `unable_to_determine: 0`, all 14 reasons `claim_scope_exceeds_single_observation`, finding tally `info: 8` / `warning: 0` / `failure: 0` (seven factual-transcription findings were exact matches; the one scope-boundary information finding was preserved). All 14 pairs are `partially_supported` because each Macro claim is a two-observation comparison depending on two cited observations while each individual claim/citation pair carries only one of those observations. Every adjudication was the human reviewer's; no LLM judge generated, recommended, or changed any classification; no live request or Macro Analyst rerun occurred; the real artifacts remain gitignored under `data/evaluations/local/` and are not committed. This **closes P0-7 and Phase 0** (see [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md) and [docs/AGENT_EVALUATION_HARNESS.md](docs/AGENT_EVALUATION_HARNESS.md)) — it is **not** a claim that the Macro Analyst is validated, accurate, repeatable, or profitable. It still performs **no** lexical-overlap scoring, and the same transcription check and citation-support adjudication for the Market Evidence Agent and News Analyst, the abstention matrix, cross-agent consistency, and repeatability studies all remain future work that does **not** reopen Phase 0. |
 | Test baseline | `python -m pytest`: **2,415 passed, 4 skipped** (2,419 collected). The 4 skipped are symlink-refusal / symlink-escape tests (the evaluation-foundation serialization tests plus the characterization build-CLI and completion-CLI symlink-escape tests), which skip where the OS disallows creating a symlink; they are not passing tests. |
 | Not built | Predictive/forecast model, forecast records, agent orchestrator / combined brief, dashboard, trade journal, options-data pipeline, scheduler, brokerage execution. |
-| Phase 1 (design recorded, not started) | An automated, evidence-based SPY options decision-support workflow: deterministic evidence + intraday regime classification (the deterministic regime engine also fixes one bounded scenario-horizon bucket, or `indeterminate`), a deterministic contract-eligibility selector that consumes that validated upstream horizon, then a bounded directional Options Strategy Agent (consumes only the upstream validated structured outputs plus the selector's eligible contract set, never a raw option chain; may reference but cannot invent, extend, or override the supplied horizon; `no_trade` is first-class), and a recorded evaluation before any usefulness claim. The three existing agents stay non-directional; the Options Strategy Agent is a separately bounded directional decision-support agent. **Design only — no code, connector, or agent exists.** Does not change Phase 0 closure (still gated on P0-7); no options work begins until Phase 0 is closed. See [docs/OPTIONS_DECISION_WORKFLOW.md](docs/OPTIONS_DECISION_WORKFLOW.md). |
+| Phase 1 (design recorded, ready to begin) | An automated, evidence-based SPY options decision-support workflow: deterministic evidence + intraday regime classification (the deterministic regime engine also fixes one bounded scenario-horizon bucket, or `indeterminate`), a deterministic contract-eligibility selector that consumes that validated upstream horizon, then a bounded directional Options Strategy Agent (consumes only the upstream validated structured outputs plus the selector's eligible contract set, never a raw option chain; may reference but cannot invent, extend, or override the supplied horizon; `no_trade` is first-class), and a recorded evaluation before any usefulness claim. The three existing agents stay non-directional; the Options Strategy Agent is a separately bounded directional decision-support agent. **Design only — no code, connector, or agent exists.** Phase 0 is now closed (2026-08-28), so Phase 1 may begin; its **first implementation step is read-only SPY option-chain ingestion and local storage** (own reviewed connector, sanitized, no execution surface), following the existing connector/storage patterns. No options component is implemented or validated. See [docs/OPTIONS_DECISION_WORKFLOW.md](docs/OPTIONS_DECISION_WORKFLOW.md). |
 
 ## Current Phase
 
-**Phase 0 — Infrastructure Foundation**
+**Phase 0 — Infrastructure Foundation: closed 2026-08-28. Phase 1 (SPY options
+decision-support workflow) may now begin.**
 
-The project is in initial scaffolding. Python environment and dependency
-configuration are in place. Read-only Alpaca market-data provider
+All seven Phase 0 exit criteria (P0-1 … P0-7) are met — see
+[docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md). The final criterion, P0-7, was met
+on 2026-08-28 when the first real, human-reviewed offline Macro Analyst
+characterization was completed and recorded (14 expected claim/citation pairs,
+14 human adjudications, `rubric_complete: true`, all 14 `partially_supported` /
+`claim_scope_exceeds_single_observation`, findings `info: 8` / `warning: 0` /
+`failure: 0`; see the Trust layer row above and Completed Work Log item 39).
+**Closure means the required infrastructure and the required agent-evaluation
+methodology exist and have each been exercised and recorded once — it is not a
+claim that the Macro Analyst or any other agent is validated, universally
+accurate, repeatable, or profitable, and only the Macro Analyst has been
+characterized.** Phase 1's first implementation step is read-only SPY
+option-chain ingestion and local storage
+([docs/OPTIONS_DECISION_WORKFLOW.md](docs/OPTIONS_DECISION_WORKFLOW.md)). The
+manual-only execution boundary and the non-directional guarantee on the three
+existing analysis agents are unchanged.
+
+The prose below is retained as the Phase 0 history. Python environment and
+dependency configuration are in place. Read-only Alpaca market-data provider
 connectivity has been verified (a single read-only snapshot request — see
 Status below). Read-only FRED macroeconomic-data provider connectivity has
 also been verified (a single read-only latest-observation request — see
@@ -3944,6 +3962,72 @@ entry describes something that has already been built, ingested, or attempted;
     **2,420 passed, 4 skipped** (2,424 collected); `python -m ruff check .`
     clean; `git diff --check` clean. No other behavioural change.
 
+39. **First real, human-reviewed offline Macro Analyst characterization
+    completed and recorded — P0-7 met, Phase 0 closed (2026-08-28).** Two
+    separately authorized offline sessions, using only the existing item 37–38
+    workflows and CLIs. No code, test, configuration, schema, migration,
+    dependency, or `.gitignore` change; no OpenAI / Alpaca / FRED / network /
+    connector / agent request; the local DuckDB database was read **read-only**
+    solely to resolve the cited evidence records; MacroAnalyst was **not**
+    rerun; no commit or push. All real artifacts live only under gitignored
+    `data/evaluations/local/` and are not committed.
+
+    - **Session 1 — build.** The accepted seven-claim Macro report (series
+      `UNRATE`, `CPIAUCSL`, `INDPRO`, `FEDFUNDS`, `GS10`, `GDPC1`, `PCEPI`; each
+      claim a two-observation comparison citing two evidence IDs, 14 IDs total)
+      was resolved against the real `macro_observations` / `macro_series_metadata`
+      rows: all 14 cited evidence IDs exist. Only the sanitized evidence facts
+      the transcription evaluator needs (citation handle, series ID, observation
+      date, `Decimal` value, frequency word, units) were carried into a
+      `MacroCharacterizationInput`; no URL, provider payload, credential,
+      database path, response ID, revision window, or model reasoning was
+      copied. `scripts/characterize_macro_report.py` was run dry-run
+      (validate) then `--write`, producing the scaffold `EvaluationRunRecord`:
+      agent `macro_analyst`, 7 claims evaluated, 14 expected pairs,
+      `adjudications` empty, findings = one `scope_boundary` `info` finding +
+      seven `factual_transcription` findings (all seven exact matches), rubric
+      intentionally incomplete (human adjudications pending). A human-review
+      worksheet with all 14 pairs (blank classification / reason / note) was
+      produced for the reviewer; no classification was generated, recommended,
+      inferred, or prefilled.
+    - **Session 2 — completion.** Reviewer Logan Preisler adjudicated all 14
+      pairs as `partially_supported` / `claim_scope_exceeds_single_observation`
+      with no reviewer note. A `MacroAdjudicationInput` (scaffold `run_id` + 14
+      `CitationAdjudication` records, claim/citation IDs copied exactly from the
+      scaffold) was validated through the repository contract, then
+      `scripts/complete_macro_characterization.py` was run dry-run then
+      `--write`. Sanitized result: `expected_pair_count` 14,
+      `adjudication_count` 14, classification tally `supported: 0` /
+      `partially_supported: 14` / `unsupported: 0` / `unable_to_determine: 0`,
+      finding-severity tally `info: 8` / `warning: 0` / `failure: 0`,
+      `rubric_complete: true`, and the fixed "completion is not validation"
+      notice. The completed `EvaluationRunRecord` read back with the repository
+      serializer: agent `macro_analyst`, `run_id` unchanged from the scaffold,
+      exactly 14 adjudications (every expected pair once — none missing,
+      duplicated, or unexpected), all 14 classifications/reasons matching the
+      human decision, rubric complete, and all eight original findings
+      preserved byte-for-byte.
+    - **Why every pair is `partially_supported`.** Each Macro claim is a
+      comparison between two stored observations and depends on both cited
+      observation IDs together; each individual claim/citation pair contains
+      only one of the two observations, so no single pair on its own supports
+      the whole comparative claim — hence `partially_supported` with
+      `claim_scope_exceeds_single_observation` for all 14.
+
+    **What this establishes and what it does not.** It establishes that the
+    required agent-evaluation methodology (deterministic factual-transcription
+    harness + human citation-support rubric) exists, is documented, and has been
+    exercised and recorded once against real Macro Analyst output covering every
+    claim, with all findings preserved — satisfying P0-7 and closing Phase 0. It
+    is **not** a claim that the Macro Analyst or any other agent is validated,
+    universally accurate, repeatable, or profitable, and only the Macro Analyst
+    has been characterized. The same transcription check and citation-support
+    adjudication for the Market Evidence Agent and News Analyst, the
+    lexical-overlap triage, the abstention matrix, cross-agent consistency, and
+    repeatability studies remain future work and do not reopen Phase 0. See
+    [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md) (criterion P0-7) and
+    [docs/AGENT_EVALUATION_HARNESS.md](docs/AGENT_EVALUATION_HARNESS.md).
+
 ## Next Planned Work
 
 This is the forward plan. It replaces the historical content now under
@@ -3961,11 +4045,39 @@ This is the forward plan. It replaces the historical content now under
    bounded model-facing evidence excerpts. Documentation only — no code,
    tests, configuration, migrations, fixtures, or provider behavior change.
 
-2. **Design and implement a repeatable agent evaluation methodology (harness
-   + human rubric).** This is the **only remaining blocker to closing Phase
-   0** (see
+2. **Repeatable agent evaluation methodology (harness + human rubric) — DONE;
+   P0-7 and Phase 0 closed 2026-08-28.** The deterministic
+   factual-transcription harness (Macro Analyst) and the human citation-support
+   rubric both exist and are documented, and the **first real, human-reviewed
+   offline Macro Analyst characterization was completed and recorded on
+   2026-08-28** using the existing build and completion CLIs, covering every
+   claim. Sanitized totals: agent `macro_analyst`; 14 expected claim/citation
+   pairs; 14 human adjudications (one per pair — none missing, duplicated, or
+   unexpected); `rubric_complete: true`; classification tally `supported: 0` /
+   `partially_supported: 14` / `unsupported: 0` / `unable_to_determine: 0`; all
+   14 reasons `claim_scope_exceeds_single_observation`; finding tally `info: 8`
+   / `warning: 0` / `failure: 0` (seven factual-transcription findings were
+   exact matches; the one scope-boundary information finding was preserved). All
+   14 pairs are `partially_supported` because each Macro claim is a
+   two-observation comparison depending on two cited observations while each
+   individual claim/citation pair carries only one observation. Every
+   adjudication was the human reviewer's; no LLM judge generated, recommended,
+   or changed a classification; no live request or Macro Analyst rerun
+   occurred; the real artifacts remain gitignored under
+   `data/evaluations/local/` and are not committed. **This closes Phase 0 — it
+   does not mean the Macro Analyst or any other agent is validated, universally
+   accurate, repeatable, or profitable, and only the Macro Analyst has been
+   characterized.** See Completed Work Log item 39,
+   [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md) (criterion P0-7), and
+   [docs/AGENT_EVALUATION_HARNESS.md](docs/AGENT_EVALUATION_HARNESS.md).
+   **Remaining, non-blocking future work** (does not reopen Phase 0): the same
+   deterministic factual-transcription check and human citation-support
+   adjudication for the Market Evidence Agent and News Analyst, the
+   lexical-overlap triage, the abstention matrix, cross-agent consistency, and
+   the repeatability characterization.
 
-   **Progress (2026-08-26): the safe, offline foundation now exists** —
+   **Historical progress record (2026-08-26 to 2026-08-27): the safe, offline
+   foundation was built first** —
    `market_intelligence/evaluation/` provides strict Pydantic v2 contracts
    (the fixed agent / severity / citation-classification / citation-reason /
    finding-category enums, one evaluation finding, one human citation
@@ -3993,23 +4105,20 @@ This is the forward plan. It replaces the historical content now under
    judge, sanitized tally-only output, completion is not validation) — every
    `--write` output and all completion-CLI input paths must resolve strictly
    inside gitignored `data/evaluations/local/`. See items 35, 36, 37, and 38 in
-   the Completed Work Log. **No PR to date has evaluated any real agent output,
-   and no real characterization has been performed**, and none added
-   lexical-overlap scoring, a `--record` flag, or an LLM judge. What remains for
-   P0-7: the same deterministic factual-transcription check for the Market
-   Evidence Agent and News Analyst, the human citation-support adjudication of
-   real output, the lexical-overlap triage, the abstention matrix, cross-agent
-   consistency, the repeatability characterization, and — the actual closure
-   condition — at least one recorded first characterization of a real agent,
-   covering every claim, with findings / failures / `unable_to_determine`
-   results preserved. The next step is one separately authorized local,
-   human-reviewed characterization run using the workflow from items 37–38.
+   the Completed Work Log. As of 2026-08-27, no PR had yet evaluated any real
+   agent output and no real characterization had been performed; none added
+   lexical-overlap scoring, a `--record` flag, or an LLM judge. The remaining
+   closure step — one separately authorized local, human-reviewed
+   characterization run using the workflow from items 37–38, covering every
+   claim, with findings / failures / `unable_to_determine` results preserved —
+   was completed on 2026-08-28 (see item 39 and the summary at the top of this
+   item). See
    [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md), criterion P0-7, and
-   [docs/AGENT_EVALUATION_HARNESS.md](docs/AGENT_EVALUATION_HARNESS.md)). The
-   three agents each have exactly one accepted live run; there is no
-   repeatable method to judge whether their output is trustworthy. The method
-   is offline-first and characterizes the trust gap rather than certifying the
-   agents. In scope: deterministic factual-transcription checks where the
+   [docs/AGENT_EVALUATION_HARNESS.md](docs/AGENT_EVALUATION_HARNESS.md). Each of
+   the three agents had exactly one accepted live run before this methodology
+   existed. The method is offline-first and characterizes the trust gap rather
+   than certifying the agents. In scope: deterministic factual-transcription
+   checks where the
    claim structure permits them (does a claim's stated value/date/unit match
    the cited stored evidence?); a human citation-support rubric that
    adjudicates every claim in a characterization as `supported` /
@@ -4067,13 +4176,14 @@ This is the forward plan. It replaces the historical content now under
    (now also in [DECISION_RULES.md](DECISION_RULES.md)).
    Evaluation backtests the underlying setup first, then options performance
    separately with realistic bid-ask/slippage, then a 30–50 session shadow
-   test; one good run is not validation. Implementation order: close Phase 0
-   first, then read-only option-chain ingestion, the deterministic feature/
-   regime engine, the VWAP-extension/reversion hypothesis test, deterministic
+   test; one good run is not validation. Phase 0 closed on 2026-08-28, so this
+   work may now begin. Implementation order: **first, read-only SPY
+   option-chain ingestion and local storage** (its own reviewed connector,
+   sanitized, no execution surface), then the deterministic feature/regime
+   engine, the VWAP-extension/reversion hypothesis test, deterministic
    contract filtering, the Options Strategy Agent, shadow evaluation, and
    only then any alerts/dashboard. **No options code, connector, schema, or
-   agent exists; no options work begins until Phase 0 is closed; Phase 0
-   closure is not delayed or rescoped by this item.** No brokerage
+   agent exists yet, and no options component is implemented or validated.** No brokerage
    integration, automatic execution, or Robinhood automation is authorized.
 
 Manual-only trading is preserved throughout. The three existing analysis
