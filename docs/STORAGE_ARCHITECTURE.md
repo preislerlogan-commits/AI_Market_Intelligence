@@ -7,7 +7,7 @@ for what data has (and has not) actually been ingested.
 
 ## Scope
 
-This foundation defines eight tables in code. **As of 2026-08-24, the first
+This foundation defines eleven tables in code. **As of 2026-08-24, the first
 seven were applied to the real database and the eighth
 (`macro_series_metadata`, migration `0008`) existed in code and tests only,
 with the real database remaining at migration `0007`.** That status has
@@ -15,9 +15,18 @@ since been superseded: a read-only verification performed 2026-08-25
 (following an authorized live Core Macro Basket `GS10` ingestion, which
 requires the database already healthy at exactly schema version `0008`
 before making any network request) confirmed the real local database is
-now at schema version `0008` (8 migrations applied), healthy=True. **All
-eight tables, including `macro_series_metadata`, are now applied to the
-real database** (see below):
+now at schema version `0008` (8 migrations applied), healthy=True. **The
+first eight tables, including `macro_series_metadata`, are applied to the
+real database** (see below). The ninth, tenth, and eleventh tables,
+`option_chain_snapshot_batches`, `option_chain_snapshots`, and
+`option_chain_snapshot_batch_items` (all migration `0009`), were added
+2026-08-28 (normalized to a three-table design 2026-09-14, after a
+pre-commit review found that a mutable `ingestion_run_id` on
+`option_chain_snapshots` let re-ingestion silently move a historical
+snapshot's batch membership without updating the original batch's
+`contract_count`) in code and tests only — **migration `0009` has not been
+applied to the real local database, which remains at migration `0008`**, and
+no option-chain data has been stored.
 
 - **`schema_migrations`** — tracks which versioned migrations have been
   applied, with a checksum of each migration file's content.
@@ -78,6 +87,32 @@ real database** (see below):
   `GS10` entry in `DATA_CATALOG.md`. This confirms one controlled
   ingestion for one series; it is not a complete, gap-free, or
   research-validated metadata dataset.
+
+- **`option_chain_snapshot_batches`**, **`option_chain_snapshots`**, and
+  **`option_chain_snapshot_batch_items`** (all added in migration `0009`) — a
+  normalized, three-table SPY option-chain design. `option_chain_snapshot_batches`
+  stores exactly one row per successfully stored chain retrieval (run-level
+  provenance: requested feed, requested expiration/strike window, requested
+  option type, retrieval instant, contract count — including zero for a
+  successful empty chain). `option_chain_snapshots` stores one row per
+  *immutable* normalized contract observation (contract symbol, parsed
+  expiration/type/strike, latest quote, latest trade, implied volatility, and
+  Greeks) — its `ingestion_run_id` records only the run that first inserted
+  the row and is never reassigned by a later re-observation.
+  `option_chain_snapshot_batch_items` is the normalized batch-membership
+  table: one row per `(ingestion_run_id, snapshot identity)` pair for every
+  contract a successful non-empty batch actually returned, so a batch's
+  recorded `contract_count` and its truthful membership can never drift apart
+  even when the same snapshot identity is re-ingested into a later batch. See
+  "Option-chain snapshot storage" below. **All three tables, the repository
+  (`market_intelligence/storage/option_chain_snapshot_repository.py`), and
+  the ingestion script (`scripts/ingest_alpaca_options_chain.py`) exist in
+  code and tests only** (temporary DuckDB files, mocked HTTP transports — no
+  live option-chain request, no write to the real database); migration
+  `0009` has not been applied to the real local database, which remains at
+  migration `0008`. Open interest is **not** a column on any of the three
+  tables: Alpaca's option-chain snapshot endpoint does not supply it, and it
+  is not inferred.
 
 No forecast or trade tables exist yet. Those each require a separate,
 reviewed data contract before they are added as their own versioned
@@ -487,6 +522,167 @@ observations. See
 [docs/MACRO_EVIDENCE_SNAPSHOT.md](MACRO_EVIDENCE_SNAPSHOT.md) for the full
 field contract.
 
+## Option-chain snapshot storage
+
+Migration `0009`
+(`market_intelligence/storage/migrations/0009_create_option_chain_snapshots.sql`)
+defines a normalized, **three-table** design so that (a) run-level request
+provenance is durable even for a successful retrieval that returned zero
+contracts, without duplicating request fields onto every snapshot row, and
+(b) batch membership stays truthful even when the same snapshot identity is
+re-ingested into a later batch. None of the three tables stores a raw JSON
+payload, a directional forecast, a contract ranking, a strategy
+recommendation, an order, an execution field, request headers/URLs, page
+tokens, or a response body. **As written (revised 2026-09-14 to the
+three-table design) all three tables, the repository, and the ingestion
+script exist in code and tests only** (temporary DuckDB files, mocked HTTP
+transports — no live request, no real-database write); migration `0009` has
+not been applied to the real local database.
+
+**Why a third table.** The original two-table design let
+`option_chain_snapshots.ingestion_run_id` be updated in place whenever an
+identical snapshot was re-stored, so a re-ingested observation silently
+moved from its original batch to the new one while the original
+`option_chain_snapshot_batches.contract_count` still reported the old count
+— historical batch membership was therefore not reproducible from stored
+data. `option_chain_snapshot_batch_items` fixes this: it is a normalized
+membership table, written fresh for every batch, so which contracts a given
+batch actually contained is always answered by counting its own membership
+rows, never by a mutable column on the snapshot row.
+
+### `option_chain_snapshot_batches`
+
+Exactly one row per successfully stored chain retrieval (one
+`AlpacaOptionsChainClient.get_chain_snapshot` call that was then stored),
+**including a retrieval that returned zero contracts**. Columns:
+`ingestion_run_id` (primary key — one fresh id per store call, so this is
+always a plain insert, never an upsert), `provider` (fixed `"alpaca"`),
+`underlying` (fixed `"SPY"` in this milestone), `requested_feed` (`opra` /
+`indicative`, recorded verbatim), `requested_expiration_date_gte` / `_lte`,
+`requested_strike_price_gte` / `_lte`, `requested_option_type` (nullable),
+`retrieved_at` (the single UTC instant the connector stamped on this
+retrieval), `contract_count` (`>= 0`; `0` for a successful empty chain),
+`outcome` (`succeeded` or `skipped_empty`), `first_ingested_at`, and
+`last_seen_at`. This is where request-level provenance lives — it is
+**not** duplicated onto `option_chain_snapshots` or
+`option_chain_snapshot_batch_items` rows. **For every non-empty successful
+batch, `contract_count` always equals the number of
+`option_chain_snapshot_batch_items` rows carrying that batch's
+`ingestion_run_id`.**
+
+### `option_chain_snapshots`
+
+One row per **immutable**, point-in-time normalized contract observation.
+Columns: `provider`, `underlying`, `feed` (`opra` / `indicative`),
+`contract_symbol` (the OCC symbol as Alpaca reports it), `retrieved_at` (the
+same UTC instant recorded on the batch row), `expiration_date` /
+`option_type` / `strike_price` (parsed from the OCC symbol and confirmed to
+agree with the request filters), `quote_timestamp`, `bid_price` /
+`bid_size` / `ask_price` / `ask_size`, `trade_timestamp`, `trade_price` /
+`trade_size`, `implied_volatility`, `delta` / `gamma` / `theta` / `vega` /
+`rho`, `first_ingested_at`, `last_seen_at`, and `ingestion_run_id`. Unlike
+the pre-2026-09-14 design, **`ingestion_run_id` here records only the run
+that first inserted the row and is never reassigned by a later
+re-observation** — it answers "who created this observation," never "which
+batch(es) currently claim it"; that question is answered exclusively by
+`option_chain_snapshot_batch_items`. Prices and strike are `DECIMAL(18,6)`;
+implied volatility and the Greeks are `DECIMAL(20,10)`; sizes are `BIGINT`.
+Every quote/trade/Greek column is nullable and stored as `NULL` when the
+provider omits it — never as zero.
+
+### `option_chain_snapshot_batch_items`
+
+The normalized batch-membership table. One row per `(ingestion_run_id,
+provider, underlying, feed, contract_symbol, retrieved_at)` pair (all six
+columns together are the primary key), written for **every** contract
+returned by a successful, non-empty `store_snapshots` call — unconditionally,
+whether the referenced `option_chain_snapshots` row was newly inserted or
+already existed from an earlier batch. It carries only identity columns,
+never a quote/trade/Greek value: the observation itself lives exactly once
+on `option_chain_snapshots`, referenced here by its identity. Because
+`ingestion_run_id` is fresh per `store_snapshots` call, this table is always
+a plain insert. A single immutable `option_chain_snapshots` row may
+legitimately be referenced by more than one batch's membership rows — this
+is expected and correct, not a duplication bug: it is exactly how
+re-ingesting the same snapshot into a new batch is recorded without
+disturbing the original batch's membership.
+
+**Open interest is deliberately absent from all three tables.** Alpaca's
+option-chain snapshot endpoint does not supply open interest, so there is no
+`open_interest` column and the connector never produces one. It is
+documented as unavailable for this milestone in `DATA_CATALOG.md` and
+`docs/OPTIONS_DECISION_WORKFLOW.md` and must not be added as populated data
+by inference or default.
+
+**Idempotency, immutability, and OPRA vs. indicative separation.**
+`option_chain_snapshot_batches` keys on `ingestion_run_id`, so each stored
+retrieval is exactly one row; a failed or rolled-back store leaves no batch
+row at all. An option snapshot is a point-in-time observation — re-requesting
+the same contract later legitimately returns different quote/trade/Greek
+values — so `option_chain_snapshots`' primary key is
+`(provider, underlying, feed, contract_symbol, retrieved_at)`: re-storing
+the *same* connector result (same `retrieved_at`) with the same values never
+mutates or relinks that row — it may refresh non-historical `last_seen_at`
+bookkeeping, but `ingestion_run_id` and every observed value column are left
+exactly as first stored — while a fresh `option_chain_snapshot_batch_items`
+row is still written to record the new batch's membership; re-storing the
+same identity with *conflicting* values aborts the whole batch (no new batch
+row, no partial snapshot rows, no partial batch-item rows, and the
+already-stored snapshot row is untouched) and the `ingestion_runs` row is
+recorded `failed` with a sanitized `content_conflict` category; a later,
+separate ingestion run carries a new `retrieved_at`, writes a new batch row,
+and is stored as new observation and batch-item rows, overwriting nothing.
+`feed` is part of the snapshot and batch-item identity and is recorded
+verbatim as `requested_feed` on the batch row, so an `opra` observation and
+an `indicative` observation of the same contract at the same instant are
+stored, and counted toward batch membership, as separate rows and never
+merged. `indicative`-feed data may be delayed or modified by the provider
+and must never be described as live OPRA data.
+
+`market_intelligence/storage/option_chain_snapshot_repository.py`
+(`OptionChainSnapshotRepository`) is the only code that writes to any of the
+three tables. `store_snapshots(items, *, request, retrieved_at=None, ...)`
+accepts already-normalized `OptionChainSnapshot` objects (possibly empty)
+plus the `OptionChainRequest` they were retrieved under; `retrieved_at` is
+required when `items` is empty (there is no item to derive it from) and,
+when supplied, must match every item's `retrieved_at`. Before any database
+write, `request` is re-normalized through `normalize_option_chain_request`
+(the same function the connector uses, enforcing the 60-day/$500-width/
+10-page/5,000-contract/per-page ceilings) and rejected outright if it does
+not equal its own canonical form — a manually constructed `OptionChainRequest`
+cannot bypass those ceilings. It also strictly validates every item
+(rejecting a non-SPY underlying, an item feed that does not match the
+request feed, a malformed or field-disagreeing OCC symbol, a contract
+outside the requested strike/expiration/type window, a negative
+price/IV/gamma/vega, a non-finite or over-precise decimal, a negative size,
+or a duplicate contract symbol in the batch — an *empty* batch is allowed),
+then records a `running` `ingestion_runs` row and writes -- inside one
+DuckDB transaction -- exactly one `option_chain_snapshot_batches` row, every
+snapshot row, one `option_chain_snapshot_batch_items` row per item, and the
+final `succeeded` status update, mirroring `BarRepository`. The returned
+`OptionChainSnapshotStorageResult` reports only sanitized counts, the run
+id/status, and `batch_outcome` (`succeeded` / `skipped_empty` / `failed`).
+
+`scripts/ingest_alpaca_options_chain.py` is the dry-run-first manual entry
+point (see `docs/OPTIONS_DECISION_WORKFLOW.md`): the default dry run
+validates arguments and provider configuration and prints the sanitized
+request bounds without making any request or writing anything; `--execute`
+performs exactly one bounded ingestion (paginated GET requests as required,
+no retry) and one transactional local write — a successful empty chain
+still writes its batch row and prints `batch outcome: skipped_empty`. It has
+not been run live.
+
+**Phase 1 request ceilings** (safety ceilings, not contract-selection
+rules — callers must still supply explicit ranges): expiration span ≤ 60
+calendar days, strike-window width ≤ $500, per-page limit ≤ 1,000 (the
+provider's own maximum), max pages ≤ 10, max total contracts ≤ 5,000.
+Enforced twice: by `market_intelligence/data_connectors/alpaca_options_chain.py`
+before any HTTP request is built, and independently by
+`OptionChainSnapshotRepository.store_snapshots` (via re-normalization, see
+above) before any database write — so a caller cannot bypass the ceilings by
+hand-constructing an `OptionChainRequest` and calling the repository
+directly.
+
 ## Components
 
 - `market_intelligence/storage/database.py` — `DuckDBManager`, the
@@ -512,6 +708,13 @@ field contract.
   (see "Macro series-metadata storage" above). Migration `0008` has been
   applied to the real database (2026-08-25 verification), and one
   authorized live ingestion (`GS10`) has succeeded through it — see above.
+- `market_intelligence/storage/option_chain_snapshot_repository.py` —
+  `OptionChainSnapshotRepository`, the SPY option-chain snapshot storage
+  service, writing `option_chain_snapshot_batches` (run-level provenance),
+  `option_chain_snapshots` (immutable observations), and
+  `option_chain_snapshot_batch_items` (normalized batch membership; all
+  migration `0009`). Code and tests only; migration `0009` not applied to
+  the real database, no option-chain data stored.
 - `scripts/initialize_database.py` — applies pending migrations to the
   configured local database; prints only the database path, schema
   version, and applied migration count.
@@ -532,6 +735,9 @@ field contract.
   one `GS10` metadata row was written via `scripts/ingest_core_macro_basket.py`
   instead (see above), which uses the same underlying
   `MacroSeriesMetadataRepository`.
+- `scripts/ingest_alpaca_options_chain.py` — dry-run-first, one-shot manual
+  SPY option-chain snapshot ingestion (see "Option-chain snapshot storage"
+  above). Not run live as part of this change.
 
 ## Database location and path safety
 

@@ -34,8 +34,8 @@ in.
 
 ``--execute`` reuses the existing orchestration run lock
 (``market_intelligence/orchestration/lock.py``) for overlap protection, and
-requires the real local database to already be healthy at schema version
-``0008`` -- checked read-only, before any network request -- since this
+requires the real local database to already be healthy at the latest schema
+version (``0009``) -- checked read-only, before any network request -- since this
 script deliberately never applies a migration itself (schema/migration
 changes are separate, explicitly reviewed work). Each selected series is
 processed sequentially and independently: one series' failure is recorded
@@ -104,8 +104,9 @@ from market_intelligence.storage.macro_series_metadata_repository import (
 )
 
 # The database must already be healthy at exactly this schema version before
-# any request is made -- this script never applies a migration itself.
-REQUIRED_SCHEMA_VERSION = "0008"
+# any request is made -- this script never applies a migration itself. This
+# tracks the latest migration version; bump it whenever a migration is added.
+REQUIRED_SCHEMA_VERSION = "0009"
 
 # Bounded observations request shape shared by every selected series. Every
 # configured lookback window (see market_intelligence/config/macro_basket.py,

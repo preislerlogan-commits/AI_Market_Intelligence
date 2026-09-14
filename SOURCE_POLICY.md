@@ -57,7 +57,24 @@ These are two different things and must not be conflated:
   `0004`) retains the provider name, the article URL (`article_url`), the
   retrieval timestamp (`retrieved_at`), and the provider's publication/update
   timestamps kept distinct from retrieval time. Ingestion runs are recorded
-  in `ingestion_runs` and `orchestration_*`.
+  in `ingestion_runs` and `orchestration_*`. The SPY option-chain snapshot
+  storage added in migration `0009` (code and tests only — no live request,
+  no stored data yet; see [DATA_CATALOG.md](DATA_CATALOG.md)) follows the
+  same rule with a normalized, three-table design: each stored retrieval's
+  `option_chain_snapshot_batches` row records the provider, the
+  **explicitly requested feed (`opra` or `indicative`, stored verbatim and
+  never merged across feeds)**, the bounded request window it was retrieved
+  under, and the UTC retrieval instant — recorded even for a retrieval that
+  returned zero contracts; each `option_chain_snapshots` row is an
+  **immutable** point-in-time observation that keeps the same retrieval
+  instant, kept distinct from the provider's quote/trade timestamps; and
+  each `option_chain_snapshot_batch_items` row is the truthful record of
+  which batch a given observation belongs to (a normalized membership row
+  per contract per batch, rather than a mutable pointer on the observation
+  itself), so batch membership stays reconstructable even when the same
+  observation is re-ingested into a later batch. `indicative`-feed data is a
+  delayed/derived feed and must be labelled as such — it is not licensed
+  live OPRA data.
 
 - **Model-facing evidence excerpts** — the bounded payloads the agents send
   to the model. These are deliberately narrower than the retained record: the

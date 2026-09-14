@@ -1,9 +1,16 @@
 # Options Decision Workflow — Phase 1 Roadmap
 
-**Status: design only. No code, schema, connector, or agent for any part of
-this workflow exists yet. Nothing here is implemented, planned as in
-progress, or validated.** This document records the intended shape of Phase 1
-so the design is agreed before implementation begins. It is subordinate to
+**Status: design, plus the first implementation step (step b) partially
+built offline.** As of 2026-08-28, step b's **read-only SPY option-chain
+snapshot connector and local DuckDB storage** exist in code and tests only —
+mocked HTTP transports and temporary databases, **no live option-chain
+request has been made, no real option data has been stored, and migration
+`0009` has not been applied to the real local database.** Everything else in
+this document — the intraday regime engine, the deterministic contract
+selector, the Options Strategy Agent, and every evaluation stage — remains
+**design only: no code, schema, connector, or agent exists, and nothing is
+validated.** This document records the intended shape of Phase 1 so the
+design is agreed before implementation begins. It is subordinate to
 [PROJECT_STATE.md](../PROJECT_STATE.md) (authoritative status),
 [DECISION_RULES.md](../DECISION_RULES.md) (binding boundaries), and
 [CLAUDE.md](../CLAUDE.md) / [AGENTS.md](../AGENTS.md).
@@ -223,10 +230,73 @@ before the previous one is complete and recorded.
 - **a.** Close Phase 0 by completing and recording the first real agent
   characterization (P0-7). **Done — the Macro Analyst characterization of
   2026-08-28; Phase 0 is closed.**
-- **b.** *(now the first Phase 1 step)* Add **read-only** option-chain
-  ingestion and local storage (SPY only) — its own reviewed connector,
-  sanitized, no execution surface, following the existing connector/storage
-  patterns.
+- **b.** *(first Phase 1 step — partially built offline, 2026-08-28)* Add
+  **read-only** option-chain ingestion and local storage (SPY only) — its
+  own reviewed connector, sanitized, no execution surface, following the
+  existing connector/storage patterns.
+  - **Done in code and tests only** (2026-08-28; request ceilings tightened
+    and provenance normalized to two tables 2026-09-01 after pre-commit
+    review; revised again 2026-09-14 to a three-table design after a
+    pre-commit review found the two-table design let a mutable
+    `ingestion_run_id` silently move a historical snapshot's batch
+    membership on re-ingestion — see "Option-chain snapshot storage" in
+    `docs/STORAGE_ARCHITECTURE.md`): `AlpacaOptionsChainClient`
+    (`market_intelligence/data_connectors/alpaca_options_chain.py`) talks
+    only to `data.alpaca.markets` and only to
+    `GET /v1beta1/options/snapshots/SPY`; it requires a fully bounded,
+    validated request (SPY only; explicit `opra`/`indicative` feed;
+    expiration-date and strike-price windows; optional `call`/`put`; bounded
+    page limit, max pages, and max total contracts). **Conservative Phase 1
+    hard ceilings** (safety ceilings, not contract-selection rules — callers
+    must still supply explicit ranges): expiration span ≤ 60 calendar days,
+    strike-window width ≤ $500, per-page limit ≤ 1,000 (the provider's own
+    maximum), max pages ≤ 10, max total contracts ≤ 5,000 — all enforced
+    before any HTTP request is built. It follows `next_page_token`
+    pagination deterministically with loop/bound guards and no retry, parses
+    and cross-checks the OCC contract symbol against the request filters, and
+    normalizes only the fields the endpoint supplies (contract symbol,
+    underlying, expiration, type, strike, feed; latest quote timestamp /
+    bid-ask price and size; latest trade timestamp / price and size; implied
+    volatility; delta/gamma/theta/vega/rho where supplied; retrieval
+    timestamp). Missing optional fields stay null; errors are sanitized to a
+    fixed category (no response body, headers, URL, query parameters,
+    credentials, or contract payload). Migration `0009` adds a normalized,
+    **three-table** design: `option_chain_snapshot_batches` records exactly
+    one row per successfully stored chain retrieval — **including a
+    retrieval that returned zero contracts** (run-level provenance:
+    requested feed, requested expiration/strike window, requested option
+    type, retrieval instant, contract count with zero allowed);
+    `option_chain_snapshots` stores one row per **immutable** normalized
+    contract observation, whose `ingestion_run_id` records only the run that
+    first inserted it (never reassigned by a later re-observation); and
+    `option_chain_snapshot_batch_items` is the normalized batch-membership
+    table, with one row per `(ingestion_run_id, snapshot identity)` pair for
+    every contract a non-empty successful batch actually returned — this is
+    what keeps a batch's recorded `contract_count` and its truthful
+    membership from drifting apart when the same snapshot identity is
+    re-ingested into a later batch; one immutable observation may
+    legitimately be referenced by more than one batch's membership rows.
+    `OptionChainSnapshotRepository` and the dry-run-first
+    `scripts/ingest_alpaca_options_chain.py` store all three transactionally
+    (the batch row, every snapshot row, every batch-item row, and the
+    ingestion-run status update all in one transaction), keying
+    `option_chain_snapshots` on
+    `(provider, underlying, feed, contract_symbol, retrieved_at)` so OPRA
+    and indicative observations are never merged, keying
+    `option_chain_snapshot_batches` on `ingestion_run_id` (always an insert),
+    and keying `option_chain_snapshot_batch_items` on `(ingestion_run_id,
+    provider, underlying, feed, contract_symbol, retrieved_at)` (also always
+    an insert). The repository re-normalizes every field of a supplied
+    request through `normalize_option_chain_request` and rejects it unless
+    it matches its own canonical form, so a hand-constructed
+    `OptionChainRequest` cannot bypass the connector's request ceilings.
+  - **Not done:** no live option-chain request has occurred, no real option
+    data has been stored, and migration `0009` has not been applied to the
+    real local database. `indicative`-feed data may be delayed or modified
+    by the provider and must never be described as live OPRA data.
+    **Open interest is not available** from this endpoint and is not stored,
+    inferred, or defaulted on either table; a later milestone would need a
+    different source for it.
 - **c.** Build the deterministic SPY intraday feature/regime engine (the
   feature set and classifier above). No model.
 - **d.** Test the VWAP-extension / reversion hypothesis on the underlying
@@ -250,5 +320,7 @@ before the previous one is complete and recorded.
 - **Manual trading decisions are preserved** — the workflow informs; the
   user decides and executes.
 - **Keep implemented / planned / validated status clearly separated**
-  everywhere, as PROJECT_STATE.md does. As of now, every item in this
-  document is *planned* — none is implemented and none is validated.
+  everywhere, as PROJECT_STATE.md does. As of now, only step b's read-only
+  connector and storage exist, and only in code and tests (no live request,
+  no stored data, migration `0009` not applied). Every other item in this
+  document is *planned* — not implemented — and **nothing is validated.**

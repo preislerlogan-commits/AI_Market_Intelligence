@@ -383,7 +383,7 @@ def test_ingestion_run_success_metadata(tmp_path, isolated_env_file):
     assert run[3] == 2
     assert run[4] is None
     assert run[5] is not None  # code_version
-    assert run[6] == "0008"  # schema_version
+    assert run[6] == "0009"  # schema_version
 
 
 # --- ingestion_runs failure metadata ------------------------------------------------
