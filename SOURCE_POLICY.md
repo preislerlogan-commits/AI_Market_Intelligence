@@ -58,8 +58,9 @@ These are two different things and must not be conflated:
   retrieval timestamp (`retrieved_at`), and the provider's publication/update
   timestamps kept distinct from retrieval time. Ingestion runs are recorded
   in `ingestion_runs` and `orchestration_*`. The SPY option-chain snapshot
-  storage added in migration `0009` (code and tests only — no live request,
-  no stored data yet; see [DATA_CATALOG.md](DATA_CATALOG.md)) follows the
+  storage added in migration `0009` (applied to the real database
+  2026-09-14, with one authorized live ingestion stored; see
+  [DATA_CATALOG.md](DATA_CATALOG.md)) follows the
   same rule with a normalized, three-table design: each stored retrieval's
   `option_chain_snapshot_batches` row records the provider, the
   **explicitly requested feed (`opra` or `indicative`, stored verbatim and

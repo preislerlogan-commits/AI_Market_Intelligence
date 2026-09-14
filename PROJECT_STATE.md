@@ -11,16 +11,16 @@ Last updated: 2026-09-14
 | Area | Status |
 |---|---|
 | Phase | **Phase 0 — Infrastructure Foundation. Closed 2026-08-28.** Phase 1 (SPY options decision-support workflow) design is recorded and may begin; its first implementation step is read-only SPY option-chain ingestion and local storage. Closure is not a validation, accuracy, repeatability, or profitability claim for any agent, and does not mean every agent has been characterized. |
-| Storage | Local DuckDB, healthy at schema version `0008` (8 migrations). Migration `0009` (`option_chain_snapshot_batches` + `option_chain_snapshots` + `option_chain_snapshot_batch_items`, three-table normalized design) exists in code and tests only — **not applied to the real database**, no option data stored. |
-| Data connectors | Read-only Alpaca (bars, news, market-data snapshot, and — code/tests only, never run live — a bounded SPY option-chain snapshot connector) and FRED (observations, series metadata). No order/account/position/exercise/execution methods exist. |
+| Storage | Local DuckDB, healthy at schema version `0009` (9 migrations). Migration `0009` (`option_chain_snapshot_batches` + `option_chain_snapshots` + `option_chain_snapshot_batch_items`, three-table normalized design) has been **applied to the real database** (2026-09-14) — a read-only health check confirmed `healthy=True` at schema version `0009`. |
+| Data connectors | Read-only Alpaca (bars, news, market-data snapshot, and a bounded SPY option-chain snapshot connector — now exercised by exactly one live, indicative-feed request, 2026-09-14) and FRED (observations, series metadata). No order/account/position/exercise/execution methods exist. |
 | Ingested data | SPY 5-minute IEX bars (~3 trading days); ~20 SPY news articles; 7 FRED macro series (FEDFUNDS, GS10, CPIAUCSL, PCEPI, UNRATE, INDPRO, GDPC1) observations + metadata. Each is one bounded ingestion run with limited coverage — none is complete, gap-free, or validated. |
 | Orchestration | Deterministic, manually invoked ingestion path: dry-run-first CLI over the three reviewed jobs, per-job failure isolation, fail-closed overlap lock, persistent audit trail; one authorized `--execute` run. Meets the Phase 0 ingestion criterion (with limited-verification caveats). Scheduling, unattended operation, automatic stale-lock recovery, and freshness monitoring are Phase 1 / later and unimplemented. |
 | Model boundary | One OpenAI structured-output client (no tools, no retry, `store=False`); live-connectivity-verified. |
 | Agents | Market Evidence Agent, News Analyst, seven-series Macro Analyst. Each has exactly one accepted live run. Non-directional guarantee is structurally enforced. |
 | Trust layer | **P0-7 met (2026-08-28) — the methodology exists and the first real, human-reviewed Macro characterization is recorded; the other agents are not yet characterized.** `market_intelligence/evaluation/` provides the safe, offline foundation for the methodology: strict Pydantic v2 contracts (agent/severity/citation-classification/citation-reason/finding-category enums, one finding, one human citation adjudication, one evaluation-run record), a deterministic rubric-completeness validator, a symlink-refusing / no-overwrite / atomic / bounded local JSON round trip, and synthetic fixtures. It **also** provides the **first deterministic factual-transcription check — Macro Analyst only, over synthetic inputs** (`macro_factual_transcription.py`): it recognizes only the two exact controlled Macro Analyst statement forms (single stored observation; increase/decrease/unchanged two-observation comparison), verifies series ID / observation date / `Decimal` value / frequency wording / units-when-stated / previous observation / comparison direction, and emits one `info` (exact match — *not* a validation) / `failure` (mismatch, broad category only, no text reproduced) / `warning` (unrecognized wording → human review) finding. It **also** provides the **offline Macro characterization workflow** (`macro_characterization_input.py`, `macro_characterization_workflow.py`, `scripts/characterize_macro_report.py`): a strict local input contract (sanitized label; Macro claim IDs; claim series IDs and summaries; the sanitized evaluation evidence facts the transcription evaluator needs; expected claim/citation pairs — and nothing else), a pure builder that runs the transcription check for every claim, creates an `EvaluationRunRecord` carrying those findings, and emits one pending human-adjudication template per expected pair (never pre-classifying citation support, never treating a transcription match as citation support), a pure completion step that attaches completed human adjudications only when every expected pair has exactly one (refusing missing/duplicate/unexpected pairs; completion is not validation), a dry-run-first, offline, explicit-path **build CLI** (`scripts/characterize_macro_report.py`: `--write` required, no overwrite, no directory creation; with `--write` the resolved output path must be strictly inside gitignored `data/evaluations/local/`, and repository-root, tracked-directory, outside-repository, `..`-traversal, and symlink-escape targets are refused; dry-run behavior is unchanged), and a dry-run-first, offline **completion CLI** (`scripts/complete_macro_characterization.py`: a strict `MacroAdjudicationInput` contract — only the scaffold `run_id` plus a bounded human `CitationAdjudication` list, `extra="forbid"`, no credential/URL/response-ID/path/raw-evidence/model-reasoning/metadata field; `--record`/`--adjudications`/`--output` all confined strictly inside `data/evaluations/local/`; requires the adjudication `run_id` to match the scaffold; records human decisions only, no LLM judge, all four classifications preserved; sanitized counts/classification-tally output only — never a reviewer note, claim ID, citation ID, path, or record text; `--write` required to serialize, no overwrite, no directory creation). Committed fixtures and tests remain synthetic-only; real sanitized evidence facts may be used only through the explicit local characterization workflow under gitignored `data/evaluations/local/`, and real characterization inputs and outputs must never be committed. On 2026-08-28 the **first real, human-reviewed offline Macro Analyst characterization** was completed and recorded with the completion CLI, covering every claim: agent `macro_analyst`, 14 expected claim/citation pairs, 14 human adjudications (one per pair — none missing, duplicated, or unexpected), `rubric_complete: true`, classification tally `supported: 0` / `partially_supported: 14` / `unsupported: 0` / `unable_to_determine: 0`, all 14 reasons `claim_scope_exceeds_single_observation`, finding tally `info: 8` / `warning: 0` / `failure: 0` (seven factual-transcription findings were exact matches; the one scope-boundary information finding was preserved). All 14 pairs are `partially_supported` because each Macro claim is a two-observation comparison depending on two cited observations while each individual claim/citation pair carries only one of those observations. Every adjudication was the human reviewer's; no LLM judge generated, recommended, or changed any classification; no live request or Macro Analyst rerun occurred; the real artifacts remain gitignored under `data/evaluations/local/` and are not committed. This **closes P0-7 and Phase 0** (see [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md) and [docs/AGENT_EVALUATION_HARNESS.md](docs/AGENT_EVALUATION_HARNESS.md)) — it is **not** a claim that the Macro Analyst is validated, accurate, repeatable, or profitable. It still performs **no** lexical-overlap scoring, and the same transcription check and citation-support adjudication for the Market Evidence Agent and News Analyst, the abstention matrix, cross-agent consistency, and repeatability studies all remain future work that does **not** reopen Phase 0. |
 | Test baseline | `python -m pytest`: **2,626 passed, 4 skipped** (2,630 collected). The 4 skipped are symlink-refusal / symlink-escape tests (the evaluation-foundation serialization tests plus the characterization build-CLI and completion-CLI symlink-escape tests), which skip where the OS disallows creating a symlink; they are not passing tests. |
-| Not built | Predictive/forecast model, forecast records, agent orchestrator / combined brief, dashboard, trade journal, a live/stored options-data pipeline (the SPY option-chain connector + storage exist only in code and tests — never run live, migration `0009` unapplied, no data stored), intraday regime engine, deterministic contract selector, Options Strategy Agent, scheduler, brokerage execution. |
-| Phase 1 (design recorded, ready to begin) | An automated, evidence-based SPY options decision-support workflow: deterministic evidence + intraday regime classification (the deterministic regime engine also fixes one bounded scenario-horizon bucket, or `indeterminate`), a deterministic contract-eligibility selector that consumes that validated upstream horizon, then a bounded directional Options Strategy Agent (consumes only the upstream validated structured outputs plus the selector's eligible contract set, never a raw option chain; may reference but cannot invent, extend, or override the supplied horizon; `no_trade` is first-class), and a recorded evaluation before any usefulness claim. The three existing agents stay non-directional; the Options Strategy Agent is a separately bounded directional decision-support agent. **Design only — no code, connector, or agent exists.** Phase 0 is now closed (2026-08-28), so Phase 1 has begun. Its **first implementation step — read-only SPY option-chain snapshot ingestion and local storage** (own reviewed connector, sanitized, no execution surface) — is **built in code and tests only** (2026-08-28; ceilings tightened and provenance normalized to two tables 2026-09-01; revised again 2026-09-14 to a three-table design after a batch-membership provenance fix): `AlpacaOptionsChainClient` (`data.alpaca.markets` `/v1beta1/options/snapshots/SPY` only, SPY-only, explicit `opra`/`indicative` feed, bounded expiration/strike/type/page/contract inputs — expiration ≤ 60 days, strike width ≤ $500, ≤ 10 pages, ≤ 5,000 contracts, ≤ 1,000/page — deterministic pagination, OCC-symbol parsing/cross-check, sanitized errors, no retry), migration `0009` (`option_chain_snapshot_batches`: one run-level provenance row per stored retrieval, including a zero-contract retrieval; `option_chain_snapshots`: one row per **immutable** contract observation; `option_chain_snapshot_batch_items`: one truthful membership row per contract per batch, so `contract_count` and membership can never drift apart), `OptionChainSnapshotRepository` (also re-validates every request field against its own canonical `normalize_option_chain_request` form before any write), and the dry-run-first `scripts/ingest_alpaca_options_chain.py`. **No live option-chain request has been made, no real option data has been stored, and migration `0009` is not applied to the real database.** OPRA and indicative observations are kept separate and never merged; `indicative` data may be delayed/modified and must not be called live OPRA; **open interest is unavailable from this endpoint and is not produced or stored.** Nothing else in the workflow (regime engine, contract selector, Options Strategy Agent, evaluation) exists, and nothing is validated. See [docs/OPTIONS_DECISION_WORKFLOW.md](docs/OPTIONS_DECISION_WORKFLOW.md). |
+| Not built | Predictive/forecast model, forecast records, agent orchestrator / combined brief, dashboard, trade journal, intraday regime engine, deterministic contract selector, Options Strategy Agent, scheduler, brokerage execution. (The SPY option-chain connector and storage are now applied and have one stored live batch — see "Storage" above — but no selector, agent, recommendation, or execution consumes it.) |
+| Phase 1 (design recorded, ready to begin) | An automated, evidence-based SPY options decision-support workflow: deterministic evidence + intraday regime classification (the deterministic regime engine also fixes one bounded scenario-horizon bucket, or `indeterminate`), a deterministic contract-eligibility selector that consumes that validated upstream horizon, then a bounded directional Options Strategy Agent (consumes only the upstream validated structured outputs plus the selector's eligible contract set, never a raw option chain; may reference but cannot invent, extend, or override the supplied horizon; `no_trade` is first-class), and a recorded evaluation before any usefulness claim. The three existing agents stay non-directional; the Options Strategy Agent is a separately bounded directional decision-support agent. **Design only — no code, connector, or agent exists.** Phase 0 is now closed (2026-08-28), so Phase 1 has begun. Its **first implementation step — read-only SPY option-chain snapshot ingestion and local storage** (own reviewed connector, sanitized, no execution surface) — is **built in code and tests only** (2026-08-28; ceilings tightened and provenance normalized to two tables 2026-09-01; revised again 2026-09-14 to a three-table design after a batch-membership provenance fix): `AlpacaOptionsChainClient` (`data.alpaca.markets` `/v1beta1/options/snapshots/SPY` only, SPY-only, explicit `opra`/`indicative` feed, bounded expiration/strike/type/page/contract inputs — expiration ≤ 60 days, strike width ≤ $500, ≤ 10 pages, ≤ 5,000 contracts, ≤ 1,000/page — deterministic pagination, OCC-symbol parsing/cross-check, sanitized errors, no retry), migration `0009` (`option_chain_snapshot_batches`: one run-level provenance row per stored retrieval, including a zero-contract retrieval; `option_chain_snapshots`: one row per **immutable** contract observation; `option_chain_snapshot_batch_items`: one truthful membership row per contract per batch, so `contract_count` and membership can never drift apart), `OptionChainSnapshotRepository` (also re-validates every request field against its own canonical `normalize_option_chain_request` form before any write), and the dry-run-first `scripts/ingest_alpaca_options_chain.py`. **Superseding update (2026-09-14): migration `0009` has been applied to the real database, and one authorized live, `--execute` ingestion has succeeded** — provider `alpaca`, underlying `SPY`, requested feed `indicative` (explicitly not OPRA), one expiration (2026-09-18), strikes 740–790, 102 contracts received and inserted (51 calls, 51 puts), one successful batch and one successful ingestion run, no retry. **A subsequent read-only structural audit (2026-09-14, same day)** confirmed: 102 batch-membership rows and 102 snapshot rows, zero duplicate or orphan memberships, zero malformed OCC symbols or out-of-range contracts, quote and trade data present for all 102, implied volatility and each Greek present for 78 and unavailable for 24, zero negative/nonfinite values, zero crossed quotes, zero feed mismatches, and exactly one retrieval timestamp. **No recommendation, selector, agent, alert, dashboard, or execution action occurred as part of this ingestion or audit.** `indicative`-feed data may be delayed or modified and must not be described as live OPRA; the audit establishes internal structural consistency only — not pricing accuracy, timeliness, usefulness, predictive edge, strategy validity, or profitability; a future selector that requires IV/Greeks must reject or omit the 24 contracts with missing values, never substitute zero; open interest remains unavailable from this endpoint; and only one batch exists, so recurring reliability is not established. Nothing else in the workflow (regime engine, contract selector, Options Strategy Agent, evaluation) exists, and nothing is validated. **Next planned implementation step: the deterministic SPY intraday feature/regime engine (workflow step c) — not the deterministic contract selector or the Options Strategy Agent.** See [docs/OPTIONS_DECISION_WORKFLOW.md](docs/OPTIONS_DECISION_WORKFLOW.md). |
 
 ## Current Phase
 
@@ -40,13 +40,19 @@ claim that the Macro Analyst or any other agent is validated, universally
 accurate, repeatable, or profitable, and only the Macro Analyst has been
 characterized.** Phase 1's first implementation step — read-only SPY
 option-chain snapshot ingestion and local storage
-([docs/OPTIONS_DECISION_WORKFLOW.md](docs/OPTIONS_DECISION_WORKFLOW.md)) — has
-been built in code and tests only (see Completed Work Log item 40): a bounded
+([docs/OPTIONS_DECISION_WORKFLOW.md](docs/OPTIONS_DECISION_WORKFLOW.md)) — is
+now done, including a live run (see Completed Work Log item 40): a bounded
 `AlpacaOptionsChainClient`, migration `0009`, a repository, and a
-dry-run-first ingestion script, all exercised with mocked HTTP transports and
-temporary databases. No live option-chain request has occurred, no real
-option data is stored, and migration `0009` is not applied to the real
-database. The manual-only execution boundary and the non-directional
+dry-run-first ingestion script. **Migration `0009` has been applied to the
+real local database (2026-09-14, healthy at schema version `0009`), and one
+authorized live, `indicative`-feed ingestion has succeeded** (SPY, one
+expiration, strikes 740–790, 102 contracts received/inserted), followed by a
+read-only structural audit that found zero integrity or malformed-data
+issues — this confirms internal structural consistency only, not pricing
+accuracy, timeliness, usefulness, predictive edge, strategy validity, or
+profitability. The next planned implementation step is the deterministic SPY
+intraday feature/regime engine — not the deterministic contract selector or
+the Options Strategy Agent, neither of which exists. The manual-only execution boundary and the non-directional
 guarantee on the three existing analysis agents are unchanged.
 
 The prose below is retained as the Phase 0 history. Python environment and
@@ -4163,6 +4169,60 @@ entry describes something that has already been built, ingested, or attempted;
       `python -m pytest` (2,626 passed, 4 skipped), `python -m ruff check .`
       (clean), `git diff --check` (clean).
 
+    - **Superseded (2026-09-14, later the same day): first authorized live
+      ingestion and read-only structural audit.** The "Not done" paragraph
+      above — no live request, no stored data, migration `0009` unapplied —
+      was accurate earlier on 2026-09-14 and is preserved here as an honest,
+      time-scoped diagnostic record; it is **not** retracted, only superseded.
+      Migration `0009` was applied to the real local database (backed up
+      beforehand) and a subsequent read-only health check reported schema
+      version `0009` (9 migrations applied), `healthy=True`.
+      `scripts/ingest_alpaca_options_chain.py` was then run once, live, with
+      `--execute`: provider `alpaca`, underlying `SPY`, requested feed
+      `indicative` (explicitly not OPRA), one expiration (2026-09-18),
+      strikes 740–790. The run received and inserted 102 contracts (51 calls,
+      51 puts), wrote one `option_chain_snapshot_batches` row with
+      `outcome=succeeded`, and the corresponding `ingestion_runs` row was
+      recorded `succeeded`; exactly one request was made, with no retry.
+
+      A separate, subsequent **read-only structural audit** (no network,
+      Alpaca, OpenAI, FRED, agent, or provider request; no rerun of
+      ingestion; no database modification; no contract symbol, price, quote,
+      Greek, timestamp, or raw row printed) confirmed, as aggregate counts
+      only: the batch's provider/underlying/requested-feed/requested-window/
+      contract-count/outcome all match the ingestion result above; exactly
+      102 batch-membership rows and 102 corresponding immutable snapshot
+      rows, zero duplicate membership identities, every membership resolving
+      to exactly one snapshot, zero orphan memberships, and
+      `contract_count` equal to the membership count; 51 calls / 51 puts, 1
+      distinct expiration, strikes 740.000000–790.000000, zero contracts
+      outside the requested bounds, zero malformed OCC symbols; quote and
+      trade data present for all 102, implied volatility and each of
+      delta/gamma/theta/vega/rho present for 78 and unavailable (`NULL`) for
+      24; zero negative or non-finite numeric values, zero crossed quotes
+      (bid > ask), zero feed mismatches between the batch and its snapshots,
+      and exactly one distinct retrieval timestamp.
+
+      **Caveats (binding, not relaxed by the above):** `indicative`-feed data
+      may be delayed or modified by the provider and must never be described
+      as live OPRA data. This audit establishes internal structural
+      consistency only — it does **not** establish pricing accuracy,
+      timeliness, usefulness, predictive edge, strategy validity, or
+      profitability. A future deterministic contract selector that requires
+      implied volatility or Greeks must reject or omit the 24 contracts with
+      missing values — never substitute zero. Open interest remains
+      unavailable from this endpoint and is not produced, inferred, or
+      stored. Only one batch exists, so recurring reliability of the
+      connector/storage path is not established. No recommendation,
+      selector, agent, alert, dashboard, or execution action occurred as
+      part of this ingestion or audit — the deterministic contract selector
+      and the Options Strategy Agent still do not exist. **Next planned
+      implementation step: the deterministic SPY intraday feature/regime
+      engine (workflow step c in
+      [docs/OPTIONS_DECISION_WORKFLOW.md](docs/OPTIONS_DECISION_WORKFLOW.md)),
+      not the deterministic contract selector or the Options Strategy
+      Agent.**
+
 ## Next Planned Work
 
 This is the forward plan. It replaces the historical content now under
@@ -4312,25 +4372,34 @@ This is the forward plan. It replaces the historical content now under
    Evaluation backtests the underlying setup first, then options performance
    separately with realistic bid-ask/slippage, then a 30–50 session shadow
    test; one good run is not validation. Phase 0 closed on 2026-08-28, so this
-   work has begun. Implementation order: **first, read-only SPY
+   work has begun. Implementation order: **step b, read-only SPY
    option-chain ingestion and local storage** (its own reviewed connector,
-   sanitized, no execution surface) — **built in code and tests only as of
+   sanitized, no execution surface) — built in code and tests only as of
    2026-08-28, ceilings tightened and provenance normalized to two tables
-   2026-09-01 (Completed Work Log item 40): `AlpacaOptionsChainClient`
-   (expiration ≤ 60 days, strike width ≤ $500, ≤ 10 pages, ≤ 5,000
-   contracts), migration `0009` (`option_chain_snapshot_batches` +
-   `option_chain_snapshots`), `OptionChainSnapshotRepository`, and a
-   dry-run-first ingestion script; no live request has occurred, no real
-   option data is stored, migration `0009` is not applied to the real
-   database, open interest is unavailable and unstored, and OPRA vs.
-   indicative observations are kept separate** —
-   then the deterministic feature/regime
-   engine, the VWAP-extension/reversion hypothesis test, deterministic
-   contract filtering, the Options Strategy Agent, shadow evaluation, and
-   only then any alerts/dashboard. **Apart from step b's offline read-only
-   connector and storage, no options code, schema, or agent exists, and no
-   options component is validated.** No brokerage
-   integration, automatic execution, or Robinhood automation is authorized.
+   2026-09-01, normalized to a three-table design 2026-09-14 (Completed Work
+   Log item 40): `AlpacaOptionsChainClient` (expiration ≤ 60 days, strike
+   width ≤ $500, ≤ 10 pages, ≤ 5,000 contracts), migration `0009`
+   (`option_chain_snapshot_batches` + `option_chain_snapshots` +
+   `option_chain_snapshot_batch_items`), `OptionChainSnapshotRepository`, and
+   a dry-run-first ingestion script — **is now DONE, including a live run**:
+   migration `0009` was applied to the real database (2026-09-14, healthy at
+   schema version `0009`), and one authorized live, bounded, `indicative`-feed
+   ingestion (SPY, expiration 2026-09-18, strikes 740–790) succeeded with 102
+   contracts received/inserted (51 calls, 51 puts), followed by a read-only
+   structural audit the same day that found zero integrity or malformed-data
+   issues (see Completed Work Log item 40 for full sanitized detail and
+   caveats). Open interest remains unavailable and unstored, and OPRA vs.
+   indicative observations remain kept separate. **Next: step c, the
+   deterministic SPY intraday feature/regime engine** — no model — then the
+   VWAP-extension/reversion hypothesis test (step d), deterministic contract
+   filtering (step e), the Options Strategy Agent (step f), shadow evaluation
+   (step g), and only then any alerts/dashboard (step h). **Apart from step
+   b's connector and storage (now live-exercised once), no options code,
+   schema, or agent exists, and no options component is validated** — one
+   successful ingestion and one structural audit do not validate pricing
+   accuracy, timeliness, usefulness, predictive edge, strategy validity, or
+   profitability. No brokerage integration, automatic execution, or Robinhood
+   automation is authorized.
 
 Manual-only trading is preserved throughout. The three existing analysis
 agents (Market Evidence, News, Macro) remain non-directional; the Phase 1

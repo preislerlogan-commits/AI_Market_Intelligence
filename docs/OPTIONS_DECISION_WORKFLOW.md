@@ -1,16 +1,28 @@
 # Options Decision Workflow — Phase 1 Roadmap
 
-**Status: design, plus the first implementation step (step b) partially
-built offline.** As of 2026-08-28, step b's **read-only SPY option-chain
-snapshot connector and local DuckDB storage** exist in code and tests only —
-mocked HTTP transports and temporary databases, **no live option-chain
-request has been made, no real option data has been stored, and migration
-`0009` has not been applied to the real local database.** Everything else in
-this document — the intraday regime engine, the deterministic contract
-selector, the Options Strategy Agent, and every evaluation stage — remains
-**design only: no code, schema, connector, or agent exists, and nothing is
-validated.** This document records the intended shape of Phase 1 so the
-design is agreed before implementation begins. It is subordinate to
+**Status: design, plus the first implementation step (step b) done,
+including a live run.** As of 2026-08-28, step b's **read-only SPY
+option-chain snapshot connector and local DuckDB storage** existed in code
+and tests only — mocked HTTP transports and temporary databases, no live
+option-chain request had been made, no real option data had been stored,
+and migration `0009` had not been applied to the real local database. That
+status is preserved here as an honest, time-scoped diagnostic record and is
+not retracted. **Superseding update (2026-09-14): migration `0009` has been
+applied to the real local database, and one authorized live, bounded,
+`indicative`-feed ingestion has succeeded (SPY, expiration 2026-09-18,
+strikes 740–790, 102 contracts received/inserted — 51 calls, 51 puts), with
+a same-day read-only structural audit finding zero integrity or
+malformed-data issues.** See `PROJECT_STATE.md` (Completed Work Log item 40)
+and `DATA_CATALOG.md` ("SPY option-chain snapshots (indicative)") for full
+sanitized detail and binding caveats — this confirms internal structural
+consistency only, never pricing accuracy, timeliness, usefulness, predictive
+edge, strategy validity, or profitability. Everything else in this document
+— the intraday regime engine (**the next planned implementation step, step
+c**), the deterministic contract selector, the Options Strategy Agent, and
+every evaluation stage — remains **design only: no code, schema, connector,
+or agent exists, and nothing is validated.** This document records the
+intended shape of Phase 1 so the design is agreed before implementation
+begins. It is subordinate to
 [PROJECT_STATE.md](../PROJECT_STATE.md) (authoritative status),
 [DECISION_RULES.md](../DECISION_RULES.md) (binding boundaries), and
 [CLAUDE.md](../CLAUDE.md) / [AGENTS.md](../AGENTS.md).
@@ -30,8 +42,11 @@ agent-evaluation methodology exist and have each been exercised and recorded
 once. It is **not** a claim that any agent — the future Options Strategy Agent
 included — is validated, accurate, repeatable, or profitable, and **no options
 component in this document is implemented or validated**. With Phase 0 closed,
-**Phase 1 may begin; its first implementation step is step b below (read-only
-SPY option-chain ingestion and local storage)**.
+**Phase 1 has begun; step b (read-only SPY option-chain ingestion and local
+storage) is now done, including one live ingestion and a structural audit
+(2026-09-14). The next implementation step is step c (the deterministic SPY
+intraday feature/regime engine) — not the deterministic contract selector or
+the Options Strategy Agent.**
 
 ## Phase 1 objective
 
@@ -290,13 +305,38 @@ before the previous one is complete and recorded.
     request through `normalize_option_chain_request` and rejects it unless
     it matches its own canonical form, so a hand-constructed
     `OptionChainRequest` cannot bypass the connector's request ceilings.
-  - **Not done:** no live option-chain request has occurred, no real option
-    data has been stored, and migration `0009` has not been applied to the
-    real local database. `indicative`-feed data may be delayed or modified
-    by the provider and must never be described as live OPRA data.
-    **Open interest is not available** from this endpoint and is not stored,
-    inferred, or defaulted on either table; a later milestone would need a
-    different source for it.
+  - **As originally written (2026-08-28 through 2026-09-01): not done** — no
+    live option-chain request had occurred, no real option data had been
+    stored, and migration `0009` had not been applied to the real local
+    database. That statement is preserved here as an honest, time-scoped
+    diagnostic record and is not retracted.
+  - **Superseded (2026-09-14): done, including one live run.** Migration
+    `0009` was applied to the real local database (backed up beforehand;
+    read-only health check reported schema version `0009`, `healthy=True`).
+    `scripts/ingest_alpaca_options_chain.py --execute` was then run once,
+    live: provider `alpaca`, underlying `SPY`, requested feed `indicative`
+    (explicitly not OPRA), one expiration (2026-09-18), strikes 740–790. 102
+    contracts were received and inserted (51 calls, 51 puts); one batch
+    (`outcome=succeeded`) and one `ingestion_runs` row (`succeeded`) were
+    recorded; exactly one request was made, with no retry. A subsequent
+    read-only structural audit (no network/provider request, no rerun, no
+    database modification, no contract symbol/price/quote/Greek/timestamp
+    printed) confirmed, as aggregate counts only: 102 batch-membership rows
+    and 102 snapshot rows, zero duplicate or orphan memberships,
+    `contract_count` equal to the membership count, zero malformed OCC
+    symbols or out-of-range contracts, quote/trade data present for all 102,
+    implied volatility and each Greek present for 78 and unavailable
+    (`NULL`, never zero) for 24, and zero negative/nonfinite values, crossed
+    quotes, or feed mismatches. `indicative`-feed data may be delayed or
+    modified by the provider and must never be described as live OPRA data.
+    This confirms **internal structural consistency only** — not pricing
+    accuracy, timeliness, usefulness, predictive edge, strategy validity, or
+    profitability; only one batch exists, so recurring reliability is not
+    established. **Open interest is not available** from this endpoint and
+    is not stored, inferred, or defaulted on any of the three tables; a
+    later milestone would need a different source for it. See
+    `PROJECT_STATE.md` (Completed Work Log item 40) and `DATA_CATALOG.md`
+    for full sanitized detail.
 - **c.** Build the deterministic SPY intraday feature/regime engine (the
   feature set and classifier above). No model.
 - **d.** Test the VWAP-extension / reversion hypothesis on the underlying
@@ -320,7 +360,11 @@ before the previous one is complete and recorded.
 - **Manual trading decisions are preserved** — the workflow informs; the
   user decides and executes.
 - **Keep implemented / planned / validated status clearly separated**
-  everywhere, as PROJECT_STATE.md does. As of now, only step b's read-only
-  connector and storage exist, and only in code and tests (no live request,
-  no stored data, migration `0009` not applied). Every other item in this
-  document is *planned* — not implemented — and **nothing is validated.**
+  everywhere, as PROJECT_STATE.md does. As of 2026-09-14, step b's read-only
+  connector and storage exist, migration `0009` is applied to the real
+  database, and one live ingestion plus one read-only structural audit have
+  succeeded (see "Implementation order" above) — but this establishes
+  internal structural consistency only, not pricing accuracy, timeliness,
+  usefulness, predictive edge, strategy validity, or profitability. Every
+  other item in this document (steps c–h) is *planned* — not implemented —
+  and **nothing is validated.**
