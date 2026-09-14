@@ -10,6 +10,7 @@ constructed directly here -- never fetched live.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -18,6 +19,12 @@ import pytest
 
 from market_intelligence.config.settings import Settings
 from market_intelligence.data_connectors.alpaca_options_chain import (
+    MAX_EXPIRATION_RANGE_DAYS,
+    MAX_LIMIT,
+    MAX_PAGES,
+    MAX_STRIKE_RANGE_WIDTH,
+    MAX_TOTAL_CONTRACTS,
+    OptionChainRequest,
     OptionChainSnapshot,
     normalize_option_chain_request,
 )
@@ -154,6 +161,33 @@ def count_batch_rows(connection) -> int:
     return connection.execute("SELECT count(*) FROM option_chain_snapshot_batches").fetchone()[0]
 
 
+def count_batch_item_rows(connection, run_id: str | None = None) -> int:
+    if run_id is None:
+        return connection.execute(
+            "SELECT count(*) FROM option_chain_snapshot_batch_items"
+        ).fetchone()[0]
+    return connection.execute(
+        "SELECT count(*) FROM option_chain_snapshot_batch_items WHERE ingestion_run_id = ?",
+        [run_id],
+    ).fetchone()[0]
+
+
+def fetch_batch_item_symbols(connection, run_id: str) -> set[str]:
+    rows = connection.execute(
+        "SELECT contract_symbol FROM option_chain_snapshot_batch_items "
+        "WHERE ingestion_run_id = ?",
+        [run_id],
+    ).fetchall()
+    return {r[0] for r in rows}
+
+
+def fetch_snapshot_ingestion_run_id(connection, contract_symbol: str = "SPY260918C00500000") -> str:
+    return connection.execute(
+        "SELECT ingestion_run_id FROM option_chain_snapshots WHERE contract_symbol = ?",
+        [contract_symbol],
+    ).fetchone()[0]
+
+
 # --- successful insertion ---------------------------------------------------
 
 
@@ -214,7 +248,7 @@ def test_store_transactional_run_metadata(tmp_path, isolated_env_file):
 def test_restoring_identical_snapshot_refreshes_provenance_only(tmp_path, isolated_env_file):
     repository = initialized_repository(tmp_path, isolated_env_file)
     request = make_request()
-    repository.store_snapshots([make_snapshot()], request=request)
+    first = repository.store_snapshots([make_snapshot()], request=request)
     result = repository.store_snapshots([make_snapshot()], request=request)
 
     assert result.inserted == 0
@@ -224,8 +258,47 @@ def test_restoring_identical_snapshot_refreshes_provenance_only(tmp_path, isolat
     connection = read_only_connection(repository)
     try:
         assert count_rows(connection) == 1
+        # the snapshot row is never relinked to the later run -- it still
+        # attributes creation to the run that first inserted it
+        assert fetch_snapshot_ingestion_run_id(connection) == first.ingestion_run_id
+        assert fetch_snapshot_ingestion_run_id(connection) != result.ingestion_run_id
     finally:
         connection.close()
+
+
+def test_restoring_identical_snapshot_does_not_mutate_or_relink_original_row(
+    tmp_path, isolated_env_file
+):
+    """Requirement: re-storing an identical snapshot must not mutate/relink the original row."""
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    request = make_request()
+    first = repository.store_snapshots([make_snapshot()], request=request)
+
+    connection = read_only_connection(repository)
+    try:
+        before = connection.execute(
+            "SELECT provider, underlying, feed, contract_symbol, retrieved_at, "
+            "expiration_date, option_type, strike_price, bid_price, first_ingested_at, "
+            "ingestion_run_id FROM option_chain_snapshots"
+        ).fetchone()
+    finally:
+        connection.close()
+
+    second = repository.store_snapshots([make_snapshot()], request=request)
+    assert second.ingestion_run_id != first.ingestion_run_id
+
+    connection = read_only_connection(repository)
+    try:
+        after = connection.execute(
+            "SELECT provider, underlying, feed, contract_symbol, retrieved_at, "
+            "expiration_date, option_type, strike_price, bid_price, first_ingested_at, "
+            "ingestion_run_id FROM option_chain_snapshots"
+        ).fetchone()
+    finally:
+        connection.close()
+    # every column except the (untested here) last_seen_at bookkeeping column
+    # is byte-identical -- the row was never mutated or relinked
+    assert before == after
 
 
 def test_conflicting_values_same_identity_rolls_back(tmp_path, isolated_env_file):
@@ -269,6 +342,195 @@ def test_different_retrieved_at_stored_as_new_observation(tmp_path, isolated_env
         assert count_rows(connection) == 2
     finally:
         connection.close()
+
+
+# --- batch membership (option_chain_snapshot_batch_items) ---------------
+
+
+def test_first_batch_retains_membership_after_identical_reingestion(tmp_path, isolated_env_file):
+    """Re-ingesting an identical snapshot must not move it out of its first batch."""
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    request = make_request()
+    first = repository.store_snapshots([make_snapshot()], request=request)
+    repository.store_snapshots([make_snapshot()], request=request)
+
+    connection = read_only_connection(repository)
+    try:
+        first_batch = fetch_batch(connection, first.ingestion_run_id)
+        first_membership = fetch_batch_item_symbols(connection, first.ingestion_run_id)
+        first_membership_count = count_batch_item_rows(connection, first.ingestion_run_id)
+    finally:
+        connection.close()
+    assert first_batch[9] == 1  # contract_count unchanged
+    assert first_membership == {"SPY260918C00500000"}
+    assert first_membership_count == 1
+
+
+def test_second_batch_has_its_own_complete_membership(tmp_path, isolated_env_file):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    request = make_request()
+    repository.store_snapshots([make_snapshot()], request=request)
+    second = repository.store_snapshots([make_snapshot()], request=request)
+
+    connection = read_only_connection(repository)
+    try:
+        second_batch = fetch_batch(connection, second.ingestion_run_id)
+        second_membership = fetch_batch_item_symbols(connection, second.ingestion_run_id)
+    finally:
+        connection.close()
+    assert second_batch[9] == 1  # contract_count
+    assert second_membership == {"SPY260918C00500000"}
+
+
+def test_immutable_snapshot_may_be_referenced_by_both_batches(tmp_path, isolated_env_file):
+    """One immutable option_chain_snapshots row may be referenced by two batches' membership."""
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    request = make_request()
+    first = repository.store_snapshots([make_snapshot()], request=request)
+    second = repository.store_snapshots([make_snapshot()], request=request)
+
+    connection = read_only_connection(repository)
+    try:
+        assert count_rows(connection) == 1  # exactly one immutable snapshot row
+        assert count_batch_rows(connection) == 2  # two distinct batches
+        run_ids_referencing = {
+            r[0]
+            for r in connection.execute(
+                "SELECT ingestion_run_id FROM option_chain_snapshot_batch_items "
+                "WHERE contract_symbol = 'SPY260918C00500000'"
+            ).fetchall()
+        }
+    finally:
+        connection.close()
+    assert run_ids_referencing == {first.ingestion_run_id, second.ingestion_run_id}
+
+
+def test_mixed_existing_and_new_snapshots_produce_truthful_membership_counts(
+    tmp_path, isolated_env_file
+):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    request = make_request()
+    first = repository.store_snapshots(
+        [make_snapshot(contract_symbol="SPY260918C00500000")], request=request
+    )
+    second = repository.store_snapshots(
+        [
+            make_snapshot(contract_symbol="SPY260918C00500000"),  # already exists
+            make_snapshot(contract_symbol="SPY260918C00520000", strike_price=Decimal("520")),
+        ],
+        request=request,
+    )
+
+    assert second.inserted == 1
+    assert second.existing_or_updated == 1
+
+    connection = read_only_connection(repository)
+    try:
+        first_batch = fetch_batch(connection, first.ingestion_run_id)
+        second_batch = fetch_batch(connection, second.ingestion_run_id)
+        first_membership = fetch_batch_item_symbols(connection, first.ingestion_run_id)
+        second_membership = fetch_batch_item_symbols(connection, second.ingestion_run_id)
+        total_snapshot_rows = count_rows(connection)
+    finally:
+        connection.close()
+
+    assert first_batch[9] == 1
+    assert first_membership == {"SPY260918C00500000"}
+    assert second_batch[9] == 2
+    assert second_membership == {"SPY260918C00500000", "SPY260918C00520000"}
+    assert total_snapshot_rows == 2  # the shared identity is stored exactly once
+
+
+def test_conflict_rollback_leaves_no_new_batch_or_membership(tmp_path, isolated_env_file):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    request = make_request()
+    first = repository.store_snapshots(
+        [make_snapshot(bid_price=Decimal("5.25"))], request=request
+    )
+    result = repository.store_snapshots(
+        [make_snapshot(bid_price=Decimal("9.99"))], request=request
+    )
+
+    assert result.ingestion_run_status == "failed"
+
+    connection = read_only_connection(repository)
+    try:
+        assert count_batch_rows(connection) == 1
+        assert count_batch_item_rows(connection) == 1
+        assert count_batch_item_rows(connection, first.ingestion_run_id) == 1
+        assert count_batch_item_rows(connection, result.ingestion_run_id) == 0
+    finally:
+        connection.close()
+
+
+def test_empty_batch_has_zero_membership_rows(tmp_path, isolated_env_file):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    request = make_request()
+    result = repository.store_snapshots(
+        [], request=request, retrieved_at="2026-09-02T15:30:05Z"
+    )
+
+    assert result.batch_outcome == "skipped_empty"
+    connection = read_only_connection(repository)
+    try:
+        assert count_batch_rows(connection) == 1
+        assert count_batch_item_rows(connection) == 0
+        assert count_batch_item_rows(connection, result.ingestion_run_id) == 0
+    finally:
+        connection.close()
+
+
+def test_batch_membership_count_matches_batch_contract_count(tmp_path, isolated_env_file):
+    """Requirement: contract_count must equal the membership row count for a non-empty batch."""
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    request = make_request()
+    result = repository.store_snapshots(
+        [
+            make_snapshot(contract_symbol="SPY260918C00500000"),
+            make_snapshot(contract_symbol="SPY260918C00520000", strike_price=Decimal("520")),
+            make_snapshot(contract_symbol="SPY260918C00540000", strike_price=Decimal("540")),
+        ],
+        request=request,
+    )
+
+    connection = read_only_connection(repository)
+    try:
+        batch = fetch_batch(connection, result.ingestion_run_id)
+        membership_count = count_batch_item_rows(connection, result.ingestion_run_id)
+    finally:
+        connection.close()
+    assert batch[9] == 3  # contract_count
+    assert membership_count == 3
+    assert batch[9] == membership_count
+
+
+def test_feed_separation_in_batch_membership(tmp_path, isolated_env_file):
+    """OPRA and indicative membership rows for the same contract/instant stay distinct."""
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    opra_result = repository.store_snapshots(
+        [make_snapshot(feed="opra")], request=make_request(feed="opra")
+    )
+    indicative_result = repository.store_snapshots(
+        [make_snapshot(feed="indicative")], request=make_request(feed="indicative")
+    )
+
+    connection = read_only_connection(repository)
+    try:
+        feeds = {
+            r[0]
+            for r in connection.execute(
+                "SELECT feed FROM option_chain_snapshot_batch_items"
+            ).fetchall()
+        }
+        opra_membership = count_batch_item_rows(connection, opra_result.ingestion_run_id)
+        indicative_membership = count_batch_item_rows(
+            connection, indicative_result.ingestion_run_id
+        )
+    finally:
+        connection.close()
+    assert feeds == {"opra", "indicative"}
+    assert opra_membership == 1
+    assert indicative_membership == 1
 
 
 # --- run-level batch provenance -----------------------------------------
@@ -511,6 +773,122 @@ def test_unnormalized_request_rejected(tmp_path, isolated_env_file):
     repository = initialized_repository(tmp_path, isolated_env_file)
     with pytest.raises(OptionChainSnapshotStorageValidationError):
         repository.store_snapshots([make_snapshot()], request={"feed": "opra"})
+
+
+# --- request boundary hardening: forged OptionChainRequest ----------------
+
+
+def forged_request(**overrides) -> OptionChainRequest:
+    """Build an OptionChainRequest directly, bypassing normalize_option_chain_request.
+
+    Used only to prove that ``store_snapshots`` re-validates every field
+    itself and cannot be bypassed by a hand-constructed request.
+    """
+    kwargs = dict(
+        underlying="SPY",
+        feed="opra",
+        expiration_date_gte="2026-09-01",
+        expiration_date_lte="2026-09-30",
+        strike_price_gte=Decimal("400"),
+        strike_price_lte=Decimal("600"),
+        option_type=None,
+        limit=1000,
+        max_pages=1,
+        max_total_contracts=1000,
+    )
+    kwargs.update(overrides)
+    return OptionChainRequest(**kwargs)
+
+
+def assert_nothing_written(repository) -> None:
+    connection = read_only_connection(repository)
+    try:
+        assert connection.execute("SELECT count(*) FROM ingestion_runs").fetchone()[0] == 0
+        assert count_batch_rows(connection) == 0
+        assert count_batch_item_rows(connection) == 0
+        assert count_rows(connection) == 0
+    finally:
+        connection.close()
+
+
+def test_forged_request_above_expiration_span_ceiling_rejected(tmp_path, isolated_env_file):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    gte = datetime(2026, 9, 1)
+    lte = gte + timedelta(days=MAX_EXPIRATION_RANGE_DAYS + 1)
+    bad = forged_request(
+        expiration_date_gte=gte.strftime("%Y-%m-%d"),
+        expiration_date_lte=lte.strftime("%Y-%m-%d"),
+    )
+    with pytest.raises(OptionChainSnapshotStorageValidationError):
+        repository.store_snapshots([make_snapshot()], request=bad)
+    assert_nothing_written(repository)
+
+
+def test_forged_request_above_strike_width_ceiling_rejected(tmp_path, isolated_env_file):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    bad = forged_request(
+        strike_price_gte=Decimal("400"),
+        strike_price_lte=Decimal("400") + MAX_STRIKE_RANGE_WIDTH + Decimal("1"),
+    )
+    with pytest.raises(OptionChainSnapshotStorageValidationError):
+        repository.store_snapshots([make_snapshot()], request=bad)
+    assert_nothing_written(repository)
+
+
+def test_forged_request_above_max_pages_ceiling_rejected(tmp_path, isolated_env_file):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    bad = forged_request(max_pages=MAX_PAGES + 1)
+    with pytest.raises(OptionChainSnapshotStorageValidationError):
+        repository.store_snapshots([make_snapshot()], request=bad)
+    assert_nothing_written(repository)
+
+
+def test_forged_request_above_max_total_contracts_ceiling_rejected(tmp_path, isolated_env_file):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    bad = forged_request(max_total_contracts=MAX_TOTAL_CONTRACTS + 1)
+    with pytest.raises(OptionChainSnapshotStorageValidationError):
+        repository.store_snapshots([make_snapshot()], request=bad)
+    assert_nothing_written(repository)
+
+
+def test_forged_request_above_per_page_limit_ceiling_rejected(tmp_path, isolated_env_file):
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    bad = forged_request(limit=MAX_LIMIT + 1)
+    with pytest.raises(OptionChainSnapshotStorageValidationError):
+        repository.store_snapshots([make_snapshot()], request=bad)
+    assert_nothing_written(repository)
+
+
+def test_forged_request_at_every_ceiling_boundary_is_accepted(tmp_path, isolated_env_file):
+    """The ceilings themselves are valid, inclusive bounds -- only exceeding them fails."""
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    gte = datetime(2026, 9, 1)
+    lte = gte + timedelta(days=MAX_EXPIRATION_RANGE_DAYS)
+    exactly_at_ceiling = forged_request(
+        expiration_date_gte=gte.strftime("%Y-%m-%d"),
+        expiration_date_lte=lte.strftime("%Y-%m-%d"),  # exactly MAX_EXPIRATION_RANGE_DAYS
+        strike_price_gte=Decimal("400"),
+        strike_price_lte=Decimal("400") + MAX_STRIKE_RANGE_WIDTH,
+        max_pages=MAX_PAGES,
+        max_total_contracts=MAX_TOTAL_CONTRACTS,
+        limit=MAX_LIMIT,
+    )
+    result = repository.store_snapshots([make_snapshot()], request=exactly_at_ceiling)
+    assert result.ingestion_run_status == "succeeded"
+
+
+def test_forged_request_with_reassembled_but_unequal_fields_rejected(tmp_path, isolated_env_file):
+    """A request whose fields are individually legal but disagree with its own canonical form fails.
+
+    Here ``limit`` is a bool, which ``normalize_limit`` rejects outright even
+    though ``isinstance(True, int)`` is true in Python -- this exercises the
+    canonical-equality re-validation path, not just the ceiling checks.
+    """
+    repository = initialized_repository(tmp_path, isolated_env_file)
+    bad = forged_request(limit=True)
+    with pytest.raises(OptionChainSnapshotStorageValidationError):
+        repository.store_snapshots([make_snapshot()], request=bad)
+    assert_nothing_written(repository)
 
 
 def test_non_spy_underlying_rejected(tmp_path, isolated_env_file):

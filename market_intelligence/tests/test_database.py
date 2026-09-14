@@ -1513,12 +1513,140 @@ def test_migration_0009_has_no_open_interest_column(tmp_path, isolated_env_file)
             row[0]
             for row in connection.execute(
                 "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name IN ('option_chain_snapshots', 'option_chain_snapshot_batches')"
+                "WHERE table_name IN ('option_chain_snapshots', 'option_chain_snapshot_batches', "
+                "'option_chain_snapshot_batch_items')"
             ).fetchall()
         }
     finally:
         connection.close()
     assert not any("open_interest" in c or "openinterest" in c.lower() for c in columns)
+
+
+# --- migration 0009 (option_chain_snapshot_batch_items) schema and primary key --
+
+
+def test_migration_0009_creates_option_chain_snapshot_batch_items_with_expected_primary_key(
+    tmp_path, isolated_env_file
+):
+    manager = real_migrations_manager(tmp_path, isolated_env_file)
+    result = manager.initialize()
+
+    connection = duckdb.connect(str(result.database_path), read_only=True)
+    try:
+        tables = table_names(connection)
+        pk_columns = [
+            row[0]
+            for row in connection.execute(
+                "SELECT column_name FROM information_schema.key_column_usage "
+                "WHERE table_name = 'option_chain_snapshot_batch_items' ORDER BY ordinal_position"
+            ).fetchall()
+        ]
+    finally:
+        connection.close()
+
+    assert "option_chain_snapshot_batch_items" in tables
+    assert pk_columns == [
+        "ingestion_run_id", "provider", "underlying", "feed", "contract_symbol", "retrieved_at",
+    ]
+    assert result.applied_migration_count == 9
+    assert result.schema_version == "0009"
+
+
+_BATCH_ITEM_INSERT_COLUMNS = (
+    "ingestion_run_id, provider, underlying, feed, contract_symbol, retrieved_at"
+)
+
+
+def _batch_item_insert_values(
+    run_id: str = "run-1", *, feed: str = "opra", contract_symbol: str = "SPY260918C00500000",
+    retrieved_at: str = "2026-09-02T15:30:05",
+) -> str:
+    return f"('{run_id}', 'alpaca', 'SPY', '{feed}', '{contract_symbol}', '{retrieved_at}')"
+
+
+def test_migration_0009_batch_item_same_run_allows_multiple_contracts(
+    tmp_path, isolated_env_file
+):
+    """One batch's membership can list many distinct contracts."""
+    manager = real_migrations_manager(tmp_path, isolated_env_file)
+    manager.initialize()
+
+    connection = duckdb.connect(str(manager.database_path))
+    try:
+        connection.execute(
+            f"INSERT INTO option_chain_snapshot_batch_items ({_BATCH_ITEM_INSERT_COLUMNS}) "
+            "VALUES " + _batch_item_insert_values(contract_symbol="SPY260918C00500000")
+        )
+        connection.execute(
+            f"INSERT INTO option_chain_snapshot_batch_items ({_BATCH_ITEM_INSERT_COLUMNS}) "
+            "VALUES " + _batch_item_insert_values(contract_symbol="SPY260918C00520000")
+        )
+        count = connection.execute(
+            "SELECT count(*) FROM option_chain_snapshot_batch_items WHERE ingestion_run_id = "
+            "'run-1'"
+        ).fetchone()[0]
+    finally:
+        connection.close()
+    assert count == 2
+
+
+def test_migration_0009_batch_item_rejects_exact_duplicate(tmp_path, isolated_env_file):
+    manager = real_migrations_manager(tmp_path, isolated_env_file)
+    manager.initialize()
+
+    connection = duckdb.connect(str(manager.database_path))
+    try:
+        connection.execute(
+            f"INSERT INTO option_chain_snapshot_batch_items ({_BATCH_ITEM_INSERT_COLUMNS}) "
+            "VALUES " + _batch_item_insert_values()
+        )
+        with pytest.raises(duckdb.ConstraintException):
+            connection.execute(
+                f"INSERT INTO option_chain_snapshot_batch_items ({_BATCH_ITEM_INSERT_COLUMNS}) "
+                "VALUES " + _batch_item_insert_values()
+            )
+    finally:
+        connection.close()
+
+
+def test_migration_0009_batch_item_allows_same_snapshot_identity_across_two_runs(
+    tmp_path, isolated_env_file
+):
+    """Two different batches (run ids) may both reference the same immutable snapshot identity."""
+    manager = real_migrations_manager(tmp_path, isolated_env_file)
+    manager.initialize()
+
+    connection = duckdb.connect(str(manager.database_path))
+    try:
+        connection.execute(
+            f"INSERT INTO option_chain_snapshot_batch_items ({_BATCH_ITEM_INSERT_COLUMNS}) "
+            "VALUES " + _batch_item_insert_values(run_id="run-1")
+        )
+        connection.execute(
+            f"INSERT INTO option_chain_snapshot_batch_items ({_BATCH_ITEM_INSERT_COLUMNS}) "
+            "VALUES " + _batch_item_insert_values(run_id="run-2")
+        )
+        count = connection.execute(
+            "SELECT count(*) FROM option_chain_snapshot_batch_items"
+        ).fetchone()[0]
+    finally:
+        connection.close()
+    assert count == 2
+
+
+def test_migration_0009_batch_item_rejects_unknown_feed(tmp_path, isolated_env_file):
+    manager = real_migrations_manager(tmp_path, isolated_env_file)
+    manager.initialize()
+
+    connection = duckdb.connect(str(manager.database_path))
+    try:
+        with pytest.raises(duckdb.ConstraintException):
+            connection.execute(
+                f"INSERT INTO option_chain_snapshot_batch_items ({_BATCH_ITEM_INSERT_COLUMNS}) "
+                "VALUES " + _batch_item_insert_values(feed="sip")
+            )
+    finally:
+        connection.close()
 
 
 # --- 0008 -> 0009 upgrade ----------------------------------------------------
@@ -1573,11 +1701,22 @@ def test_0008_to_0009_upgrade_preserves_existing_infrastructure_state(
         row = connection.execute(
             "SELECT run_id FROM ingestion_runs WHERE run_id = 'run-1'"
         ).fetchone()
+        batch_item_pk_columns = [
+            r[0]
+            for r in connection.execute(
+                "SELECT column_name FROM information_schema.key_column_usage "
+                "WHERE table_name = 'option_chain_snapshot_batch_items' ORDER BY ordinal_position"
+            ).fetchall()
+        ]
     finally:
         connection.close()
 
     assert "option_chain_snapshots" in tables
     assert "option_chain_snapshot_batches" in tables
+    assert "option_chain_snapshot_batch_items" in tables
+    assert batch_item_pk_columns == [
+        "ingestion_run_id", "provider", "underlying", "feed", "contract_symbol", "retrieved_at",
+    ]
     assert row == ("run-1",)
 
     health = manager.check_health()

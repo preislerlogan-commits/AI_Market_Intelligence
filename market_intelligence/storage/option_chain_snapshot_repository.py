@@ -2,52 +2,90 @@
 objects into DuckDB.
 
 This module never makes network requests and never accepts, stores, or logs
-credentials. It writes only to the ``option_chain_snapshot_batches`` and
-``option_chain_snapshots`` tables (migration ``0009``) and the existing
-``ingestion_runs`` bookkeeping table -- never a raw provider payload, a
-directional forecast, a contract ranking, a strategy recommendation, an
-order, an execution field, request headers, request URLs, page tokens, or a
-response body. It assumes the database has already been brought up to at
-least migration ``0009``; this class only writes rows, it never applies
-migrations itself.
+credentials. It writes only to the ``option_chain_snapshot_batches``,
+``option_chain_snapshots``, and ``option_chain_snapshot_batch_items`` tables
+(migration ``0009``) and the existing ``ingestion_runs`` bookkeeping table --
+never a raw provider payload, a directional forecast, a contract ranking, a
+strategy recommendation, an order, an execution field, request headers,
+request URLs, page tokens, or a response body. It assumes the database has
+already been brought up to at least migration ``0009``; this class only
+writes rows, it never applies migrations itself.
 
-Run-level provenance: every successful stored retrieval writes exactly one
-``option_chain_snapshot_batches`` row -- ingestion-run id, provider,
-underlying, requested feed, requested expiration/strike window, requested
-option type, the UTC retrieval instant, and the contract count. A successful
-retrieval that returned zero contracts still writes that batch row (with
-``contract_count = 0`` and ``outcome = 'skipped_empty'``) and zero snapshot
-rows, so its feed/bounds/retrieved_at are durably recorded. Request-level
-fields are stored only on the batch row, never duplicated onto each snapshot
-row.
+Three-table design:
 
-Every batch -- the run-level row, all snapshot rows, and the final
-``succeeded`` ``ingestion_runs`` status update -- is written inside a single
-DuckDB transaction: if any item fails validation, or an existing snapshot
-identity ``(provider, underlying, feed, contract_symbol, retrieved_at)`` has
-conflicting stored values, or the final ``succeeded`` status update itself
-fails, nothing in that batch is persisted (no batch row, no partial snapshot
-rows) and the ``ingestion_runs`` row is separately recorded as ``failed``
-with a sanitized error category -- never a raw exception message,
-quote/Greek value, contract symbol, or credential. Stored changes are never
-left associated with a ``running`` or ``failed`` run.
+* ``option_chain_snapshot_batches`` -- run-level provenance. Every
+  successful stored retrieval writes exactly one row -- ingestion-run id,
+  provider, underlying, requested feed, requested expiration/strike window,
+  requested option type, the UTC retrieval instant, and the contract count.
+  A successful retrieval that returned zero contracts still writes that
+  batch row (with ``contract_count = 0`` and ``outcome = 'skipped_empty'``)
+  and zero snapshot/batch-item rows. Request-level fields are stored only
+  here, never duplicated onto snapshot or batch-item rows.
+* ``option_chain_snapshots`` -- one row per *immutable* point-in-time
+  observation, identified by ``(provider, underlying, feed, contract_symbol,
+  retrieved_at)``. Once stored, a row's ownership/provenance is never
+  reassigned: re-storing the same identity with matching values may refresh
+  non-historical bookkeeping (``last_seen_at``) but never relinks the row to
+  a different ingestion run. ``ingestion_run_id`` on this table records only
+  the run that *first* inserted the row -- it answers "who created this
+  observation," never "which batches reference it."
+* ``option_chain_snapshot_batch_items`` -- the normalized batch-membership
+  table. Every non-empty successful ``store_snapshots`` call writes exactly
+  one membership row per returned contract, unconditionally -- whether the
+  underlying ``option_chain_snapshots`` row was newly inserted or already
+  existed. This is what keeps batch membership truthful under repeated
+  ingestion of the same snapshot identity: the original batch's membership
+  rows are never touched by a later store, so one immutable snapshot
+  observation may legitimately be referenced by more than one batch's
+  membership rows. ``option_chain_snapshot_batches.contract_count`` for a
+  non-empty successful batch always equals the count of
+  ``option_chain_snapshot_batch_items`` rows carrying that batch's
+  ``ingestion_run_id``.
+
+Every batch -- the run-level row, all snapshot rows, all batch-item rows, and
+the final ``succeeded`` ``ingestion_runs`` status update -- is written inside
+a single DuckDB transaction: if any item fails validation, or an existing
+snapshot identity ``(provider, underlying, feed, contract_symbol,
+retrieved_at)`` has conflicting stored values, or the final ``succeeded``
+status update itself fails, nothing in that batch is persisted (no batch row,
+no partial snapshot rows, no partial batch-item rows) and the
+``ingestion_runs`` row is separately recorded as ``failed`` with a sanitized
+error category -- never a raw exception message, quote/Greek value, contract
+symbol, or credential. Stored changes are never left associated with a
+``running`` or ``failed`` run.
 
 Any failure before a durable ``running`` ``ingestion_runs`` row exists --
 opening the connection, reading the schema version, or inserting that row --
 also raises a sanitized ``OptionChainSnapshotStorageError`` directly.
 
-Idempotency and OPRA/indicative separation: an option snapshot is a
-point-in-time observation, so the snapshot identity includes ``retrieved_at``
-(the single UTC instant the connector stamped on one ``get_chain_snapshot``
-call). Re-storing the same connector result refreshes only
-retrieval/last-seen/run provenance; re-storing the same identity with
-conflicting values aborts the batch; a later ingestion run has a different
-``retrieved_at``, a new batch row, and is stored as new observation rows.
-``feed`` is part of the snapshot identity and is recorded verbatim as
-``requested_feed`` on the batch row, so an ``opra`` observation and an
-``indicative`` observation of the same contract at the same instant are
-never merged. Each ``option_chain_snapshot_batches`` row keys on its
-ingestion-run id (one fresh id per store call), so it is only ever inserted.
+Idempotency, immutability, and OPRA/indicative separation: an option
+snapshot is a point-in-time observation, so the snapshot identity includes
+``retrieved_at`` (the single UTC instant the connector stamped on one
+``get_chain_snapshot`` call). Re-storing the same connector result never
+mutates or relinks the stored ``option_chain_snapshots`` row -- it only
+inserts new ``option_chain_snapshot_batch_items`` rows for the new batch,
+alongside refreshing the snapshot row's non-historical ``last_seen_at``
+bookkeeping; re-storing the same identity with conflicting values aborts the
+whole batch (no new batch row, no new batch-item rows, and the original
+snapshot row is untouched); a later ingestion run has a different
+``retrieved_at``, a new batch row, and is stored as new observation and
+batch-item rows. ``feed`` is part of the snapshot and batch-item identity and
+is recorded verbatim as ``requested_feed`` on the batch row, so an ``opra``
+observation and an ``indicative`` observation of the same contract at the
+same instant are never merged. Each ``option_chain_snapshot_batches`` row
+keys on its ingestion-run id (one fresh id per store call), so it is only
+ever inserted; each ``option_chain_snapshot_batch_items`` row keys on
+``(ingestion_run_id, provider, underlying, feed, contract_symbol,
+retrieved_at)``, so it too is always a plain insert.
+
+Request boundary hardening: ``store_snapshots`` never trusts a caller-supplied
+``OptionChainRequest`` at face value. Every field is re-normalized through
+``normalize_option_chain_request`` (the same function that enforces the
+60-day expiration window, $500 strike width, 10-page, 5,000-contract, and
+per-page ceilings) and the result must compare equal to the supplied object
+before any database write; a hand-constructed ``OptionChainRequest`` that
+bypasses those ceilings is rejected -- and no ``ingestion_runs``, batch,
+batch-item, or snapshot row is written -- rather than silently accepted.
 """
 
 from __future__ import annotations
@@ -70,7 +108,7 @@ from market_intelligence.data_connectors.alpaca_options_chain import (
     AlpacaOptionsChainInvalidInputError,
     OptionChainRequest,
     OptionChainSnapshot,
-    normalize_expiration_date,
+    normalize_option_chain_request,
     parse_occ_symbol,
 )
 from market_intelligence.data_connectors.alpaca_options_chain import (
@@ -224,24 +262,43 @@ def _require_nonneg_int(value: object, *, field_name: str, allow_none: bool) -> 
 
 
 def _validate_request(request: object) -> OptionChainRequest:
+    """Re-validate a supplied ``OptionChainRequest`` against its canonical form.
+
+    A manually constructed ``OptionChainRequest`` (bypassing
+    ``normalize_option_chain_request``) must never reach the database: every
+    field is re-run through ``normalize_option_chain_request`` -- the same
+    function that enforces the 60-day expiration window, $500 strike width,
+    10-page, 5,000-contract, and per-page ceilings -- and the canonical result
+    must compare equal to the supplied object. A request whose values fail
+    re-normalization, or that disagrees with its own re-normalized form (for
+    example a hand-built object with an expiration span, strike width, page
+    count, or contract count above a ceiling), is rejected before any
+    database write.
+    """
     if not isinstance(request, OptionChainRequest):
         raise OptionChainSnapshotStorageValidationError(
             "Invalid request: expected a normalized OptionChainRequest."
         )
-    if request.underlying != UNDERLYING:
-        raise OptionChainSnapshotStorageValidationError(
-            "Invalid request: underlying must be SPY."
-        )
-    if request.feed not in ALLOWED_FEEDS:
-        raise OptionChainSnapshotStorageValidationError("Invalid request: unknown feed.")
-    if request.option_type is not None and request.option_type not in ALLOWED_OPTION_TYPES:
-        raise OptionChainSnapshotStorageValidationError("Invalid request: unknown option type.")
     try:
-        normalize_expiration_date(request.expiration_date_gte, field_name="expiration_date_gte")
-        normalize_expiration_date(request.expiration_date_lte, field_name="expiration_date_lte")
+        canonical = normalize_option_chain_request(
+            underlying=request.underlying,
+            feed=request.feed,
+            expiration_date_gte=request.expiration_date_gte,
+            expiration_date_lte=request.expiration_date_lte,
+            strike_price_gte=request.strike_price_gte,
+            strike_price_lte=request.strike_price_lte,
+            option_type=request.option_type,
+            limit=request.limit,
+            max_pages=request.max_pages,
+            max_total_contracts=request.max_total_contracts,
+        )
     except AlpacaOptionsChainInvalidInputError as exc:
         raise OptionChainSnapshotStorageValidationError(f"Invalid request: {exc}") from None
-    return request
+    if canonical != request:
+        raise OptionChainSnapshotStorageValidationError(
+            "Invalid request: does not match its canonical normalized form."
+        )
+    return canonical
 
 
 def _validate_items(
@@ -423,6 +480,14 @@ _BATCH_COLUMNS = (
     "retrieved_at", "contract_count", "outcome", "first_ingested_at", "last_seen_at",
 )
 
+# option_chain_snapshot_batch_items carries only identity columns: the
+# membership fact "this ingestion run's batch included this snapshot
+# identity." Never any quote/trade/Greek value -- those live exactly once on
+# the referenced option_chain_snapshots row.
+_BATCH_ITEM_COLUMNS = (
+    "ingestion_run_id", "provider", "underlying", "feed", "contract_symbol", "retrieved_at",
+)
+
 
 class OptionChainSnapshotRepository:
     """Persists normalized ``OptionChainSnapshot`` objects into DuckDB."""
@@ -458,18 +523,27 @@ class OptionChainSnapshotRepository:
         batch, must match every item; when omitted for a non-empty batch it
         is taken from the items (which must all agree).
 
-        Validates every item, ``request`` and ``retrieved_at`` before any
-        database write (raising ``OptionChainSnapshotStorageValidationError``
-        and writing nothing if validation fails). Otherwise records a
-        ``running`` ``ingestion_runs`` row, then -- inside one DuckDB
-        transaction -- writes exactly one ``option_chain_snapshot_batches``
-        row (run-level provenance and the contract count, ``0`` included),
-        every snapshot row, and the final ``succeeded`` status update. An
-        unseen ``(provider, underlying, feed, contract_symbol, retrieved_at)``
-        identity is inserted; an already-known identity whose stored values
-        match has its last-seen/run provenance refreshed; an already-known
-        identity whose values conflict aborts the entire batch (no batch row,
-        no partial snapshot rows). A conflict or storage failure is reported
+        Validates every item and ``retrieved_at`` before any database write
+        (raising ``OptionChainSnapshotStorageValidationError`` and writing
+        nothing if validation fails). ``request`` is re-normalized through
+        ``normalize_option_chain_request`` and rejected -- before any write --
+        if it does not match its own canonical form, so a manually
+        constructed ``OptionChainRequest`` cannot bypass the connector's
+        request ceilings. Otherwise records a ``running`` ``ingestion_runs``
+        row, then -- inside one DuckDB transaction -- writes exactly one
+        ``option_chain_snapshot_batches`` row (run-level provenance and the
+        contract count, ``0`` included), every snapshot row, one
+        ``option_chain_snapshot_batch_items`` membership row per item, and
+        the final ``succeeded`` status update. An unseen ``(provider,
+        underlying, feed, contract_symbol, retrieved_at)`` identity is
+        inserted; an already-known identity whose stored values match is left
+        untouched except for non-historical ``last_seen_at`` bookkeeping --
+        its ownership/provenance is never reassigned to this run, and a fresh
+        ``option_chain_snapshot_batch_items`` row records this batch's
+        membership regardless; an already-known identity whose values
+        conflict aborts the entire batch (no new batch row, no partial
+        snapshot rows, no partial batch-item rows, and the previously stored
+        snapshot row is untouched). A conflict or storage failure is reported
         truthfully via the returned result (run status ``failed``,
         ``batch_outcome`` ``"failed"``); only a failure to record that
         ``failed`` status itself raises ``OptionChainSnapshotStorageError``.
@@ -521,6 +595,7 @@ class OptionChainSnapshotRepository:
                         inserted += 1
                     else:
                         existing_or_updated += 1
+                    self._store_batch_item(connection, item, run_id=run_id)
                 self._complete_run(
                     connection, run_id=run_id, status="succeeded",
                     records_received=received, error_category=None,
@@ -700,13 +775,47 @@ class OptionChainSnapshotRepository:
                 )
 
         connection.execute(
-            "UPDATE option_chain_snapshots SET last_seen_at = ?, ingestion_run_id = ? "
+            "UPDATE option_chain_snapshots SET last_seen_at = ? "
             "WHERE provider = ? AND underlying = ? AND feed = ? AND contract_symbol = ? "
             "AND retrieved_at = ?",
-            [now, run_id, item.provider, item.underlying, item.feed, item.contract_symbol,
+            [now, item.provider, item.underlying, item.feed, item.contract_symbol,
              retrieved_at],
         )
         return False
+
+    @staticmethod
+    def _store_batch_item(
+        connection: duckdb.DuckDBPyConnection,
+        item: OptionChainSnapshot,
+        *,
+        run_id: str,
+    ) -> None:
+        """Insert one batch-membership row for ``item`` under ``run_id``.
+
+        Always a plain insert: ``option_chain_snapshot_batch_items`` keys on
+        ``(ingestion_run_id, provider, underlying, feed, contract_symbol,
+        retrieved_at)`` and ``run_id`` is fresh per ``store_snapshots`` call
+        (duplicate contract symbols within one batch are already rejected by
+        ``_validate_items``). Written unconditionally -- whether ``item`` was
+        just inserted into ``option_chain_snapshots`` or already existed --
+        so this batch's membership is truthful regardless of how many prior
+        batches have already observed the same snapshot identity.
+        """
+        retrieved_at = _parse_timestamp(item.retrieved_at)
+        values = {
+            "ingestion_run_id": run_id,
+            "provider": item.provider,
+            "underlying": item.underlying,
+            "feed": item.feed,
+            "contract_symbol": item.contract_symbol,
+            "retrieved_at": retrieved_at,
+        }
+        placeholders = ", ".join(["?"] * len(_BATCH_ITEM_COLUMNS))
+        connection.execute(
+            f"INSERT INTO option_chain_snapshot_batch_items ({', '.join(_BATCH_ITEM_COLUMNS)}) "
+            f"VALUES ({placeholders})",
+            [values[column] for column in _BATCH_ITEM_COLUMNS],
+        )
 
 
 def _values_equal(stored: object, incoming: object) -> bool:

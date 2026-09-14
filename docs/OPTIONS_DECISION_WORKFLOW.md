@@ -236,7 +236,11 @@ before the previous one is complete and recorded.
   existing connector/storage patterns.
   - **Done in code and tests only** (2026-08-28; request ceilings tightened
     and provenance normalized to two tables 2026-09-01 after pre-commit
-    review): `AlpacaOptionsChainClient`
+    review; revised again 2026-09-14 to a three-table design after a
+    pre-commit review found the two-table design let a mutable
+    `ingestion_run_id` silently move a historical snapshot's batch
+    membership on re-ingestion — see "Option-chain snapshot storage" in
+    `docs/STORAGE_ARCHITECTURE.md`): `AlpacaOptionsChainClient`
     (`market_intelligence/data_connectors/alpaca_options_chain.py`) talks
     only to `data.alpaca.markets` and only to
     `GET /v1beta1/options/snapshots/SPY`; it requires a fully bounded,
@@ -257,20 +261,35 @@ before the previous one is complete and recorded.
     timestamp). Missing optional fields stay null; errors are sanitized to a
     fixed category (no response body, headers, URL, query parameters,
     credentials, or contract payload). Migration `0009` adds a normalized,
-    two-table design: `option_chain_snapshot_batches` records exactly one
-    row per successfully stored chain retrieval — **including a retrieval
-    that returned zero contracts** (run-level provenance: requested feed,
-    requested expiration/strike window, requested option type, retrieval
-    instant, contract count with zero allowed) — and `option_chain_snapshots`
-    stores one row per normalized contract, referencing its batch by
-    ingestion-run id without duplicating request-level fields.
+    **three-table** design: `option_chain_snapshot_batches` records exactly
+    one row per successfully stored chain retrieval — **including a
+    retrieval that returned zero contracts** (run-level provenance:
+    requested feed, requested expiration/strike window, requested option
+    type, retrieval instant, contract count with zero allowed);
+    `option_chain_snapshots` stores one row per **immutable** normalized
+    contract observation, whose `ingestion_run_id` records only the run that
+    first inserted it (never reassigned by a later re-observation); and
+    `option_chain_snapshot_batch_items` is the normalized batch-membership
+    table, with one row per `(ingestion_run_id, snapshot identity)` pair for
+    every contract a non-empty successful batch actually returned — this is
+    what keeps a batch's recorded `contract_count` and its truthful
+    membership from drifting apart when the same snapshot identity is
+    re-ingested into a later batch; one immutable observation may
+    legitimately be referenced by more than one batch's membership rows.
     `OptionChainSnapshotRepository` and the dry-run-first
-    `scripts/ingest_alpaca_options_chain.py` store both transactionally (the
-    batch row, every snapshot row, and the ingestion-run status update all in
-    one transaction), keying `option_chain_snapshots` on
+    `scripts/ingest_alpaca_options_chain.py` store all three transactionally
+    (the batch row, every snapshot row, every batch-item row, and the
+    ingestion-run status update all in one transaction), keying
+    `option_chain_snapshots` on
     `(provider, underlying, feed, contract_symbol, retrieved_at)` so OPRA
-    and indicative observations are never merged, and keying
-    `option_chain_snapshot_batches` on `ingestion_run_id` (always an insert).
+    and indicative observations are never merged, keying
+    `option_chain_snapshot_batches` on `ingestion_run_id` (always an insert),
+    and keying `option_chain_snapshot_batch_items` on `(ingestion_run_id,
+    provider, underlying, feed, contract_symbol, retrieved_at)` (also always
+    an insert). The repository re-normalizes every field of a supplied
+    request through `normalize_option_chain_request` and rejects it unless
+    it matches its own canonical form, so a hand-constructed
+    `OptionChainRequest` cannot bypass the connector's request ceilings.
   - **Not done:** no live option-chain request has occurred, no real option
     data has been stored, and migration `0009` has not been applied to the
     real local database. `indicative`-feed data may be delayed or modified

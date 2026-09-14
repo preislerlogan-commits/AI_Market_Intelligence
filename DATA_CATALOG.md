@@ -294,16 +294,17 @@ The following tickers are the known initial universe of interest:
   and tests only (mocked HTTP transports); no live option-chain request has
   been made and no real option data has been stored.** A dry-run-first
   ingestion script, `scripts/ingest_alpaca_options_chain.py`, and migration
-  `0009` (`option_chain_snapshot_batches` plus `option_chain_snapshots`) plus
-  `OptionChainSnapshotRepository` exist; migration `0009` has **not** been
-  applied to the real local database, which remains at schema version
-  `0008`. **A successful retrieval that returns zero contracts still
-  persists exactly one `option_chain_snapshot_batches` row** (with
-  `contract_count = 0`, `outcome = skipped_empty`) recording its feed,
-  request bounds, and retrieval instant, even though it writes no
-  `option_chain_snapshots` rows — see "Option-chain snapshot storage" below.
-  No option-chain dataset record exists in this catalog because no
-  option-chain data has been ingested.
+  `0009` (`option_chain_snapshot_batches`, `option_chain_snapshots`, and
+  `option_chain_snapshot_batch_items`) plus `OptionChainSnapshotRepository`
+  exist; migration `0009` has **not** been applied to the real local
+  database, which remains at schema version `0008`. **A successful
+  retrieval that returns zero contracts still persists exactly one
+  `option_chain_snapshot_batches` row** (with `contract_count = 0`,
+  `outcome = skipped_empty`) recording its feed, request bounds, and
+  retrieval instant, even though it writes no `option_chain_snapshots` or
+  `option_chain_snapshot_batch_items` rows — see "Option-chain snapshot
+  storage" below. No option-chain dataset record exists in this catalog
+  because no option-chain data has been ingested.
 
 ## Local Storage
 
@@ -682,13 +683,13 @@ this run or this documentation update. See
 [PROJECT_STATE.md](PROJECT_STATE.md) (item 25) for the full record.
 
 **Option-chain snapshot storage: code and tests only, not applied to the
-real database (updated 2026-09-01, two-table normalized design).** Migration
-`0009`
+real database (revised 2026-09-14, three-table normalized design — see
+"Why a third table" below).** Migration `0009`
 (`market_intelligence/storage/migrations/0009_create_option_chain_snapshots.sql`)
-defines two append-only tables, and
+defines three tables, and
 `market_intelligence/storage/option_chain_snapshot_repository.py`
-(`OptionChainSnapshotRepository`) writes both, transactionally, mirroring
-`BarRepository`:
+(`OptionChainSnapshotRepository`) writes all three, transactionally,
+mirroring `BarRepository`:
 
 - `option_chain_snapshot_batches` — exactly one row per successfully stored
   chain retrieval, **including a retrieval that returned zero contracts**:
@@ -697,26 +698,55 @@ defines two append-only tables, and
   type, the UTC retrieval instant, and the contract count (`0` for an empty
   chain, with `outcome = skipped_empty`; `outcome = succeeded` otherwise).
   This is the durable run-level provenance record — request bounds are
-  stored **only** here, not duplicated per snapshot row.
-- `option_chain_snapshots` — one row per normalized contract snapshot
-  (provider, underlying, feed, contract symbol, retrieved-at, parsed
-  expiration/type/strike, quote timestamp/bid-ask price and size, trade
-  timestamp/price and size, implied volatility, delta/gamma/theta/vega/rho,
-  ingestion-run id referencing the batch row above).
+  stored **only** here, not duplicated per snapshot or batch-item row. For
+  every non-empty successful batch, `contract_count` always equals the
+  number of `option_chain_snapshot_batch_items` rows for that batch.
+- `option_chain_snapshots` — one row per **immutable** normalized contract
+  observation (provider, underlying, feed, contract symbol, retrieved-at,
+  parsed expiration/type/strike, quote timestamp/bid-ask price and size,
+  trade timestamp/price and size, implied volatility,
+  delta/gamma/theta/vega/rho). `ingestion_run_id` here records only the run
+  that first inserted the row — it is never reassigned by a later
+  re-observation of the same identity.
+- `option_chain_snapshot_batch_items` — the normalized batch-membership
+  table: one row per `(ingestion_run_id, provider, underlying, feed,
+  contract_symbol, retrieved_at)`, written for every contract a successful
+  non-empty batch actually returned, whether or not the underlying
+  observation already existed from an earlier batch. This is what makes
+  batch membership truthful under repeated ingestion of the same snapshot
+  identity — one immutable observation may legitimately be referenced by
+  more than one batch's membership rows.
 
-**There is no open-interest column on either table** — the snapshot
-endpoint does not supply open interest. Idempotency:
-`option_chain_snapshot_batches` keys on `ingestion_run_id` (a fresh id per
-store call, so always an insert); `option_chain_snapshots` keys on
-`(provider, underlying, feed, contract_symbol, retrieved_at)` — `feed` is
-part of the identity, so OPRA and indicative observations are never merged;
-a repeat of the same connector result refreshes only retrieval provenance, a
-conflicting value aborts the whole batch (no batch row, no partial snapshot
-rows), and a later ingestion run (new `retrieved_at`) writes a new batch row
-and new observation rows. As of this entry, migration `0009` has **not**
-been applied to the real local database (which remains at schema version
-`0008`), no live option-chain request has been made, and no option-chain row
-has been written anywhere but temporary test databases.
+**Why a third table.** The original two-table design allowed
+`option_chain_snapshots.ingestion_run_id` to be updated in place on every
+re-store of an identical snapshot, which silently moved that historical
+snapshot into the newer batch while the original batch's `contract_count`
+kept reporting its original count — batch membership was not truthfully
+reconstructable from stored data. The batch-membership table removes that
+mutation: `ingestion_run_id` on `option_chain_snapshots` is now
+write-once, and truthful membership is read from
+`option_chain_snapshot_batch_items` instead.
+
+**There is no open-interest column on any of the three tables** — the
+snapshot endpoint does not supply open interest. Idempotency and
+immutability: `option_chain_snapshot_batches` keys on `ingestion_run_id` (a
+fresh id per store call, so always an insert); `option_chain_snapshots`
+keys on `(provider, underlying, feed, contract_symbol, retrieved_at)` —
+`feed` is part of the identity, so OPRA and indicative observations are
+never merged; a repeat of the same connector result never mutates or
+relinks that row (at most refreshing non-historical `last_seen_at`
+bookkeeping) while still inserting a fresh `option_chain_snapshot_batch_items`
+row for the new batch; a conflicting value aborts the whole batch (no new
+batch row, no partial snapshot rows, no partial batch-item rows, and the
+existing snapshot row is untouched); and a later ingestion run (new
+`retrieved_at`) writes a new batch row and new observation/batch-item rows.
+The repository also re-normalizes every field of a supplied
+`OptionChainRequest` through `normalize_option_chain_request` and rejects it
+if it does not match its own canonical form, so a hand-constructed request
+cannot bypass the connector's request ceilings. As of this entry, migration
+`0009` has **not** been applied to the real local database (which remains at
+schema version `0008`), no live option-chain request has been made, and no
+option-chain row has been written anywhere but temporary test databases.
 
 **Phase 1 request ceilings (safety ceilings, not contract-selection rules):**
 expiration span ≤ 60 calendar days, strike-window width ≤ $500, per-page
