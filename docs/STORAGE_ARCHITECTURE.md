@@ -24,9 +24,14 @@ real database** (see below). The ninth, tenth, and eleventh tables,
 pre-commit review found that a mutable `ingestion_run_id` on
 `option_chain_snapshots` let re-ingestion silently move a historical
 snapshot's batch membership without updating the original batch's
-`contract_count`) in code and tests only — **migration `0009` has not been
-applied to the real local database, which remains at migration `0008`**, and
-no option-chain data has been stored.
+`contract_count`). **As originally written, migration `0009` had not been
+applied to the real local database, which remained at migration `0008`, and
+no option-chain data had been stored; that statement is preserved here as an
+honest, time-scoped diagnostic record and is not retracted. Migration `0009`
+has since been applied to the real local database (2026-09-14, backed up
+beforehand), and one authorized live ingestion has stored one batch of 102
+SPY option-chain contracts through it** — see “Option-chain snapshot
+storage” below.
 
 - **`schema_migrations`** — tracks which versioned migrations have been
   applied, with a checksum of each migration file's content.
@@ -106,11 +111,14 @@ no option-chain data has been stored.
   even when the same snapshot identity is re-ingested into a later batch. See
   "Option-chain snapshot storage" below. **All three tables, the repository
   (`market_intelligence/storage/option_chain_snapshot_repository.py`), and
-  the ingestion script (`scripts/ingest_alpaca_options_chain.py`) exist in
+  the ingestion script (`scripts/ingest_alpaca_options_chain.py`) existed in
   code and tests only** (temporary DuckDB files, mocked HTTP transports — no
-  live option-chain request, no write to the real database); migration
-  `0009` has not been applied to the real local database, which remains at
-  migration `0008`. Open interest is **not** a column on any of the three
+  live option-chain request, no write to the real database) as originally
+  written; that statement is preserved here as an honest, time-scoped
+  diagnostic record and is not retracted. **Migration `0009` has since been
+  applied to the real local database (2026-09-14), and one authorized live
+  ingestion has stored one batch of 102 SPY option-chain contracts through
+  it** -- see “Option-chain snapshot storage” below. Open interest is **not** a column on any of the three
   tables: Alpaca's option-chain snapshot endpoint does not supply it, and it
   is not inferred.
 
@@ -533,11 +541,36 @@ contracts, without duplicating request fields onto every snapshot row, and
 re-ingested into a later batch. None of the three tables stores a raw JSON
 payload, a directional forecast, a contract ranking, a strategy
 recommendation, an order, an execution field, request headers/URLs, page
-tokens, or a response body. **As written (revised 2026-09-14 to the
-three-table design) all three tables, the repository, and the ingestion
-script exist in code and tests only** (temporary DuckDB files, mocked HTTP
-transports — no live request, no real-database write); migration `0009` has
-not been applied to the real local database.
+tokens, or a response body. **As originally written (2026-09-14, when
+revised to the three-table design), all three tables, the repository, and
+the ingestion script existed in code and tests only** (temporary DuckDB
+files, mocked HTTP transports — no live request, no real-database write);
+migration `0009` had not been applied to the real local database. That
+statement is preserved here as an honest, time-scoped diagnostic record and
+is not retracted.
+
+**Current status (2026-09-14, later the same day): migration `0009` has been
+applied to the real local database** (backed up beforehand; a subsequent
+read-only health check reported schema version `0009`, 9 migrations
+applied, `healthy=True`), **and one authorized live ingestion has
+succeeded** through `scripts/ingest_alpaca_options_chain.py --execute`:
+provider `alpaca`, underlying `SPY`, requested feed `indicative` (explicitly
+not OPRA), one expiration (2026-09-18), strikes 740–790, 102 contracts
+received and inserted (51 calls, 51 puts), one `option_chain_snapshot_batches`
+row (`outcome=succeeded`), the corresponding `ingestion_runs` row
+`succeeded`, exactly one request, no retry. A subsequent read-only
+structural audit confirmed exactly 102 batch-membership rows and 102
+snapshot rows, zero duplicate or orphan memberships, `contract_count` equal
+to the membership count, zero malformed OCC symbols or out-of-range
+contracts, quote/trade data present for all 102, implied volatility and each
+Greek present for 78 and unavailable for 24, and zero negative/nonfinite
+values, crossed quotes, or feed mismatches. `indicative`-feed data may be
+delayed or modified and must not be described as live OPRA; this confirms
+internal structural consistency only, not pricing accuracy, timeliness,
+usefulness, predictive edge, strategy validity, or profitability; and only
+one batch exists, so recurring reliability is not established. See
+[DATA_CATALOG.md](../DATA_CATALOG.md) ("SPY option-chain snapshots
+(indicative)") for full sanitized detail.
 
 **Why a third table.** The original two-table design let
 `option_chain_snapshots.ingestion_run_id` be updated in place whenever an
@@ -669,8 +702,10 @@ validates arguments and provider configuration and prints the sanitized
 request bounds without making any request or writing anything; `--execute`
 performs exactly one bounded ingestion (paginated GET requests as required,
 no retry) and one transactional local write — a successful empty chain
-still writes its batch row and prints `batch outcome: skipped_empty`. It has
-not been run live.
+still writes its batch row and prints `batch outcome: skipped_empty`. **It
+was run live once with `--execute` on 2026-09-14** (SPY, `indicative` feed,
+expiration 2026-09-18, strikes 740–790): 102 contracts received/inserted,
+`batch outcome: succeeded` — see "Option-chain snapshot storage" above.
 
 **Phase 1 request ceilings** (safety ceilings, not contract-selection
 rules — callers must still supply explicit ranges): expiration span ≤ 60
@@ -713,8 +748,8 @@ directly.
   service, writing `option_chain_snapshot_batches` (run-level provenance),
   `option_chain_snapshots` (immutable observations), and
   `option_chain_snapshot_batch_items` (normalized batch membership; all
-  migration `0009`). Code and tests only; migration `0009` not applied to
-  the real database, no option-chain data stored.
+  migration `0009`). Migration `0009` is applied to the real database
+  (2026-09-14); one live batch of 102 SPY option-chain contracts is stored.
 - `scripts/initialize_database.py` — applies pending migrations to the
   configured local database; prints only the database path, schema
   version, and applied migration count.
@@ -737,7 +772,7 @@ directly.
   `MacroSeriesMetadataRepository`.
 - `scripts/ingest_alpaca_options_chain.py` — dry-run-first, one-shot manual
   SPY option-chain snapshot ingestion (see "Option-chain snapshot storage"
-  above). Not run live as part of this change.
+  above); first authorized live run succeeded 2026-09-14 (see above).
 
 ## Database location and path safety
 

@@ -20,9 +20,9 @@ and does not execute trades.
   exercise, or execution method exists anywhere in this layer.
 - **Storage** (`market_intelligence/storage/`, `data/`) — local DuckDB with a
   versioned, checksum-verified, transactional migration runner and per-dataset
-  repositories. The real local database is at schema version `0008`; migration
-  `0009` (`option_chain_snapshot_batches` + `option_chain_snapshots`) exists
-  in code and tests only and has not been applied. No Parquet layer is in
+  repositories. The real local database is at schema version `0009` (migration
+  `0009`, `option_chain_snapshot_batches` + `option_chain_snapshots` +
+  `option_chain_snapshot_batch_items`, is applied). No Parquet layer is in
   use.
 - **Market features** (`market_intelligence/market_features/`) — deterministic,
   read-only snapshot builders (market context, session quality, news evidence,
@@ -68,7 +68,7 @@ been exercised and recorded — it is **not** a claim that any agent is
 validated, universally accurate, repeatable, or profitable, and only the Macro
 Analyst has been characterized so far.
 
-**Phase 1 (design recorded, ready to begin): an automated, evidence-based SPY
+**Phase 1 (design recorded, in progress): an automated, evidence-based SPY
 options decision-support workflow** — deterministic evidence gathering and
 intraday regime classification, deterministic option-contract eligibility
 filtering, and then a bounded strategy agent that consumes only the
@@ -76,14 +76,21 @@ validated structured outputs of the upstream stages plus the deterministic
 selector's eligible contract set and can return `no_trade`, followed by a
 recorded evaluation before any claim of usefulness. With Phase 0 closed, the
 first implementation step — **read-only SPY option-chain snapshot ingestion
-and local storage** — has been built in code and tests only: a bounded
+and local storage** — is done, including a live run: a bounded
 `AlpacaOptionsChainClient` (expiration span ≤ 60 days, strike width ≤ $500,
 ≤ 10 pages, ≤ 5,000 contracts), migration `0009`
-(`option_chain_snapshot_batches` + `option_chain_snapshots`), a repository,
-and a dry-run-first ingestion script. **No live option-chain request has
-been made, no real option data has been stored, and migration `0009` is not
-applied to the real database.** No regime engine, contract
-selector, or Options Strategy Agent exists. Design:
+(`option_chain_snapshot_batches` + `option_chain_snapshots` +
+`option_chain_snapshot_batch_items`), a repository, and a dry-run-first
+ingestion script. **Migration `0009` is applied to the real database, and one
+authorized live, `indicative`-feed ingestion has succeeded** (SPY, one
+expiration, strikes 740–790, 102 contracts received/inserted), followed by a
+read-only structural audit finding zero integrity or malformed-data issues —
+see [PROJECT_STATE.md](PROJECT_STATE.md) and
+[DATA_CATALOG.md](DATA_CATALOG.md) for full sanitized detail and binding
+caveats (structural consistency only — not pricing accuracy, usefulness, or
+profitability). No regime engine, contract selector, or Options Strategy
+Agent exists; the next planned step is the deterministic SPY intraday
+feature/regime engine. Design:
 [docs/OPTIONS_DECISION_WORKFLOW.md](docs/OPTIONS_DECISION_WORKFLOW.md).
 Manual-only execution is unchanged. The three existing analysis agents
 (Market Evidence, News, Macro) stay non-directional; the future Options
@@ -97,10 +104,11 @@ The Python environment, runtime/dev dependencies, and settings layer
 - **Read-only data pipelines exist**, each with at least one authorized live
   ingestion into local storage: Alpaca historical bars, Alpaca news, FRED
   series observations, and FRED series metadata.
-- **The local DuckDB database is initialized at schema version `0008`.**
-  Migration `0009` (`option_chain_snapshot_batches` + `option_chain_snapshots`)
-  exists in code and tests only and has not been applied to the real
-  database.
+- **The local DuckDB database is initialized at schema version `0009`.**
+  Migration `0009` (`option_chain_snapshot_batches` + `option_chain_snapshots`
+  + `option_chain_snapshot_batch_items`) is applied to the real database, and
+  one authorized live SPY option-chain ingestion (102 contracts, `indicative`
+  feed) has been stored through it — see [DATA_CATALOG.md](DATA_CATALOG.md).
 - **A deterministic, manually invoked ingestion path exists.** The
   dry-run-first CLI (`scripts/run_ingestion_pipeline.py`) runs the three
   reviewed jobs through explicit contracts, with per-job failure isolation, a
@@ -125,10 +133,11 @@ The Python environment, runtime/dev dependencies, and settings layer
 
 None of the following exists: a predictive/forecasting model, a
 forecast-recording system, an agent orchestrator or combined market-intelligence
-brief, a dashboard, a trade journal, a live/stored options-data pipeline (the
-option-chain connector and storage exist only in code and tests, never run
-live), an intraday regime engine, a deterministic contract selector, an
-Options Strategy Agent, a scheduler, or any brokerage-execution integration.
+brief, a dashboard, a trade journal, an intraday regime engine, a
+deterministic contract selector, an Options Strategy Agent, a scheduler, or
+any brokerage-execution integration. (The SPY option-chain connector and
+storage now exist and hold one live-ingested batch — see "Roadmap" above —
+but no selector, agent, or execution consumes it.)
 
 See [PROJECT_STATE.md](PROJECT_STATE.md) for the authoritative, up-to-date
 status and [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md) for the Phase 0 exit

@@ -290,23 +290,42 @@ The following tickers are the known initial universe of interest:
   payload). **Open interest is not supplied by this snapshot endpoint and is
   not produced, inferred, or stored — it is unavailable in this milestone.**
   **`indicative`-feed data may be delayed or modified by the provider and
-  must never be described as live OPRA data.** Status: **implemented in code
-  and tests only (mocked HTTP transports); no live option-chain request has
-  been made and no real option data has been stored.** A dry-run-first
-  ingestion script, `scripts/ingest_alpaca_options_chain.py`, and migration
-  `0009` (`option_chain_snapshot_batches`, `option_chain_snapshots`, and
-  `option_chain_snapshot_batch_items`) plus `OptionChainSnapshotRepository`
-  exist; migration `0009` has **not** been applied to the real local
-  database, which remains at schema version `0008`. **A successful
-  retrieval that returns zero contracts still persists exactly one
-  `option_chain_snapshot_batches` row** (with `contract_count = 0`,
+  must never be described as live OPRA data.** Status (as originally
+  written): implemented in code and tests only (mocked HTTP transports); no
+  live option-chain request had been made and no real option data had been
+  stored. A dry-run-first ingestion script, `scripts/ingest_alpaca_options_chain.py`,
+  and migration `0009` (`option_chain_snapshot_batches`, `option_chain_snapshots`,
+  and `option_chain_snapshot_batch_items`) plus `OptionChainSnapshotRepository`
+  exist. **A successful retrieval that returns zero contracts still persists
+  exactly one `option_chain_snapshot_batches` row** (with `contract_count = 0`,
   `outcome = skipped_empty`) recording its feed, request bounds, and
   retrieval instant, even though it writes no `option_chain_snapshots` or
   `option_chain_snapshot_batch_items` rows — see "Option-chain snapshot
-  storage" below. No option-chain dataset record exists in this catalog
-  because no option-chain data has been ingested.
+  storage" below.
+
+  **Superseding update (2026-09-14): first authorized live ingestion
+  succeeded.** Migration `0009` has been applied to the real local database.
+  `scripts/ingest_alpaca_options_chain.py --execute` was run once, live:
+  provider `alpaca`, underlying `SPY`, requested feed `indicative`
+  (explicitly not OPRA), one expiration (2026-09-18), strikes 740–790. 102
+  contracts were received and inserted (51 calls, 51 puts); the batch and
+  the corresponding `ingestion_runs` row both recorded `succeeded`; exactly
+  one request was made, with no retry. A subsequent read-only structural
+  audit found zero duplicate/orphan membership rows, zero malformed OCC
+  symbols, zero out-of-range contracts, zero negative/nonfinite values,
+  zero crossed quotes, and zero feed mismatches — see the "SPY option-chain
+  snapshots (indicative)" dataset record below for full sanitized detail.
+  This confirms one controlled live ingestion and its structural integrity;
+  it does **not** establish pricing accuracy, timeliness, usefulness,
+  predictive edge, strategy validity, or profitability, and open interest
+  remains unavailable from this endpoint.
 
 ## Local Storage
+
+**Storage foundation status (2026-09-14): the real local database is healthy
+at schema version `0009` (9 migrations applied)**, following the live
+option-chain ingestion described under "Option-chain snapshot storage"
+below.
 
 A local DuckDB storage foundation exists at `data/market_intelligence.duckdb`
 (`market_intelligence/storage/`, documented in
@@ -682,9 +701,9 @@ recommendation, or trading execution was performed or implied as part of
 this run or this documentation update. See
 [PROJECT_STATE.md](PROJECT_STATE.md) (item 25) for the full record.
 
-**Option-chain snapshot storage: code and tests only, not applied to the
-real database (revised 2026-09-14, three-table normalized design — see
-"Why a third table" below).** Migration `0009`
+**Option-chain snapshot storage: applied to the real database and first
+authorized live ingestion succeeded (2026-09-14, three-table normalized
+design — see "Why a third table" below).** Migration `0009`
 (`market_intelligence/storage/migrations/0009_create_option_chain_snapshots.sql`)
 defines three tables, and
 `market_intelligence/storage/option_chain_snapshot_repository.py`
@@ -743,10 +762,19 @@ existing snapshot row is untouched); and a later ingestion run (new
 The repository also re-normalizes every field of a supplied
 `OptionChainRequest` through `normalize_option_chain_request` and rejects it
 if it does not match its own canonical form, so a hand-constructed request
-cannot bypass the connector's request ceilings. As of this entry, migration
-`0009` has **not** been applied to the real local database (which remains at
-schema version `0008`), no live option-chain request has been made, and no
-option-chain row has been written anywhere but temporary test databases.
+cannot bypass the connector's request ceilings. **As originally written,
+migration `0009` had not been applied to the real local database (which
+remained at schema version `0008`), no live option-chain request had been
+made, and no option-chain row had been written anywhere but temporary test
+databases; that statement is preserved here as an honest, time-scoped
+diagnostic record and is not retracted.**
+
+**Current status (2026-09-14): migration `0009` has been applied to the real
+local database** (backed up beforehand); a subsequent read-only health check
+reported schema version `0009` (9 migrations applied), `healthy=True`. **One
+authorized live ingestion has since succeeded** — see the "SPY option-chain
+snapshots (indicative)" dataset record below for the full sanitized
+provenance, structural-audit results, and binding caveats.
 
 **Phase 1 request ceilings (safety ceilings, not contract-selection rules):**
 expiration span ≤ 60 calendar days, strike-window width ≤ $500, per-page
@@ -930,6 +958,59 @@ model-provider boundary only, documented in
 - **Validation status** — fetch, normalization, and transactional storage
   verified for at least one run; `GS10`'s row re-verified by read-only query.
   Not a complete or validated metadata set.
+
+### SPY option-chain snapshots (indicative)
+
+- **Source** — Alpaca option-chain snapshot endpoint
+  (`https://data.alpaca.markets`, `GET /v1beta1/options/snapshots/SPY`), via
+  `AlpacaOptionsChainClient`. Requested feed `indicative` (explicitly not
+  OPRA).
+- **Status** — connected; one controlled live ingestion run; **not validated
+  as a dataset**.
+- **Provenance** — 2026-09-14, `scripts/ingest_alpaca_options_chain.py
+  --execute`: underlying `SPY`, requested feed `indicative`, one expiration
+  (2026-09-18), strikes 740–790, no `call`/`put` filter. 102 contracts
+  received, 102 inserted, 0 failed; one `option_chain_snapshot_batches` row
+  (`outcome=succeeded`); the corresponding `ingestion_runs` row recorded
+  `succeeded`. Exactly one request was made, with no retry.
+- **Schema / table** — three tables, migration `0009`:
+  `option_chain_snapshot_batches` (run-level provenance: requested feed,
+  requested expiration/strike window, retrieval instant, `contract_count`,
+  `outcome`), `option_chain_snapshots` (one row per immutable normalized
+  contract observation: parsed expiration/type/strike, latest quote,
+  latest trade, implied volatility, delta/gamma/theta/vega/rho), and
+  `option_chain_snapshot_batch_items` (normalized batch-membership rows).
+  No open-interest column on any of the three tables. See "Option-chain
+  snapshot storage" above for full column/behavior detail.
+- **Coverage** — SPY only; one expiration (2026-09-18); strikes 740–790; one
+  retrieval instant (2026-09-14). A read-only structural audit the same day
+  verified, as aggregate counts only: 102 batch-membership rows and 102
+  snapshot rows, zero duplicate membership identities, every membership
+  resolving to exactly one snapshot, zero orphan memberships,
+  `contract_count` equal to the membership count; 51 calls / 51 puts, 1
+  distinct expiration, strikes 740.000000–790.000000, zero contracts outside
+  the requested bounds, zero malformed OCC symbols; quote and trade data
+  present for all 102; implied volatility and each of
+  delta/gamma/theta/vega/rho present for 78 and unavailable (`NULL`, never
+  zero) for 24; zero negative or non-finite numeric values, zero crossed
+  quotes (bid > ask), zero feed mismatches between the batch and its
+  snapshots, and exactly one distinct retrieval timestamp.
+- **Known limitations** — `indicative`-feed data may be delayed or modified
+  by the provider and must never be described as live OPRA data. Open
+  interest is not supplied by this endpoint and is not produced, inferred,
+  or stored. Only one batch exists (one expiration, one 50-point strike
+  window, one instant), so recurring reliability of this connector/storage
+  path is not established. A future deterministic contract selector that
+  requires implied volatility or Greeks must reject or omit the 24
+  contracts with missing values — never substitute zero.
+- **Validation status** — connectivity, response normalization, and
+  transactional storage verified for one controlled live run; a read-only
+  audit independently verified internal relational integrity and aggregate
+  data quality for that run's stored rows. This establishes **internal
+  structural consistency only** — it does not establish pricing accuracy,
+  timeliness, usefulness, predictive edge, strategy validity, or
+  profitability. No recommendation, selector, agent, alert, dashboard, or
+  execution action has consumed this data.
 
 ## Required Fields for Every Future Dataset
 
