@@ -14,12 +14,16 @@ and does not execute trades.
 **Implemented:**
 
 - **Data connectors** (`market_intelligence/data_connectors/`) — read-only
-  Alpaca (market-data snapshot, historical bars, news) and FRED (series
-  observations, series metadata). No order, account, or execution method
-  exists anywhere in this layer.
+  Alpaca (market-data snapshot, historical bars, news, and — code/tests only,
+  never run live — a bounded SPY option-chain snapshot connector) and FRED
+  (series observations, series metadata). No order, account, position,
+  exercise, or execution method exists anywhere in this layer.
 - **Storage** (`market_intelligence/storage/`, `data/`) — local DuckDB with a
   versioned, checksum-verified, transactional migration runner and per-dataset
-  repositories. Currently at schema version `0008`. No Parquet layer is in use.
+  repositories. The real local database is at schema version `0008`; migration
+  `0009` (`option_chain_snapshot_batches` + `option_chain_snapshots`) exists
+  in code and tests only and has not been applied. No Parquet layer is in
+  use.
 - **Market features** (`market_intelligence/market_features/`) — deterministic,
   read-only snapshot builders (market context, session quality, news evidence,
   macro evidence) computed only from already-stored data.
@@ -70,9 +74,16 @@ intraday regime classification, deterministic option-contract eligibility
 filtering, and then a bounded strategy agent that consumes only the
 validated structured outputs of the upstream stages plus the deterministic
 selector's eligible contract set and can return `no_trade`, followed by a
-recorded evaluation before any claim of usefulness. No options code,
-connector, or agent exists yet. With Phase 0 closed, the first implementation
-step is **read-only SPY option-chain ingestion and local storage**. Design:
+recorded evaluation before any claim of usefulness. With Phase 0 closed, the
+first implementation step — **read-only SPY option-chain snapshot ingestion
+and local storage** — has been built in code and tests only: a bounded
+`AlpacaOptionsChainClient` (expiration span ≤ 60 days, strike width ≤ $500,
+≤ 10 pages, ≤ 5,000 contracts), migration `0009`
+(`option_chain_snapshot_batches` + `option_chain_snapshots`), a repository,
+and a dry-run-first ingestion script. **No live option-chain request has
+been made, no real option data has been stored, and migration `0009` is not
+applied to the real database.** No regime engine, contract
+selector, or Options Strategy Agent exists. Design:
 [docs/OPTIONS_DECISION_WORKFLOW.md](docs/OPTIONS_DECISION_WORKFLOW.md).
 Manual-only execution is unchanged. The three existing analysis agents
 (Market Evidence, News, Macro) stay non-directional; the future Options
@@ -87,6 +98,9 @@ The Python environment, runtime/dev dependencies, and settings layer
   ingestion into local storage: Alpaca historical bars, Alpaca news, FRED
   series observations, and FRED series metadata.
 - **The local DuckDB database is initialized at schema version `0008`.**
+  Migration `0009` (`option_chain_snapshot_batches` + `option_chain_snapshots`)
+  exists in code and tests only and has not been applied to the real
+  database.
 - **A deterministic, manually invoked ingestion path exists.** The
   dry-run-first CLI (`scripts/run_ingestion_pipeline.py`) runs the three
   reviewed jobs through explicit contracts, with per-job failure isolation, a
@@ -111,8 +125,10 @@ The Python environment, runtime/dev dependencies, and settings layer
 
 None of the following exists: a predictive/forecasting model, a
 forecast-recording system, an agent orchestrator or combined market-intelligence
-brief, a dashboard, a trade journal, an options-data pipeline, a scheduler, or
-any brokerage-execution integration.
+brief, a dashboard, a trade journal, a live/stored options-data pipeline (the
+option-chain connector and storage exist only in code and tests, never run
+live), an intraday regime engine, a deterministic contract selector, an
+Options Strategy Agent, a scheduler, or any brokerage-execution integration.
 
 See [PROJECT_STATE.md](PROJECT_STATE.md) for the authoritative, up-to-date
 status and [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md) for the Phase 0 exit

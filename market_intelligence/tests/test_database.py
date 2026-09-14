@@ -105,8 +105,8 @@ def test_initialize_creates_database_file(tmp_path, isolated_env_file):
 
     assert result.database_path.exists()
     assert result.database_path.name == DATABASE_FILENAME
-    assert result.applied_migration_count == 8
-    assert result.schema_version == "0008"
+    assert result.applied_migration_count == 9
+    assert result.schema_version == "0009"
 
 
 def test_initialize_creates_required_tables_and_columns(tmp_path, isolated_env_file):
@@ -272,7 +272,7 @@ def test_repeated_initialize_applies_zero_new_migrations(tmp_path, isolated_env_
     first = manager.initialize()
     second = manager.initialize()
 
-    assert first.applied_migration_count == 8
+    assert first.applied_migration_count == 9
     assert second.applied_migration_count == 0
     assert second.schema_version == first.schema_version
 
@@ -287,7 +287,7 @@ def test_repeated_initialize_does_not_duplicate_rows(tmp_path, isolated_env_file
         count = connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0]
     finally:
         connection.close()
-    assert count == 8
+    assert count == 9
 
 
 # --- migration order ---------------------------------------------------------
@@ -512,8 +512,8 @@ def test_check_health_after_initialization_reports_healthy(tmp_path, isolated_en
     assert health.migration_history_valid is True
     assert health.checksums_valid is True
     assert health.is_current is True
-    assert health.schema_version == "0008"
-    assert health.applied_migration_count == 8
+    assert health.schema_version == "0009"
+    assert health.applied_migration_count == 9
 
 
 def test_check_health_is_read_only(tmp_path, isolated_env_file):
@@ -991,8 +991,8 @@ def test_migration_0007_creates_orchestration_runs_and_job_runs_tables(
 
     assert "orchestration_runs" in tables
     assert "orchestration_job_runs" in tables
-    assert result.applied_migration_count == 8
-    assert result.schema_version == "0008"
+    assert result.applied_migration_count == 9
+    assert result.schema_version == "0009"
 
 
 def test_migration_0007_orchestration_runs_primary_key_rejects_duplicate(
@@ -1279,6 +1279,310 @@ def test_0007_to_0008_upgrade_preserves_existing_infrastructure_state(tmp_path, 
     health = manager.check_health()
     assert health.healthy is True
     assert health.schema_version == "0008"
+
+
+# --- migration 0009 (option_chain_snapshots) schema and primary key ----------
+
+
+def test_migration_0009_creates_option_chain_snapshots_with_expected_primary_key(
+    tmp_path, isolated_env_file
+):
+    manager = real_migrations_manager(tmp_path, isolated_env_file)
+    result = manager.initialize()
+
+    connection = duckdb.connect(str(result.database_path), read_only=True)
+    try:
+        tables = table_names(connection)
+        pk_columns = [
+            row[0]
+            for row in connection.execute(
+                "SELECT column_name FROM information_schema.key_column_usage "
+                "WHERE table_name = 'option_chain_snapshots' ORDER BY ordinal_position"
+            ).fetchall()
+        ]
+    finally:
+        connection.close()
+
+    assert "option_chain_snapshots" in tables
+    assert pk_columns == ["provider", "underlying", "feed", "contract_symbol", "retrieved_at"]
+
+
+def test_migration_0009_primary_key_keeps_opra_and_indicative_separate(
+    tmp_path, isolated_env_file
+):
+    manager = real_migrations_manager(tmp_path, isolated_env_file)
+    manager.initialize()
+
+    insert = (
+        "INSERT INTO option_chain_snapshots (provider, underlying, feed, contract_symbol, "
+        "retrieved_at, expiration_date, option_type, strike_price, "
+        "first_ingested_at, last_seen_at, ingestion_run_id) VALUES "
+        "('alpaca', 'SPY', ?, 'SPY260918C00500000', '2026-09-02T15:30:05', '2026-09-18', "
+        "'call', 500, now(), now(), 'run-1')"
+    )
+    connection = duckdb.connect(str(manager.database_path))
+    try:
+        connection.execute(insert, ["opra"])
+        connection.execute(insert, ["indicative"])  # not a conflict: different feed
+        with pytest.raises(duckdb.ConstraintException):
+            connection.execute(insert, ["opra"])  # exact identity repeat
+        count = connection.execute(
+            "SELECT count(*) FROM option_chain_snapshots"
+        ).fetchone()[0]
+    finally:
+        connection.close()
+    assert count == 2
+
+
+def test_migration_0009_optional_columns_are_nullable(tmp_path, isolated_env_file):
+    manager = real_migrations_manager(tmp_path, isolated_env_file)
+    manager.initialize()
+
+    connection = duckdb.connect(str(manager.database_path))
+    try:
+        connection.execute(
+            "INSERT INTO option_chain_snapshots (provider, underlying, feed, contract_symbol, "
+            "retrieved_at, expiration_date, option_type, strike_price, "
+            "first_ingested_at, last_seen_at, ingestion_run_id) VALUES "
+            "('alpaca', 'SPY', 'opra', 'SPY260918C00500000', now(), '2026-09-18', 'call', 500, "
+            "now(), now(), 'run-1')"
+        )
+        row = connection.execute(
+            "SELECT bid_price, delta, implied_volatility, quote_timestamp "
+            "FROM option_chain_snapshots"
+        ).fetchone()
+    finally:
+        connection.close()
+    assert row == (None, None, None, None)
+
+
+def test_migration_0009_rejects_unknown_feed_and_type(tmp_path, isolated_env_file):
+    manager = real_migrations_manager(tmp_path, isolated_env_file)
+    manager.initialize()
+
+    connection = duckdb.connect(str(manager.database_path))
+    try:
+        with pytest.raises(duckdb.ConstraintException):
+            connection.execute(
+                "INSERT INTO option_chain_snapshots (provider, underlying, feed, "
+                "contract_symbol, retrieved_at, expiration_date, option_type, strike_price, "
+                "first_ingested_at, last_seen_at, ingestion_run_id) "
+                "VALUES ('alpaca', 'SPY', 'sip', 'SPY260918C00500000', now(), '2026-09-18', "
+                "'call', 500, now(), now(), 'run-1')"
+            )
+    finally:
+        connection.close()
+
+
+# --- migration 0009 (option_chain_snapshot_batches) schema and primary key --
+
+
+_BATCH_INSERT_COLUMNS = (
+    "ingestion_run_id, provider, underlying, requested_feed, "
+    "requested_expiration_date_gte, requested_expiration_date_lte, "
+    "requested_strike_price_gte, requested_strike_price_lte, requested_option_type, "
+    "retrieved_at, contract_count, outcome, first_ingested_at, last_seen_at"
+)
+
+
+def _batch_insert_values(
+    run_id: str = "run-1", *, feed: str = "opra", contract_count: int = 1,
+    outcome: str = "succeeded",
+) -> str:
+    return (
+        f"('{run_id}', 'alpaca', 'SPY', '{feed}', '2026-09-01', '2026-09-30', 400, 600, NULL, "
+        f"now(), {contract_count}, '{outcome}', now(), now())"
+    )
+
+
+def test_migration_0009_creates_option_chain_snapshot_batches_with_run_id_primary_key(
+    tmp_path, isolated_env_file
+):
+    manager = real_migrations_manager(tmp_path, isolated_env_file)
+    result = manager.initialize()
+
+    connection = duckdb.connect(str(result.database_path), read_only=True)
+    try:
+        tables = table_names(connection)
+        pk_columns = [
+            row[0]
+            for row in connection.execute(
+                "SELECT column_name FROM information_schema.key_column_usage "
+                "WHERE table_name = 'option_chain_snapshot_batches' ORDER BY ordinal_position"
+            ).fetchall()
+        ]
+    finally:
+        connection.close()
+
+    assert "option_chain_snapshot_batches" in tables
+    assert pk_columns == ["ingestion_run_id"]
+
+
+def test_migration_0009_batch_allows_zero_contract_count_for_skipped_empty(
+    tmp_path, isolated_env_file
+):
+    manager = real_migrations_manager(tmp_path, isolated_env_file)
+    manager.initialize()
+
+    connection = duckdb.connect(str(manager.database_path))
+    try:
+        connection.execute(
+            f"INSERT INTO option_chain_snapshot_batches ({_BATCH_INSERT_COLUMNS}) VALUES "
+            + _batch_insert_values(contract_count=0, outcome="skipped_empty")
+        )
+        row = connection.execute(
+            "SELECT contract_count, outcome FROM option_chain_snapshot_batches"
+        ).fetchone()
+    finally:
+        connection.close()
+    assert row == (0, "skipped_empty")
+
+
+def test_migration_0009_batch_rejects_negative_contract_count(tmp_path, isolated_env_file):
+    manager = real_migrations_manager(tmp_path, isolated_env_file)
+    manager.initialize()
+
+    connection = duckdb.connect(str(manager.database_path))
+    try:
+        with pytest.raises(duckdb.ConstraintException):
+            connection.execute(
+                f"INSERT INTO option_chain_snapshot_batches ({_BATCH_INSERT_COLUMNS}) VALUES "
+                + _batch_insert_values(contract_count=-1)
+            )
+    finally:
+        connection.close()
+
+
+def test_migration_0009_batch_rejects_unknown_outcome(tmp_path, isolated_env_file):
+    manager = real_migrations_manager(tmp_path, isolated_env_file)
+    manager.initialize()
+
+    connection = duckdb.connect(str(manager.database_path))
+    try:
+        with pytest.raises(duckdb.ConstraintException):
+            connection.execute(
+                f"INSERT INTO option_chain_snapshot_batches ({_BATCH_INSERT_COLUMNS}) VALUES "
+                + _batch_insert_values(outcome="bogus")
+            )
+    finally:
+        connection.close()
+
+
+def test_migration_0009_batch_rejects_unknown_requested_feed(tmp_path, isolated_env_file):
+    manager = real_migrations_manager(tmp_path, isolated_env_file)
+    manager.initialize()
+
+    connection = duckdb.connect(str(manager.database_path))
+    try:
+        with pytest.raises(duckdb.ConstraintException):
+            connection.execute(
+                f"INSERT INTO option_chain_snapshot_batches ({_BATCH_INSERT_COLUMNS}) VALUES "
+                + _batch_insert_values(feed="sip")
+            )
+    finally:
+        connection.close()
+
+
+def test_migration_0009_batch_run_id_is_unique(tmp_path, isolated_env_file):
+    """Exactly one batch record per successful logical ingestion (run id)."""
+    manager = real_migrations_manager(tmp_path, isolated_env_file)
+    manager.initialize()
+
+    connection = duckdb.connect(str(manager.database_path))
+    try:
+        connection.execute(
+            f"INSERT INTO option_chain_snapshot_batches ({_BATCH_INSERT_COLUMNS}) VALUES "
+            + _batch_insert_values("run-dup")
+        )
+        with pytest.raises(duckdb.ConstraintException):
+            connection.execute(
+                f"INSERT INTO option_chain_snapshot_batches ({_BATCH_INSERT_COLUMNS}) VALUES "
+                + _batch_insert_values("run-dup")
+            )
+    finally:
+        connection.close()
+
+
+def test_migration_0009_has_no_open_interest_column(tmp_path, isolated_env_file):
+    manager = real_migrations_manager(tmp_path, isolated_env_file)
+    result = manager.initialize()
+
+    connection = duckdb.connect(str(result.database_path), read_only=True)
+    try:
+        columns = {
+            row[0]
+            for row in connection.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name IN ('option_chain_snapshots', 'option_chain_snapshot_batches')"
+            ).fetchall()
+        }
+    finally:
+        connection.close()
+    assert not any("open_interest" in c or "openinterest" in c.lower() for c in columns)
+
+
+# --- 0008 -> 0009 upgrade ----------------------------------------------------
+
+
+def test_0008_to_0009_upgrade_preserves_existing_infrastructure_state(
+    tmp_path, isolated_env_file
+):
+    """A database already at 0008 upgrades to 0009 without losing existing rows."""
+    migrations_dir = tmp_path / "migrations"
+    write_migration(migrations_dir, *MIGRATION_0001)
+    write_migration(migrations_dir, *MIGRATION_0002)
+    write_migration(migrations_dir, *MIGRATION_0003)
+    real_migrations_dir = Path(__file__).resolve().parents[1] / "storage" / "migrations"
+    for filename in (
+        "0004_create_news_articles.sql",
+        "0005_create_market_bars.sql",
+        "0006_create_macro_observations.sql",
+        "0007_create_orchestration_audit.sql",
+        "0008_create_macro_series_metadata.sql",
+    ):
+        write_migration(
+            migrations_dir, filename, (real_migrations_dir / filename).read_text(encoding="utf-8")
+        )
+    settings = isolated_settings(tmp_path, isolated_env_file)
+    manager = DuckDBManager(settings=settings, migrations_dir=migrations_dir)
+    first = manager.initialize()
+    assert first.schema_version == "0008"
+
+    connection = duckdb.connect(str(manager.database_path))
+    try:
+        connection.execute(
+            "INSERT INTO ingestion_runs "
+            "(run_id, provider, dataset_name, started_at_utc, status, code_version, "
+            "schema_version) VALUES ('run-1', 'alpaca', 'bars', now(), 'succeeded', 'v0', '0008')"
+        )
+    finally:
+        connection.close()
+
+    migration_0009_sql = (
+        real_migrations_dir / "0009_create_option_chain_snapshots.sql"
+    ).read_text(encoding="utf-8")
+    write_migration(migrations_dir, "0009_create_option_chain_snapshots.sql", migration_0009_sql)
+    second = manager.initialize()
+
+    assert second.applied_migration_count == 1
+    assert second.schema_version == "0009"
+
+    connection = duckdb.connect(str(manager.database_path), read_only=True)
+    try:
+        tables = table_names(connection)
+        row = connection.execute(
+            "SELECT run_id FROM ingestion_runs WHERE run_id = 'run-1'"
+        ).fetchone()
+    finally:
+        connection.close()
+
+    assert "option_chain_snapshots" in tables
+    assert "option_chain_snapshot_batches" in tables
+    assert row == ("run-1",)
+
+    health = manager.check_health()
+    assert health.healthy is True
+    assert health.schema_version == "0009"
 
 
 # --- database file remains ignored by Git ------------------------------------
