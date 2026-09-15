@@ -25,6 +25,25 @@ statistic.
 a bar timestamped later than "now." A caller that wants to evaluate a later
 point in the same session must call again with a longer ``bars`` list.
 
+**Bar timestamps are bar-*start* times; "now" is the bar's end.** A
+canonical Alpaca 5-minute bar's timestamp identifies when the bar *opened*,
+not when it closed -- a bar stamped ``15:30`` covers ``15:30``-``15:35`` and
+is only complete, and only observable by any caller, at ``15:35``. Every
+feature that answers "what time is it right now" --
+``RegimeFeatures.as_of_timestamp``, ``time_of_day_bucket``, and
+``minutes_remaining_in_session`` -- is therefore computed from
+``bar_end = bars[-1].timestamp + BAR_INTERVAL_MINUTES``, never from
+``bars[-1].timestamp`` itself. At the last regular-session bar (``15:55``),
+``bar_end`` is exactly ``16:00`` and ``minutes_remaining_in_session`` is
+``0``. Grid alignment and session-completeness checks
+(``session_bars_complete`` / ``missing_interval_count``) and the opening
+range's three defining bars are unaffected by this and are still keyed to
+each bar's own *start* timestamp -- those describe which 5-minute intervals
+were observed, not what time it is now. A consequence: the
+``09:30``/``09:35``/``09:40`` opening-range bars only become
+``established`` once the ``09:40`` bar itself has been supplied, which is
+only true "as of" ``bar_end = 09:45``.
+
 **Unavailable is never zero.** Every field below documents the exact
 condition under which it is ``None`` (unavailable/indeterminate/insufficient
 history) rather than a computed value. None of those conditions is ever
@@ -103,11 +122,15 @@ for the fixed output precision)
   ``spy_regime_contracts.py`` ("Unavailable is never zero").
 - **prior_day_range_position**: the last close vs. ``prior_day.high``/
   ``low``, or ``UNAVAILABLE`` if ``prior_day`` is ``None``.
-- **time_of_day_bucket**: a fixed partition of the regular session by the
-  last bar's America/New_York time -- see ``_time_of_day_bucket``.
-- **minutes_remaining_in_session**: whole minutes from the last bar's
-  America/New_York time to ``16:00``, floored, always available since every
-  bar is already validated to be within the regular session.
+- **time_of_day_bucket**: a fixed partition of the regular session by
+  ``bar_end`` (the last bar's America/New_York time plus
+  ``BAR_INTERVAL_MINUTES``, not the bar's own start time -- see "Bar
+  timestamps are bar-start times" above) -- see ``_time_of_day_bucket``.
+- **minutes_remaining_in_session**: whole minutes from ``bar_end`` (the last
+  bar's America/New_York time plus ``BAR_INTERVAL_MINUTES``) to ``16:00``,
+  floored at ``0``, always available since every bar is already validated to
+  be within the regular session. At the ``15:55`` bar, ``bar_end`` is
+  ``16:00`` and this is ``0``.
 """
 
 from __future__ import annotations
@@ -315,11 +338,19 @@ def _minutes_remaining_in_session(current_time: _time) -> int:
 
 def compute_features(engine_input: RegimeEngineInput) -> RegimeFeatures:
     """Compute one deterministic ``RegimeFeatures`` from a validated
-    ``RegimeEngineInput``. Pure: no I/O, no clock read, no randomness."""
+    ``RegimeEngineInput``. Pure: no I/O, no clock read, no randomness.
+
+    ``bars[-1].timestamp`` is a canonical Alpaca bar-*start* timestamp -- the
+    bar is only actually complete and observable at ``bars[-1].timestamp +
+    BAR_INTERVAL_MINUTES`` (``bar_end``). Every "as of now" quantity
+    (``as_of_timestamp``, ``time_of_day_bucket``,
+    ``minutes_remaining_in_session``) is therefore computed from
+    ``bar_end``, never from the bar-start timestamp -- see the module
+    docstring."""
     bars = engine_input.bars
     last_bar = bars[-1]
-    last_et = last_bar.timestamp.astimezone(EASTERN)
-    current_time = last_et.time()
+    bar_end = last_bar.timestamp + timedelta(minutes=BAR_INTERVAL_MINUTES)
+    current_time = bar_end.astimezone(EASTERN).time()
 
     session_bars_complete, missing_interval_count = _session_completeness(bars)
 
@@ -384,7 +415,7 @@ def compute_features(engine_input: RegimeEngineInput) -> RegimeFeatures:
     return RegimeFeatures(
         symbol=engine_input.symbol,
         session_date=engine_input.session_date,
-        as_of_timestamp=last_bar.timestamp,
+        as_of_timestamp=bar_end,
         bars_observed=len(bars),
         minutes_remaining_in_session=minutes_remaining_in_session,
         session_bars_complete=session_bars_complete,

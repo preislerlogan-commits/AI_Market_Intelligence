@@ -398,7 +398,16 @@ before the previous one is complete and recorded.
   volatility, a signed trend-strength efficiency ratio, relative volume
   (only when a same-time historical baseline is supplied, itself required
   to be on the same 5-minute cadence and elapsed-session position),
-  prior-day high/low/close relationship, and a fixed time-of-day bucket),
+  prior-day high/low/close relationship, and a fixed time-of-day bucket —
+  **every "as of now" field (`as_of_timestamp`, the time-of-day bucket, and
+  minutes remaining in session) is derived from the completed latest bar's
+  *end*, `bars[-1].timestamp + 5 minutes`, never from its start timestamp**,
+  because a canonical Alpaca 5-minute bar timestamp identifies when the bar
+  opened and the bar is only actually complete and observable 5 minutes
+  later (a bar stamped `15:30` is only available at `15:35`; at the
+  `15:55` bar, that end time is `16:00` and minutes remaining is `0`) —
+  grid/completeness checks and the opening-range bars remain keyed to each
+  bar's own start timestamp, unaffected by this),
   and
   `spy_regime_classifier.py` (`classify_regime` / `classify_horizon` /
   `classify` / `classify_batch`: the fixed, published, centralized-threshold

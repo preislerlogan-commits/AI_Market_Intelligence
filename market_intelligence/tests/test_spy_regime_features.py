@@ -614,21 +614,30 @@ def test_prior_day_range_position_inside_prior_range():
 
 
 # --- time_of_day_bucket / minutes_remaining_in_session ------------------------------------
+#
+# Both are derived from bar_end = latest_bar.timestamp + 5 minutes, not from
+# the latest bar's own (start) timestamp -- a canonical Alpaca 5-minute bar
+# is only complete and observable 5 minutes after its stamped start. See
+# spy_regime_features.py, "Bar timestamps are bar-start times; 'now' is the
+# bar's end".
 
 
 def test_time_of_day_bucket_boundaries():
     # Every boundary below (10:00, 11:30, 14:00, 15:00) is itself on the
     # 5-minute grid, so the full set of bucket edges remains testable
-    # through grid-aligned bars.
+    # through grid-aligned bars. Expected buckets are keyed to bar_end
+    # (bar timestamp + 5 minutes), not to the bar timestamp itself -- e.g.
+    # the bar stamped 09:55 has bar_end 10:00, so it is already
+    # MID_MORNING, not OPEN.
     cases = [
         ((9, 30), TimeOfDayBucket.OPEN),
-        ((9, 55), TimeOfDayBucket.OPEN),
+        ((9, 55), TimeOfDayBucket.MID_MORNING),
         ((10, 0), TimeOfDayBucket.MID_MORNING),
-        ((11, 25), TimeOfDayBucket.MID_MORNING),
+        ((11, 25), TimeOfDayBucket.MIDDAY),
         ((11, 30), TimeOfDayBucket.MIDDAY),
-        ((13, 55), TimeOfDayBucket.MIDDAY),
+        ((13, 55), TimeOfDayBucket.AFTERNOON),
         ((14, 0), TimeOfDayBucket.AFTERNOON),
-        ((14, 55), TimeOfDayBucket.AFTERNOON),
+        ((14, 55), TimeOfDayBucket.POWER_HOUR),
         ((15, 0), TimeOfDayBucket.POWER_HOUR),
         ((15, 55), TimeOfDayBucket.POWER_HOUR),
     ]
@@ -641,15 +650,66 @@ def test_time_of_day_bucket_boundaries():
 
 
 def test_minutes_remaining_in_session_computed():
+    # bar_end of the 15:55 bar is 16:00 -- zero minutes remain.
     bars = [flat_bar(SESSION_DATE, 15, 55, "500")]
     features = compute_features(make_input(bars=bars))
-    assert features.minutes_remaining_in_session == 5
+    assert features.minutes_remaining_in_session == 0
 
 
 def test_minutes_remaining_in_session_at_open():
+    # bar_end of the 09:30 open bar is 09:35, not 09:30.
     bars = [flat_bar(SESSION_DATE, 9, 30, "500")]
     features = compute_features(make_input(bars=bars))
-    assert features.minutes_remaining_in_session == 390
+    assert features.minutes_remaining_in_session == 385
+
+
+# --- as_of_timestamp / bar_end boundary tests -----------------------------------------
+
+
+def test_as_of_timestamp_is_bar_end_not_bar_start():
+    bars = [flat_bar(SESSION_DATE, 9, 30, "500")]
+    features = compute_features(make_input(bars=bars))
+    assert features.as_of_timestamp == et(SESSION_DATE, 9, 35)
+
+
+def test_opening_range_established_only_as_of_0945_bar_end():
+    """The opening range's three defining bars (09:30/09:35/09:40) are
+    keyed to their own start timestamps (unaffected by bar_end), but the
+    engine only observes all three -- and therefore only reports
+    established -- once as_of_timestamp (bar_end) reaches 09:45."""
+    # Only 09:30 and 09:35 supplied: as_of is 09:40, opening range not
+    # established (09:40 bar not yet observed).
+    bars_before = [flat_bar(SESSION_DATE, 9, 30, "500"), flat_bar(SESSION_DATE, 9, 35, "500")]
+    features_before = compute_features(make_input(bars=bars_before))
+    assert features_before.as_of_timestamp == et(SESSION_DATE, 9, 40)
+    assert features_before.opening_range_established is False
+
+    # All three opening-range bars supplied: as_of is 09:45, established.
+    features_established = compute_features(make_input(bars=_opening_range_bars()))
+    assert features_established.as_of_timestamp == et(SESSION_DATE, 9, 45)
+    assert features_established.opening_range_established is True
+
+
+def test_minutes_remaining_boundary_1525_vs_1530_bar():
+    """The 30-minute horizon threshold (spy_regime_classifier.py) must be
+    evaluated against time remaining after bar_end, not bar start -- the
+    15:25 bar (bar_end 15:30) leaves exactly 30 minutes; the 15:30 bar
+    (bar_end 15:35) leaves only 25."""
+    features_1525 = compute_features(make_input(bars=[flat_bar(SESSION_DATE, 15, 25, "500")]))
+    assert features_1525.as_of_timestamp == et(SESSION_DATE, 15, 30)
+    assert features_1525.minutes_remaining_in_session == 30
+
+    features_1530 = compute_features(make_input(bars=[flat_bar(SESSION_DATE, 15, 30, "500")]))
+    assert features_1530.as_of_timestamp == et(SESSION_DATE, 15, 35)
+    assert features_1530.minutes_remaining_in_session == 25
+
+
+def test_minutes_remaining_zero_at_1555_bar_bar_end_1600():
+    bars = [flat_bar(SESSION_DATE, 15, 55, "500")]
+    features = compute_features(make_input(bars=bars))
+    assert features.as_of_timestamp == et(SESSION_DATE, 16, 0)
+    assert features.minutes_remaining_in_session == 0
+    assert features.time_of_day_bucket == TimeOfDayBucket.POWER_HOUR
 
 
 # --- catalyst_state / breadth_state passthrough --------------------------------------------

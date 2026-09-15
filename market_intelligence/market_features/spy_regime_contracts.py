@@ -386,6 +386,15 @@ class RegimeFeatures(BaseModel):
     classifier (``spy_regime_classifier.py``) is what refuses to classify
     an incomplete session, not this contract -- descriptive features here
     are still populated wherever the underlying data allows it.
+
+    ``as_of_timestamp`` is **not** ``bars[-1].timestamp``. A canonical
+    Alpaca 5-minute bar timestamp identifies the bar's *start*, so a bar
+    stamped ``15:30`` is only complete and observable at ``15:35``.
+    ``as_of_timestamp`` is that completion time (``bars[-1].timestamp +
+    BAR_INTERVAL_MINUTES``), and ``time_of_day_bucket`` /
+    ``minutes_remaining_in_session`` are derived from it -- see
+    ``spy_regime_features.py`` ("Bar timestamps are bar-start times; 'now'
+    is the bar's end").
     """
 
     model_config = ConfigDict(extra="forbid")
