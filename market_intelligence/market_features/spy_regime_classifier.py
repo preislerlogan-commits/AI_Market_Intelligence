@@ -133,12 +133,42 @@ from market_intelligence.market_features.spy_regime_contracts import (
 from market_intelligence.market_features.spy_regime_features import compute_features
 
 
+def _require_finite_nonnegative(value: Decimal, field_name: str) -> None:
+    if not value.is_finite():
+        raise ValueError(f"{field_name} must be finite")
+    if value < 0:
+        raise ValueError(f"{field_name} must be nonnegative")
+
+
 @dataclass(frozen=True)
 class RegimeThresholds:
     """Every classifier threshold, centralized and explicit.
 
     All defaults are provisional hypotheses (see the module docstring) --
     none has been evaluated against real SPY history by this project.
+
+    ``__post_init__`` validates every field and fails closed (raises
+    ``ValueError``) on construction -- a caller can never silently obtain a
+    ``RegimeThresholds`` that would let a horizon describe a period longer
+    than the remaining regular session, or that would otherwise weaken a
+    published decision-order boundary:
+
+    - every numeric threshold must be finite and nonnegative;
+    - ``trend_strength``-bounded thresholds
+      (``trend_strength_min_for_continuation``,
+      ``trend_strength_max_for_reversion``, ``range_trend_strength_max``)
+      must stay within ``trend_strength``'s own mathematically valid range,
+      ``[-1, 1]`` (see ``spy_regime_features.py``, "bounded in [-1, 1] by
+      construction") -- since every comparison uses ``abs(trend_strength)``,
+      the usable range is ``[0, 1]``;
+    - ``min_corroborators_for_reversion`` must be between 1 and 4 (there are
+      exactly four corroborating conditions; 0 would make the corroborator
+      gate meaningless and more than 4 could never be satisfied);
+    - ``intraday_30m_min_minutes_remaining`` must be exactly 30 and
+      ``intraday_2h_min_minutes_remaining`` must be exactly 120 -- these are
+      not tunable hypotheses like the regime thresholds above but a
+      structural guarantee (a horizon may never describe more time than
+      remains in the regular session), so a caller can never weaken them.
     """
 
     extension_threshold_for_reversion: Decimal = Decimal("1.5")
@@ -150,8 +180,56 @@ class RegimeThresholds:
     range_trend_strength_max: Decimal = Decimal("0.25")
     range_extension_max: Decimal = Decimal("1.0")
     min_corroborators_for_reversion: int = 2
-    intraday_30m_min_minutes_remaining: int = 5
-    intraday_2h_min_minutes_remaining: int = 45
+    intraday_30m_min_minutes_remaining: int = 30
+    intraday_2h_min_minutes_remaining: int = 120
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "extension_threshold_for_reversion",
+            "trend_strength_min_for_continuation",
+            "trend_strength_max_for_reversion",
+            "vwap_slope_min_bps_for_continuation",
+            "vwap_slope_max_bps_for_reversion",
+            "relative_volume_elevated_min",
+            "range_trend_strength_max",
+            "range_extension_max",
+        ):
+            _require_finite_nonnegative(getattr(self, field_name), field_name)
+
+        if not (Decimal(0) < self.trend_strength_min_for_continuation <= Decimal(1)):
+            raise ValueError(
+                "trend_strength_min_for_continuation must be within (0, 1] -- "
+                "trend_strength is bounded in [-1, 1] and compared via abs()"
+            )
+        if not (Decimal(0) <= self.trend_strength_max_for_reversion < Decimal(1)):
+            raise ValueError(
+                "trend_strength_max_for_reversion must be within [0, 1) -- "
+                "trend_strength is bounded in [-1, 1] and compared via abs()"
+            )
+        if not (Decimal(0) <= self.range_trend_strength_max < Decimal(1)):
+            raise ValueError(
+                "range_trend_strength_max must be within [0, 1) -- "
+                "trend_strength is bounded in [-1, 1] and compared via abs()"
+            )
+
+        if not (1 <= self.min_corroborators_for_reversion <= 4):
+            raise ValueError(
+                "min_corroborators_for_reversion must be between 1 and 4 "
+                "(there are exactly four corroborating conditions)"
+            )
+
+        if self.intraday_30m_min_minutes_remaining != 30:
+            raise ValueError(
+                "intraday_30m_min_minutes_remaining must be exactly 30 -- an "
+                "intraday_30m horizon may never describe a period longer "
+                "than the remaining regular session"
+            )
+        if self.intraday_2h_min_minutes_remaining != 120:
+            raise ValueError(
+                "intraday_2h_min_minutes_remaining must be exactly 120 -- an "
+                "intraday_2h horizon may never describe a period longer "
+                "than the remaining regular session"
+            )
 
 
 DEFAULT_THRESHOLDS = RegimeThresholds()

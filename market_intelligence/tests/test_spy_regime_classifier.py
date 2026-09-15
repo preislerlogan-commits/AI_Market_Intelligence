@@ -13,8 +13,11 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from market_intelligence.market_features.spy_regime_classifier import (
     DEFAULT_THRESHOLDS,
+    RegimeThresholds,
     classify,
     classify_batch,
     classify_horizon,
@@ -543,3 +546,128 @@ def test_end_to_end_otherwise_qualifying_trend_with_a_gap_stays_indeterminate():
 def test_default_thresholds_are_the_documented_values():
     assert DEFAULT_THRESHOLDS.extension_threshold_for_reversion == Decimal("1.5")
     assert DEFAULT_THRESHOLDS.min_corroborators_for_reversion == 2
+    assert DEFAULT_THRESHOLDS.intraday_30m_min_minutes_remaining == 30
+    assert DEFAULT_THRESHOLDS.intraday_2h_min_minutes_remaining == 120
+
+
+# --- Horizon boundary: a horizon may never describe more time than remains ----------------
+
+
+def test_horizon_event_driven_30m_boundary_29_vs_30_minutes():
+    just_short = base_features(minutes_remaining_in_session=29)
+    horizon, _ = classify_horizon(Regime.EVENT_DRIVEN, just_short)
+    assert horizon == ScenarioHorizon.TO_SESSION_CLOSE
+
+    exactly_enough = base_features(minutes_remaining_in_session=30)
+    horizon, _ = classify_horizon(Regime.EVENT_DRIVEN, exactly_enough)
+    assert horizon == ScenarioHorizon.INTRADAY_30M
+
+
+def test_horizon_mean_reversion_30m_boundary_29_vs_30_minutes():
+    just_short = base_features(minutes_remaining_in_session=29)
+    horizon, _ = classify_horizon(Regime.VWAP_MEAN_REVERSION, just_short)
+    assert horizon == ScenarioHorizon.TO_SESSION_CLOSE
+
+    exactly_enough = base_features(minutes_remaining_in_session=30)
+    horizon, _ = classify_horizon(Regime.VWAP_MEAN_REVERSION, exactly_enough)
+    assert horizon == ScenarioHorizon.INTRADAY_30M
+
+
+def test_horizon_trend_continuation_2h_boundary_119_vs_120_minutes():
+    just_short = base_features(minutes_remaining_in_session=119)
+    horizon, _ = classify_horizon(Regime.TREND_CONTINUATION, just_short)
+    assert horizon == ScenarioHorizon.TO_SESSION_CLOSE
+
+    exactly_enough = base_features(minutes_remaining_in_session=120)
+    horizon, _ = classify_horizon(Regime.TREND_CONTINUATION, exactly_enough)
+    assert horizon == ScenarioHorizon.INTRADAY_2H
+
+
+@pytest.mark.parametrize(
+    "regime,minutes_remaining",
+    [
+        (Regime.EVENT_DRIVEN, 29),
+        (Regime.VWAP_MEAN_REVERSION, 29),
+        (Regime.TREND_CONTINUATION, 119),
+    ],
+)
+def test_no_horizon_exceeds_remaining_session_time(regime, minutes_remaining):
+    """No horizon bucket may claim more time than actually remains in the
+    regular session -- a 30-minute or 2-hour horizon must fall back to
+    to_session_close whenever the remaining time is even one minute short
+    of the named duration."""
+    features = base_features(minutes_remaining_in_session=minutes_remaining)
+    horizon, _ = classify_horizon(regime, features)
+    assert horizon == ScenarioHorizon.TO_SESSION_CLOSE
+
+
+# --- RegimeThresholds validation: fail closed on construction -----------------------------
+
+
+def test_default_thresholds_construct_without_error():
+    RegimeThresholds()
+
+
+@pytest.mark.parametrize(
+    "field_name,bad_value",
+    [
+        ("extension_threshold_for_reversion", Decimal("-0.1")),
+        ("vwap_slope_min_bps_for_continuation", Decimal("-1")),
+        ("relative_volume_elevated_min", Decimal("-1")),
+        ("range_extension_max", Decimal("-1")),
+    ],
+)
+def test_negative_numeric_thresholds_are_rejected(field_name, bad_value):
+    with pytest.raises(ValueError):
+        RegimeThresholds(**{field_name: bad_value})
+
+
+@pytest.mark.parametrize(
+    "field_name,bad_value",
+    [
+        ("extension_threshold_for_reversion", Decimal("Infinity")),
+        ("vwap_slope_min_bps_for_continuation", Decimal("NaN")),
+    ],
+)
+def test_non_finite_numeric_thresholds_are_rejected(field_name, bad_value):
+    with pytest.raises(ValueError):
+        RegimeThresholds(**{field_name: bad_value})
+
+
+@pytest.mark.parametrize(
+    "field_name,bad_value",
+    [
+        ("trend_strength_min_for_continuation", Decimal("0")),
+        ("trend_strength_min_for_continuation", Decimal("1.1")),
+        ("trend_strength_max_for_reversion", Decimal("-0.1")),
+        ("trend_strength_max_for_reversion", Decimal("1")),
+        ("range_trend_strength_max", Decimal("-0.1")),
+        ("range_trend_strength_max", Decimal("1")),
+    ],
+)
+def test_trend_strength_bounds_outside_valid_range_are_rejected(field_name, bad_value):
+    with pytest.raises(ValueError):
+        RegimeThresholds(**{field_name: bad_value})
+
+
+@pytest.mark.parametrize("bad_value", [0, 5, -1])
+def test_min_corroborators_outside_one_to_four_is_rejected(bad_value):
+    with pytest.raises(ValueError):
+        RegimeThresholds(min_corroborators_for_reversion=bad_value)
+
+
+@pytest.mark.parametrize("value", [1, 2, 3, 4])
+def test_min_corroborators_within_one_to_four_is_accepted(value):
+    RegimeThresholds(min_corroborators_for_reversion=value)
+
+
+@pytest.mark.parametrize("bad_value", [5, 29, 31, 0, -5])
+def test_intraday_30m_minimum_cannot_be_weakened_or_changed(bad_value):
+    with pytest.raises(ValueError):
+        RegimeThresholds(intraday_30m_min_minutes_remaining=bad_value)
+
+
+@pytest.mark.parametrize("bad_value", [45, 119, 121, 0, -5])
+def test_intraday_2h_minimum_cannot_be_weakened_or_changed(bad_value):
+    with pytest.raises(ValueError):
+        RegimeThresholds(intraday_2h_min_minutes_remaining=bad_value)
