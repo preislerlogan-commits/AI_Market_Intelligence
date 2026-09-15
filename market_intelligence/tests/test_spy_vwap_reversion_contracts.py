@@ -103,6 +103,65 @@ def test_session_bars_defaults_catalyst_and_breadth_to_unknown_unavailable():
     assert session.breadth_state == BreadthState.UNAVAILABLE
 
 
+# --- SessionBars: point-in-time context narrowed to the safest boundary --------------
+
+
+def test_session_bars_accepts_explicit_narrowest_defaults():
+    session = SessionBars(
+        session_date=DAY,
+        bars=[flat_bar(9, 30)],
+        same_time_historical_volume_baseline=None,
+        catalyst_state=CatalystState.UNKNOWN,
+        breadth_state=BreadthState.UNAVAILABLE,
+    )
+    assert session.same_time_historical_volume_baseline is None
+    assert session.catalyst_state == CatalystState.UNKNOWN
+    assert session.breadth_state == BreadthState.UNAVAILABLE
+
+
+def test_session_bars_rejects_non_null_volume_baseline():
+    with pytest.raises(ValidationError):
+        SessionBars(
+            session_date=DAY,
+            bars=[flat_bar(9, 30)],
+            same_time_historical_volume_baseline=Decimal("1234567"),
+        )
+
+
+@pytest.mark.parametrize(
+    "catalyst_state",
+    [CatalystState.NONE, CatalystState.SCHEDULED, CatalystState.ACTIVE],
+)
+def test_session_bars_rejects_non_unknown_catalyst_state(catalyst_state):
+    with pytest.raises(ValidationError):
+        SessionBars(session_date=DAY, bars=[flat_bar(9, 30)], catalyst_state=catalyst_state)
+
+
+@pytest.mark.parametrize(
+    "breadth_state",
+    [BreadthState.RISK_ON_BROAD, BreadthState.RISK_OFF_BROAD, BreadthState.MIXED],
+)
+def test_session_bars_rejects_non_unavailable_breadth_state(breadth_state):
+    with pytest.raises(ValidationError):
+        SessionBars(session_date=DAY, bars=[flat_bar(9, 30)], breadth_state=breadth_state)
+
+
+def test_session_bars_point_in_time_rejection_message_does_not_echo_supplied_value():
+    marker = Decimal("87654321.5")
+    with pytest.raises(ValidationError) as exc_info:
+        SessionBars(
+            session_date=DAY,
+            bars=[flat_bar(9, 30)],
+            same_time_historical_volume_baseline=marker,
+        )
+    # The validator's own raised message is a fixed string and never
+    # includes the supplied value -- see
+    # SessionBars._check_point_in_time_context_is_narrowed.
+    for error in exc_info.value.errors():
+        if error.get("type") == "value_error":
+            assert str(marker) not in error["msg"]
+
+
 # --- SpyVwapReversionEvaluationInput: strictly ascending sessions --------------------
 
 
@@ -174,6 +233,17 @@ def test_horizon_outcome_not_touched_forbids_touch_counts():
             touched_vwap=False,
             bars_to_touch=1,
             minutes_to_touch=5,
+        )
+
+
+def test_horizon_outcome_next_session_cannot_be_marked_available():
+    with pytest.raises(ValidationError):
+        HorizonOutcome(
+            horizon=ForwardHorizon.NEXT_SESSION,
+            available=True,
+            horizon_timestamp=datetime(2026, 6, 10, 14, 0, tzinfo=UTC),
+            price_at_horizon=Decimal("500"),
+            touched_vwap=False,
         )
 
 

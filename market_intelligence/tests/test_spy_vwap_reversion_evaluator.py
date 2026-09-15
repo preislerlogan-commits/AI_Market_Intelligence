@@ -358,7 +358,12 @@ def test_to_session_close_available_only_when_the_full_session_is_present():
     assert outcome_short.available is False
 
 
-def test_next_session_requires_both_sessions_to_reach_a_gapless_close():
+def test_next_session_is_unavailable_even_when_a_complete_next_session_follows():
+    # Without a deterministic exchange calendar, the next dated SessionBars
+    # entry is never treated as a verified next trading session -- see
+    # PROJECT_STATE.md and SpyVwapReversionEvaluationInput's docstring.
+    # Even a fully gapless, complete following session must not make
+    # NEXT_SESSION available.
     day1 = date(2026, 6, 10)
     day2 = date(2026, 6, 11)
     bars1 = full_day_with_mid_session_signal(day1, 10, flat_price="500", signal_close="506")
@@ -373,9 +378,10 @@ def test_next_session_requires_both_sessions_to_reach_a_gapless_close():
     record = evaluate_spy_vwap_reversion(complete_input, generated_at=GENERATED_AT)
     dp = _dp_for_session_bar(record, day1, 10)
     outcome = next(o for o in dp.outcomes if o.horizon == ForwardHorizon.NEXT_SESSION)
-    assert outcome.available is True
+    assert outcome.available is False
+    assert outcome.price_at_horizon is None
 
-    # Next session present but incomplete -> unavailable.
+    # Next session present but incomplete -> still unavailable.
     incomplete_input = SpyVwapReversionEvaluationInput(
         sessions=[
             SessionBars(session_date=day1, bars=bars1),
@@ -393,6 +399,77 @@ def test_next_session_requires_both_sessions_to_reach_a_gapless_close():
     dp3 = _dp_for_bar(record3, 10)
     outcome3 = next(o for o in dp3.outcomes if o.horizon == ForwardHorizon.NEXT_SESSION)
     assert outcome3.available is False
+
+
+def test_next_session_is_unavailable_across_a_friday_to_monday_boundary():
+    # A Friday session followed by the next Monday's session looks
+    # contiguous "by date alone," but this evaluator has no exchange
+    # calendar and must not treat that adjacency as a verified next
+    # trading session (no weekend assumption is guessed either way).
+    friday = date(2026, 6, 12)
+    monday = date(2026, 6, 15)
+    bars_friday = full_day_with_mid_session_signal(
+        friday, 10, flat_price="500", signal_close="506"
+    )
+    bars_monday = [flat_bar(monday, h, m, "500") for h, m in _all_session_times()]
+
+    evaluation_input = SpyVwapReversionEvaluationInput(
+        sessions=[
+            SessionBars(session_date=friday, bars=bars_friday),
+            SessionBars(session_date=monday, bars=bars_monday),
+        ]
+    )
+    record = evaluate_spy_vwap_reversion(evaluation_input, generated_at=GENERATED_AT)
+    dp = _dp_for_session_bar(record, friday, 10)
+    outcome = next(o for o in dp.outcomes if o.horizon == ForwardHorizon.NEXT_SESSION)
+    assert outcome.available is False
+
+
+def test_missing_horizon_counts_include_next_session_for_every_eligible_point():
+    bars = [flat_bar(DAY, h, m, str(500 + i)) for i, (h, m) in enumerate(_all_session_times())]
+    record = evaluate_spy_vwap_reversion(_single_session_input(bars), generated_at=GENERATED_AT)
+    assert (
+        record.missing_horizon_counts[ForwardHorizon.NEXT_SESSION]
+        == record.eligible_observation_count
+    )
+
+
+def test_no_prefix_receives_context_from_a_later_session():
+    # A decision point's signal-side fields (regime, horizon, VWAP,
+    # extension) must be identical whether or not a chronologically later
+    # session is supplied in the same evaluation input -- future sessions
+    # must never leak into an earlier session's signal.
+    day1 = date(2026, 6, 10)
+    day2 = date(2026, 6, 11)
+    bars1 = full_day_with_mid_session_signal(day1, 10, flat_price="500", signal_close="506")
+    bars2 = [flat_bar(day2, h, m, "999") for h, m in _all_session_times()]
+
+    record_alone = evaluate_spy_vwap_reversion(
+        _single_session_input(bars1), generated_at=GENERATED_AT
+    )
+    record_with_next = evaluate_spy_vwap_reversion(
+        SpyVwapReversionEvaluationInput(
+            sessions=[
+                SessionBars(session_date=day1, bars=bars1),
+                SessionBars(session_date=day2, bars=bars2),
+            ]
+        ),
+        generated_at=GENERATED_AT,
+    )
+
+    for k in range(len(bars1)):
+        dp_alone = _dp_for_session_bar(record_alone, day1, k)
+        dp_with_next = _dp_for_session_bar(record_with_next, day1, k)
+        assert dp_alone.eligibility == dp_with_next.eligibility
+        assert dp_alone.regime == dp_with_next.regime
+        assert dp_alone.scenario_horizon == dp_with_next.scenario_horizon
+        assert dp_alone.extension_side == dp_with_next.extension_side
+        assert dp_alone.signal_vwap == dp_with_next.signal_vwap
+        assert dp_alone.signal_close == dp_with_next.signal_close
+        for horizon in ForwardHorizon:
+            outcome_alone = next(o for o in dp_alone.outcomes if o.horizon == horizon)
+            outcome_with_next = next(o for o in dp_with_next.outcomes if o.horizon == horizon)
+            assert outcome_alone == outcome_with_next
 
 
 # --- No lookahead --------------------------------------------------------------------

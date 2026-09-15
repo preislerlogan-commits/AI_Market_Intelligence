@@ -42,6 +42,28 @@ by the outcome-scoring stage (``spy_vwap_reversion_evaluator.py``), which is
 the entire point of an *evaluation* -- see that module for the exact forward
 window and formulas.
 
+**Point-in-time context is narrowed to the safest boundary for this initial
+stored-bars evaluation.** ``SessionBars.same_time_historical_volume_baseline``
+/ ``catalyst_state`` / ``breadth_state`` are supplied once per session and
+reused, unchanged, by every bar-prefix signal built from that session (bar 1
+through the session's last bar). A real same-time historical volume baseline,
+catalyst state, or breadth state is properly a function of *elapsed time
+within the session*, not a single full-session value -- reusing one
+full-session value at every prefix would either leak a same-time comparison
+computed from data the point-in-time signal should not yet see, or silently
+mismatch the elapsed-time window it is claimed to represent. Until a real
+point-in-time context contract exists (one that supplies a same-time
+baseline, catalyst state, and breadth state *per elapsed-time cursor*, not
+per session), this evaluation only accepts the narrowest safe values:
+``same_time_historical_volume_baseline=None``, ``catalyst_state=UNKNOWN``,
+``breadth_state=UNAVAILABLE`` -- enforced by validator on ``SessionBars``,
+not just convention; any other value is rejected. **Consequence:**
+relative-volume-aware, event-driven, and breadth-aware evaluation are not
+performed by this evaluator -- every candidate decision point's regime is
+necessarily classified without relative volume, catalyst, or breadth
+evidence. This is a real, fixed limitation of the current evaluation, not a
+claim that those factors do not matter.
+
 **The frozen VWAP reference.** ``DecisionPointRecord.signal_vwap`` is the
 signal-time session VWAP (``RegimeFeatures.session_vwap``) at the moment the
 decision point was recorded. Every outcome for that decision point (in every
@@ -142,7 +164,14 @@ class ForwardHorizon(StrEnum):
     the same four bounded buckets the regime engine itself may report as a
     ``ScenarioHorizon`` (minus ``indeterminate``, which is not a horizon to
     score against -- see ``EligibilityStatus`` / ``HorizonOutcome`` for how
-    "no signal" and "not yet available" are represented instead)."""
+    "no signal" and "not yet available" are represented instead).
+
+    ``NEXT_SESSION`` is a recognized, fixed enum member but is
+    **unavailable for every decision point in this milestone** -- there is
+    no exchange calendar to verify the next supplied ``SessionBars`` entry
+    is actually the next trading session, so this evaluator never guesses;
+    see ``HorizonOutcome._check_next_session_is_never_available`` and
+    ``SpyVwapReversionEvaluationInput``'s docstring."""
 
     INTRADAY_30M = "intraday_30m"
     INTRADAY_2H = "intraday_2h"
@@ -201,6 +230,13 @@ class SessionBars(BaseModel):
     prefix-closed, so this one check also guarantees every shorter prefix
     ``bars[: k + 1]`` the evaluator builds is independently valid, without
     duplicating the regime engine's own validators here.
+
+    **Point-in-time context is narrowed to the safest boundary** (see the
+    module docstring): ``same_time_historical_volume_baseline`` must be
+    ``None``, ``catalyst_state`` must be ``UNKNOWN``, and ``breadth_state``
+    must be ``UNAVAILABLE`` -- any other value is rejected by validator.
+    Relative-volume, event-driven, and breadth-aware evaluation require a
+    future point-in-time context contract and are not evaluated now.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -211,6 +247,35 @@ class SessionBars(BaseModel):
     same_time_historical_volume_baseline: Annotated[Decimal, Field(gt=0)] | None = None
     catalyst_state: CatalystState = CatalystState.UNKNOWN
     breadth_state: BreadthState = BreadthState.UNAVAILABLE
+
+    @model_validator(mode="after")
+    def _check_point_in_time_context_is_narrowed(self) -> SessionBars:
+        """Reject any non-default same-time volume baseline, catalyst
+        state, or breadth state -- see the module docstring, "Point-in-time
+        context is narrowed". A fixed message only: never echoes the
+        supplied value (the boundary that actually matters for callers --
+        ``spy_vwap_reversion_serialization.input_from_json_str`` -- already
+        discards this message entirely and substitutes its own fixed one,
+        but this validator does not rely on that to stay sanitized)."""
+        if self.same_time_historical_volume_baseline is not None:
+            raise ValueError(
+                "same_time_historical_volume_baseline must be None for this "
+                "evaluation -- relative-volume-aware evaluation requires a "
+                "future point-in-time context contract"
+            )
+        if self.catalyst_state != CatalystState.UNKNOWN:
+            raise ValueError(
+                "catalyst_state must be unknown for this evaluation -- "
+                "event-driven-aware evaluation requires a future "
+                "point-in-time context contract"
+            )
+        if self.breadth_state != BreadthState.UNAVAILABLE:
+            raise ValueError(
+                "breadth_state must be unavailable for this evaluation -- "
+                "breadth-aware evaluation requires a future point-in-time "
+                "context contract"
+            )
+        return self
 
     @model_validator(mode="after")
     def _check_bars_form_a_valid_regime_engine_input(self) -> SessionBars:
@@ -237,10 +302,18 @@ class SpyVwapReversionEvaluationInput(BaseModel):
 
     ``sessions`` must be strictly ascending by ``session_date`` with no
     duplicates. There is no trading-holiday calendar here (matching
-    ``spy_regime_contracts.py`` / ``session_quality.py``) -- "the next
-    session" in the evaluator means the next entry in this list, which is
-    only the literal next trading session if the caller supplied
-    contiguous sessions; a caller-introduced gap is not detected.
+    ``spy_regime_contracts.py`` / ``session_quality.py``), and **this
+    evaluation does not guess one**: the next entry in ``sessions`` is
+    never treated as a verified next trading session -- it could be the
+    next calendar day, the next entry after a weekend, or the next entry
+    after an undetected caller gap, and this evaluator has no way to tell
+    those apart. Consequently ``ForwardHorizon.NEXT_SESSION`` is
+    **unavailable for every decision point in this milestone**, regardless
+    of whether a chronologically later ``SessionBars`` entry is supplied --
+    see ``spy_vwap_reversion_evaluator.py``, "Forward horizon windows", and
+    ``HorizonOutcome``'s own validator below. Next-session scoring requires
+    a future deterministic exchange-calendar/contiguity boundary; it is not
+    implemented by guessing.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -321,6 +394,20 @@ class HorizonOutcome(BaseModel):
                 raise ValueError(
                     "bars_to_touch/minutes_to_touch require touched_vwap=True"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _check_next_session_is_never_available(self) -> HorizonOutcome:
+        """``next_session`` is unavailable for every decision point in this
+        milestone -- there is no exchange calendar to verify that the next
+        supplied ``SessionBars`` entry is actually the next trading session
+        (see ``SpyVwapReversionEvaluationInput``'s docstring). Enforced here,
+        not just in the evaluator, so this guarantee cannot silently regress."""
+        if self.horizon == ForwardHorizon.NEXT_SESSION and self.available:
+            raise ValueError(
+                "next_session outcomes must be unavailable in this milestone -- "
+                "no exchange calendar exists to verify session contiguity"
+            )
         return self
 
 

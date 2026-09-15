@@ -488,13 +488,38 @@ before the previous one is complete and recorded.
   A decision point is **eligible** only when the frozen signal-time VWAP is
   available and the extension is non-zero; every other candidate bar is
   still recorded (never silently dropped) with its exclusion reason.
-  For each eligible point, four fixed forward horizons
+  **Point-in-time context is narrowed to the safest boundary
+  (2026-09-15 integrity fix, same day as the tooling above).**
+  `SessionBars.same_time_historical_volume_baseline` / `catalyst_state` /
+  `breadth_state` are supplied once per session and would otherwise be
+  reused, unchanged, by every bar-prefix signal in that session — a real
+  same-time volume baseline, catalyst state, or breadth state is a function
+  of elapsed session time, not a single full-session value, so reusing one
+  risks lookahead or an elapsed-time mismatch. `SessionBars` now requires
+  (by validator, not convention) `same_time_historical_volume_baseline=None`,
+  `catalyst_state=unknown`, and `breadth_state=unavailable`, rejecting any
+  other value; every candidate decision point is therefore classified
+  without relative-volume, catalyst, or breadth evidence.
+  **Relative-volume-aware, event-driven, and breadth-aware evaluation are
+  not performed by this evaluator and require a future point-in-time
+  context contract.** For each eligible point, four fixed forward horizons
   (`intraday_30m` / `intraday_2h` / `to_session_close` / `next_session`) are
   each scored **only** when the full horizon exists gaplessly in the
   supplied data (a horizon is never shortened or approximated) — whether
   price touches/crosses the frozen VWAP, time to first touch, percentage of
   the original extension retraced, signed return toward/away from VWAP, and
-  maximum favorable/adverse excursion. Every summary is reported at two
+  maximum favorable/adverse excursion. **`next_session` is always
+  unavailable in this milestone, for every decision point, with no
+  exception (same 2026-09-15 fix)** — this repository has no exchange
+  calendar, so the next entry supplied in `SpyVwapReversionEvaluationInput
+  .sessions` is never treated as a verified next trading session (not even
+  across an apparently contiguous Friday-to-Monday boundary); enforced both
+  in the evaluator (the `next_session` window is never built) and by a
+  `HorizonOutcome` validator that rejects an available `next_session`
+  outcome outright, so the guarantee cannot silently regress. Next-session
+  scoring requires a future deterministic exchange-calendar/contiguity
+  boundary. `30m`, `2h`, and `to_session_close` scoring are unaffected by
+  this fix. Every summary is reported at two
   levels — `observation_level` (pooling every eligible five-minute
   observation directly, which overlap heavily and are explicitly *not*
   independent) and `session_level` (first reducing each session to its own
@@ -512,10 +537,18 @@ before the previous one is complete and recorded.
   symmetry, unavailable future horizons, no-lookahead, incomplete sessions,
   overlapping-observation accounting, session-level aggregation,
   insufficient samples, deterministic serialization, path safety, sanitized
-  errors, and the offline import boundary. **No real historical evaluation
-  has run against the stored SPY bars, no threshold was tuned, and no edge,
-  accuracy, usefulness, strategy validity, or profitability has been
-  established.** The next action is one separately authorized, read-only
+  errors, and the offline import boundary — **plus, from the 2026-09-15
+  integrity fix**: rejection of a non-null volume baseline, a
+  scheduled/active catalyst, and an available breadth state (with defaults
+  still accepted); no prefix ever receiving context from a later session;
+  `next_session` unavailable even when another dated session follows,
+  including across a Friday-to-Monday boundary (no weekend/holiday
+  assumption is guessed); `missing_horizon_counts` correctly counting
+  `next_session` for every eligible point; and sanitized errors that never
+  reproduce a rejected point-in-time-context value. **No real historical
+  evaluation has run against the stored SPY bars, no threshold was tuned,
+  and no edge, accuracy, usefulness, strategy validity, or profitability has
+  been established.** The next action is one separately authorized, read-only
   evaluation run using the stored SPY bars — not another synthetic-fixture
   run. See `PROJECT_STATE.md` (Completed Work Log item 42).
 - **e.** Build the Deterministic Contract Selector (eligible-set filtering).

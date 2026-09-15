@@ -71,15 +71,22 @@ and opening-range philosophy of exactness over approximation):
   ``15:55`` bar and ``RegimeFeatures.session_bars_complete`` is ``True`` for
   that full session). The window is every bar after the signal bar through
   that session's own last bar.
-- **next_session**: available only when (a) the signal's own session reaches
-  a gapless close (same check as ``to_session_close``) **and** (b) the very
-  next session in ``SpyVwapReversionEvaluationInput.sessions`` also reaches
-  a gapless close. The window is every remaining bar of the signal session
-  followed by every bar of the next session, in chronological order. There
-  is no trading-holiday calendar (see ``spy_vwap_reversion_contracts.py``):
-  "next session" means the next entry the caller supplied, which is the
-  literal next trading session only if the caller supplied contiguous
-  sessions.
+- **next_session**: **always unavailable in this milestone, for every
+  decision point, with no exception.** There is no exchange calendar in
+  this repository (see ``spy_vwap_reversion_contracts.py``), so this
+  evaluator has no way to verify that the next entry in
+  ``SpyVwapReversionEvaluationInput.sessions`` is actually the next trading
+  session rather than, say, a session after an undetected gap, an
+  out-of-order re-supply, or a Friday-to-Monday boundary that happens to
+  look contiguous by date alone -- and it never guesses. This is enforced
+  in two places: this function never builds a ``next_session`` window (it
+  returns ``None`` immediately, regardless of whether a later session is
+  supplied or how "complete" it looks), and
+  ``HorizonOutcome._check_next_session_is_never_available`` rejects an
+  available ``next_session`` outcome by validator, so the guarantee cannot
+  silently regress. **This is a fixed limitation, not a scoring result:**
+  next-session scoring requires a future deterministic exchange-calendar /
+  contiguity boundary that does not exist yet.
 
 ## Outcome formulas
 
@@ -219,6 +226,8 @@ _FIXED_NOTES = (
     "thresholds_frozen_unmodified",
     "single_evaluation_run",
     "no_predictive_edge_established",
+    "next_session_unavailable_no_exchange_calendar",
+    "relative_volume_catalyst_breadth_context_not_evaluated",
 )
 
 
@@ -276,8 +285,6 @@ def _horizon_window_bars(
     signal_bar_index: int,
     horizon: ForwardHorizon,
     session_reaches_close: bool,
-    next_session: SessionBars | None,
-    next_session_reaches_close: bool,
 ) -> list | None:
     """The ordered bars strictly after the signal bar through exactly the
     horizon endpoint (inclusive), or ``None`` if the full horizon does not
@@ -292,9 +299,14 @@ def _horizon_window_bars(
         return remaining
 
     if horizon == ForwardHorizon.NEXT_SESSION:
-        if not session_reaches_close or next_session is None or not next_session_reaches_close:
-            return None
-        return [*remaining, *next_session.bars]
+        # Always unavailable in this milestone -- no exchange calendar
+        # exists to verify the next supplied SessionBars entry is actually
+        # the next trading session. Never guessed. See the module
+        # docstring, "Forward horizon windows", and
+        # HorizonOutcome._check_next_session_is_never_available, which
+        # rejects an available next_session outcome even if this ever
+        # regressed.
+        return None
 
     # INTRADAY_30M / INTRADAY_2H
     target_minutes = 30 if horizon == ForwardHorizon.INTRADAY_30M else 120
@@ -412,9 +424,6 @@ def _build_decision_points(
 
     decision_points: list[DecisionPointRecord] = []
     for i, session in enumerate(sessions):
-        next_session = sessions[i + 1] if i + 1 < len(sessions) else None
-        next_reaches_close = reaches_close_by_index[i + 1] if next_session is not None else False
-
         for k in range(len(session.bars)):
             engine_input = _prefix_engine_input(session, k)
             features = compute_features(engine_input)
@@ -433,8 +442,6 @@ def _build_decision_points(
                     signal_bar_index=k,
                     horizon=horizon,
                     session_reaches_close=reaches_close_by_index[i],
-                    next_session=next_session,
-                    next_session_reaches_close=next_reaches_close,
                 )
                 outcomes.append(
                     _compute_horizon_outcome(

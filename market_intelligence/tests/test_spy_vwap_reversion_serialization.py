@@ -7,6 +7,7 @@ record. Mirrors test_evaluation_serialization.py.
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -108,6 +109,19 @@ def test_input_from_json_str_rejects_schema_invalid_without_echoing_values():
     with pytest.raises(EvaluationSerializationError) as exc:
         input_from_json_str(bad)
     assert "SECRET_LEAK_VALUE" not in str(exc.value)
+
+
+def test_input_from_json_str_rejects_non_default_point_in_time_context_without_echoing_values():
+    payload = json.loads(input_to_json_str(_input()))
+    payload["sessions"][0]["same_time_historical_volume_baseline"] = "87654321.5"
+    payload["sessions"][0]["catalyst_state"] = "active"
+    payload["sessions"][0]["breadth_state"] = "risk_on_broad"
+    bad = json.dumps(payload)
+    with pytest.raises(EvaluationSerializationError) as exc:
+        input_from_json_str(bad)
+    assert "87654321.5" not in str(exc.value)
+    assert "risk_on_broad" not in str(exc.value)
+    assert str(exc.value) == "evaluation input failed schema validation"
 
 
 # --- write boundary (record) -----------------------------------------------------------
