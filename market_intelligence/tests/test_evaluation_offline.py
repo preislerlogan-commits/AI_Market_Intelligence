@@ -32,7 +32,17 @@ FORBIDDEN_IMPORT_PREFIXES = (
     "market_intelligence.config",
 )
 
-PYTHON_FILES = sorted(PACKAGE_DIR.rglob("*.py"))
+# The step-d SPY VWAP-extension/reversion evaluation modules
+# (spy_vwap_reversion_*.py) are deliberately exempt from the blanket
+# "no market_features" rule above: their whole purpose is to consume
+# outputs from the existing offline SPY intraday regime engine (see
+# docs/OPTIONS_DECISION_WORKFLOW.md, step d). They still make no network,
+# database, connector, model-client, agent, or orchestration import -- that
+# boundary is proven separately and more precisely by
+# test_spy_vwap_reversion_offline.py.
+PYTHON_FILES = sorted(
+    p for p in PACKAGE_DIR.rglob("*.py") if not p.name.startswith("spy_vwap_reversion_")
+)
 
 
 def _imported_names(tree: ast.AST) -> set[str]:
