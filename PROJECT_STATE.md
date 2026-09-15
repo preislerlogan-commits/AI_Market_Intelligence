@@ -4887,10 +4887,10 @@ This is the forward plan. It replaces the historical content now under
    (deterministic contract filtering) begin, followed by the Options
    Strategy Agent (step f), shadow evaluation (step g), and only then any
    alerts/dashboard (step h).**
-   **Apart from step b's connector and storage (now live-exercised once)
-   and step c's regime engine (both offline, synthetic tests only), plus
-   step d's reversion-evaluation tooling (implemented and verified with
-   synthetic fixtures, step d itself still in progress), no options code,
+   **Apart from step b's connector and storage (live-exercised once),
+   step c's regime engine (offline and synthetic-test-only), and step d's
+   reversion-evaluation tooling (offline and synthetic-test-only, with no
+   real historical evaluation yet), no options code,
    schema, or agent exists, and no
    options component is validated** — one successful ingestion and one
    structural audit do not validate pricing accuracy, timeliness,
