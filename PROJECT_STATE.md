@@ -4,13 +4,13 @@ This document is the **authoritative source of truth** for the current status
 of AI Market Intelligence. It must be read before beginning any work in this
 repository, and updated whenever the project's status materially changes.
 
-Last updated: 2026-09-14
+Last updated: 2026-09-15
 
 ## Current State at a Glance
 
 | Area | Status |
 |---|---|
-| Phase | **Phase 0 — Infrastructure Foundation. Closed 2026-08-28.** Phase 1 (SPY options decision-support workflow) has begun; its first implementation step, read-only SPY option-chain ingestion and local storage, is complete and has been live-exercised once (2026-09-14). The next planned implementation step is the deterministic SPY intraday feature/regime engine. Closure is not a validation, accuracy, repeatability, or profitability claim for any agent, and does not mean every agent has been characterized. |
+| Phase | **Phase 0 — Infrastructure Foundation. Closed 2026-08-28.** Phase 1 (SPY options decision-support workflow) has begun; step b (read-only SPY option-chain ingestion and local storage) is complete and has been live-exercised once (2026-09-14), and step c (the deterministic SPY intraday feature/regime engine) is complete offline with synthetic tests only (2026-09-15). The next planned implementation step is step d, the offline VWAP-extension/reversion evaluation. Closure is not a validation, accuracy, repeatability, or profitability claim for any agent, and does not mean every agent has been characterized; the regime engine's thresholds are provisional hypotheses, not validated values. |
 | Storage | Local DuckDB, healthy at schema version `0009` (9 migrations). Migration `0009` (`option_chain_snapshot_batches` + `option_chain_snapshots` + `option_chain_snapshot_batch_items`, three-table normalized design) has been **applied to the real database** (2026-09-14) — a read-only health check confirmed `healthy=True` at schema version `0009`. |
 | Data connectors | Read-only Alpaca (bars, news, market-data snapshot, and a bounded SPY option-chain snapshot connector — now exercised by exactly one live, indicative-feed request, 2026-09-14) and FRED (observations, series metadata). No order/account/position/exercise/execution methods exist. |
 | Ingested data | SPY 5-minute IEX bars (~3 trading days); ~20 SPY news articles; 7 FRED macro series (FEDFUNDS, GS10, CPIAUCSL, PCEPI, UNRATE, INDPRO, GDPC1) observations + metadata; one stored SPY indicative option-chain snapshot batch (102 contracts: 51 calls / 51 puts, one expiration, one retrieval instant, 2026-09-14). Each is one bounded ingestion run with limited coverage — none is complete, gap-free, or validated. |
@@ -18,9 +18,9 @@ Last updated: 2026-09-14
 | Model boundary | One OpenAI structured-output client (no tools, no retry, `store=False`); live-connectivity-verified. |
 | Agents | Market Evidence Agent, News Analyst, seven-series Macro Analyst. Each has exactly one accepted live run. Non-directional guarantee is structurally enforced. |
 | Trust layer | **P0-7 met (2026-08-28) — the methodology exists and the first real, human-reviewed Macro characterization is recorded; the other agents are not yet characterized.** `market_intelligence/evaluation/` provides the safe, offline foundation for the methodology: strict Pydantic v2 contracts (agent/severity/citation-classification/citation-reason/finding-category enums, one finding, one human citation adjudication, one evaluation-run record), a deterministic rubric-completeness validator, a symlink-refusing / no-overwrite / atomic / bounded local JSON round trip, and synthetic fixtures. It **also** provides the **first deterministic factual-transcription check — Macro Analyst only, over synthetic inputs** (`macro_factual_transcription.py`): it recognizes only the two exact controlled Macro Analyst statement forms (single stored observation; increase/decrease/unchanged two-observation comparison), verifies series ID / observation date / `Decimal` value / frequency wording / units-when-stated / previous observation / comparison direction, and emits one `info` (exact match — *not* a validation) / `failure` (mismatch, broad category only, no text reproduced) / `warning` (unrecognized wording → human review) finding. It **also** provides the **offline Macro characterization workflow** (`macro_characterization_input.py`, `macro_characterization_workflow.py`, `scripts/characterize_macro_report.py`): a strict local input contract (sanitized label; Macro claim IDs; claim series IDs and summaries; the sanitized evaluation evidence facts the transcription evaluator needs; expected claim/citation pairs — and nothing else), a pure builder that runs the transcription check for every claim, creates an `EvaluationRunRecord` carrying those findings, and emits one pending human-adjudication template per expected pair (never pre-classifying citation support, never treating a transcription match as citation support), a pure completion step that attaches completed human adjudications only when every expected pair has exactly one (refusing missing/duplicate/unexpected pairs; completion is not validation), a dry-run-first, offline, explicit-path **build CLI** (`scripts/characterize_macro_report.py`: `--write` required, no overwrite, no directory creation; with `--write` the resolved output path must be strictly inside gitignored `data/evaluations/local/`, and repository-root, tracked-directory, outside-repository, `..`-traversal, and symlink-escape targets are refused; dry-run behavior is unchanged), and a dry-run-first, offline **completion CLI** (`scripts/complete_macro_characterization.py`: a strict `MacroAdjudicationInput` contract — only the scaffold `run_id` plus a bounded human `CitationAdjudication` list, `extra="forbid"`, no credential/URL/response-ID/path/raw-evidence/model-reasoning/metadata field; `--record`/`--adjudications`/`--output` all confined strictly inside `data/evaluations/local/`; requires the adjudication `run_id` to match the scaffold; records human decisions only, no LLM judge, all four classifications preserved; sanitized counts/classification-tally output only — never a reviewer note, claim ID, citation ID, path, or record text; `--write` required to serialize, no overwrite, no directory creation). Committed fixtures and tests remain synthetic-only; real sanitized evidence facts may be used only through the explicit local characterization workflow under gitignored `data/evaluations/local/`, and real characterization inputs and outputs must never be committed. On 2026-08-28 the **first real, human-reviewed offline Macro Analyst characterization** was completed and recorded with the completion CLI, covering every claim: agent `macro_analyst`, 14 expected claim/citation pairs, 14 human adjudications (one per pair — none missing, duplicated, or unexpected), `rubric_complete: true`, classification tally `supported: 0` / `partially_supported: 14` / `unsupported: 0` / `unable_to_determine: 0`, all 14 reasons `claim_scope_exceeds_single_observation`, finding tally `info: 8` / `warning: 0` / `failure: 0` (seven factual-transcription findings were exact matches; the one scope-boundary information finding was preserved). All 14 pairs are `partially_supported` because each Macro claim is a two-observation comparison depending on two cited observations while each individual claim/citation pair carries only one of those observations. Every adjudication was the human reviewer's; no LLM judge generated, recommended, or changed any classification; no live request or Macro Analyst rerun occurred; the real artifacts remain gitignored under `data/evaluations/local/` and are not committed. This **closes P0-7 and Phase 0** (see [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md) and [docs/AGENT_EVALUATION_HARNESS.md](docs/AGENT_EVALUATION_HARNESS.md)) — it is **not** a claim that the Macro Analyst is validated, accurate, repeatable, or profitable. It still performs **no** lexical-overlap scoring, and the same transcription check and citation-support adjudication for the Market Evidence Agent and News Analyst, the abstention matrix, cross-agent consistency, and repeatability studies all remain future work that does **not** reopen Phase 0. |
-| Test baseline | `python -m pytest`: **2,626 passed, 4 skipped** (2,630 collected). The 4 skipped are symlink-refusal / symlink-escape tests (the evaluation-foundation serialization tests plus the characterization build-CLI and completion-CLI symlink-escape tests), which skip where the OS disallows creating a symlink; they are not passing tests. |
-| Not built | Predictive/forecast model, forecast records, agent orchestrator / combined brief, dashboard, trade journal, intraday regime engine, deterministic contract selector, Options Strategy Agent, scheduler, brokerage execution. (The SPY option-chain connector and storage are now applied and have one stored live batch — see "Storage" above — but no selector, agent, recommendation, or execution consumes it.) |
-| Phase 1 (design recorded, ready to begin) | An automated, evidence-based SPY options decision-support workflow: deterministic evidence + intraday regime classification (the deterministic regime engine also fixes one bounded scenario-horizon bucket, or `indeterminate`), a deterministic contract-eligibility selector that consumes that validated upstream horizon, then a bounded directional Options Strategy Agent (consumes only the upstream validated structured outputs plus the selector's eligible contract set, never a raw option chain; may reference but cannot invent, extend, or override the supplied horizon; `no_trade` is first-class), and a recorded evaluation before any usefulness claim. The three existing agents stay non-directional; the Options Strategy Agent is a separately bounded directional decision-support agent. **Step b (connector and storage) is implemented and has been live-exercised once; steps c–h remain design-only and unimplemented.** Phase 0 is now closed (2026-08-28), so Phase 1 has begun. Its **first implementation step — read-only SPY option-chain snapshot ingestion and local storage** (own reviewed connector, sanitized, no execution surface) — is **built in code and tests only** (2026-08-28; ceilings tightened and provenance normalized to two tables 2026-09-01; revised again 2026-09-14 to a three-table design after a batch-membership provenance fix): `AlpacaOptionsChainClient` (`data.alpaca.markets` `/v1beta1/options/snapshots/SPY` only, SPY-only, explicit `opra`/`indicative` feed, bounded expiration/strike/type/page/contract inputs — expiration ≤ 60 days, strike width ≤ $500, ≤ 10 pages, ≤ 5,000 contracts, ≤ 1,000/page — deterministic pagination, OCC-symbol parsing/cross-check, sanitized errors, no retry), migration `0009` (`option_chain_snapshot_batches`: one run-level provenance row per stored retrieval, including a zero-contract retrieval; `option_chain_snapshots`: one row per **immutable** contract observation; `option_chain_snapshot_batch_items`: one truthful membership row per contract per batch, so `contract_count` and membership can never drift apart), `OptionChainSnapshotRepository` (also re-validates every request field against its own canonical `normalize_option_chain_request` form before any write), and the dry-run-first `scripts/ingest_alpaca_options_chain.py`. **Superseding update (2026-09-14): migration `0009` has been applied to the real database, and one authorized live, `--execute` ingestion has succeeded** — provider `alpaca`, underlying `SPY`, requested feed `indicative` (explicitly not OPRA), one expiration (2026-09-18), strikes 740–790, 102 contracts received and inserted (51 calls, 51 puts), one successful batch and one successful ingestion run, no retry. **A subsequent read-only structural audit (2026-09-14, same day)** confirmed: 102 batch-membership rows and 102 snapshot rows, zero duplicate or orphan memberships, zero malformed OCC symbols or out-of-range contracts, quote and trade data present for all 102, implied volatility and each Greek present for 78 and unavailable for 24, zero negative/nonfinite values, zero crossed quotes, zero feed mismatches, and exactly one retrieval timestamp. **No recommendation, selector, agent, alert, dashboard, or execution action occurred as part of this ingestion or audit.** `indicative`-feed data may be delayed or modified and must not be described as live OPRA; the audit establishes internal structural consistency only — not pricing accuracy, timeliness, usefulness, predictive edge, strategy validity, or profitability; a future selector that requires IV/Greeks must reject or omit the 24 contracts with missing values, never substitute zero; open interest remains unavailable from this endpoint; and only one batch exists, so recurring reliability is not established. Nothing else in the workflow (regime engine, contract selector, Options Strategy Agent, evaluation) exists, and nothing is validated. **Next planned implementation step: the deterministic SPY intraday feature/regime engine (workflow step c) — not the deterministic contract selector or the Options Strategy Agent.** See [docs/OPTIONS_DECISION_WORKFLOW.md](docs/OPTIONS_DECISION_WORKFLOW.md). |
+| Test baseline | `python -m pytest`: **2,743 passed, 4 skipped** (2,747 collected). The 4 skipped are symlink-refusal / symlink-escape tests (the evaluation-foundation serialization tests plus the characterization build-CLI and completion-CLI symlink-escape tests), which skip where the OS disallows creating a symlink; they are not passing tests. |
+| Not built | Predictive/forecast model, forecast records, agent orchestrator / combined brief, dashboard, trade journal, deterministic contract selector, Options Strategy Agent, scheduler, brokerage execution. (The SPY option-chain connector and storage are now applied and have one stored live batch — see "Storage" above — but no selector, agent, recommendation, or execution consumes it. The deterministic SPY intraday feature/regime engine now exists offline with synthetic tests only — see "Phase 1" below — but nothing downstream consumes its output yet.) |
+| Phase 1 (design recorded, ready to begin) | An automated, evidence-based SPY options decision-support workflow: deterministic evidence + intraday regime classification (the deterministic regime engine also fixes one bounded scenario-horizon bucket, or `indeterminate`), a deterministic contract-eligibility selector that consumes that validated upstream horizon, then a bounded directional Options Strategy Agent (consumes only the upstream validated structured outputs plus the selector's eligible contract set, never a raw option chain; may reference but cannot invent, extend, or override the supplied horizon; `no_trade` is first-class), and a recorded evaluation before any usefulness claim. The three existing agents stay non-directional; the Options Strategy Agent is a separately bounded directional decision-support agent. **Step b (connector and storage) is implemented and has been live-exercised once; steps c–h remain design-only and unimplemented.** Phase 0 is now closed (2026-08-28), so Phase 1 has begun. Its **first implementation step — read-only SPY option-chain snapshot ingestion and local storage** (own reviewed connector, sanitized, no execution surface) — is **built in code and tests only** (2026-08-28; ceilings tightened and provenance normalized to two tables 2026-09-01; revised again 2026-09-14 to a three-table design after a batch-membership provenance fix): `AlpacaOptionsChainClient` (`data.alpaca.markets` `/v1beta1/options/snapshots/SPY` only, SPY-only, explicit `opra`/`indicative` feed, bounded expiration/strike/type/page/contract inputs — expiration ≤ 60 days, strike width ≤ $500, ≤ 10 pages, ≤ 5,000 contracts, ≤ 1,000/page — deterministic pagination, OCC-symbol parsing/cross-check, sanitized errors, no retry), migration `0009` (`option_chain_snapshot_batches`: one run-level provenance row per stored retrieval, including a zero-contract retrieval; `option_chain_snapshots`: one row per **immutable** contract observation; `option_chain_snapshot_batch_items`: one truthful membership row per contract per batch, so `contract_count` and membership can never drift apart), `OptionChainSnapshotRepository` (also re-validates every request field against its own canonical `normalize_option_chain_request` form before any write), and the dry-run-first `scripts/ingest_alpaca_options_chain.py`. **Superseding update (2026-09-14): migration `0009` has been applied to the real database, and one authorized live, `--execute` ingestion has succeeded** — provider `alpaca`, underlying `SPY`, requested feed `indicative` (explicitly not OPRA), one expiration (2026-09-18), strikes 740–790, 102 contracts received and inserted (51 calls, 51 puts), one successful batch and one successful ingestion run, no retry. **A subsequent read-only structural audit (2026-09-14, same day)** confirmed: 102 batch-membership rows and 102 snapshot rows, zero duplicate or orphan memberships, zero malformed OCC symbols or out-of-range contracts, quote and trade data present for all 102, implied volatility and each Greek present for 78 and unavailable for 24, zero negative/nonfinite values, zero crossed quotes, zero feed mismatches, and exactly one retrieval timestamp. **No recommendation, selector, agent, alert, dashboard, or execution action occurred as part of this ingestion or audit.** `indicative`-feed data may be delayed or modified and must not be described as live OPRA; the audit establishes internal structural consistency only — not pricing accuracy, timeliness, usefulness, predictive edge, strategy validity, or profitability; a future selector that requires IV/Greeks must reject or omit the 24 contracts with missing values, never substitute zero; open interest remains unavailable from this endpoint; and only one batch exists, so recurring reliability is not established. **Step c (2026-09-15): the deterministic SPY intraday feature/regime engine now also exists** — `market_intelligence/market_features/spy_regime_contracts.py` / `spy_regime_features.py` / `spy_regime_classifier.py` — strict Pydantic v2 contracts (`extra="forbid"`, bounded collections, and enforcement of a single canonical 5-minute bar cadence matching the stored `alpaca_bars_spy_5min` dataset — a bar off that 5-minute grid is rejected, though grid alignment alone does not prove continuity: a 10-minute-spaced feed is just as grid-aligned as true continuous data), pure feature computation (cumulative session VWAP, close-to-VWAP distance in bps, a bps-over-bps volatility-normalized extension, a VWAP slope requiring exactly 30 elapsed minutes, an opening range requiring exactly the three completed 09:30/09:35/09:40 bars, `session_bars_complete`/`missing_interval_count` comparing supplied timestamps against every expected 5-minute slot from 09:30 through the latest bar, opening gap, session return, realized volatility, signed trend strength, relative volume when a baseline is supplied, prior-day levels, time-of-day bucket), and a deterministic classifier that forces both `regime` and `scenario_horizon` to `indeterminate` whenever `session_bars_complete` is `False` — before every other rule, including event-driven — and otherwise producing exactly one `Regime` (`trend_continuation` / `vwap_mean_reversion` / `range` / `event_driven` / `indeterminate`) and one `ScenarioHorizon` (`intraday_30m` / `intraday_2h` / `to_session_close` / `next_session` / `indeterminate`) by a fixed, published, centralized-threshold decision order, plus a pure `classify_batch` for offline historical evaluation. **Implemented and tested entirely offline with synthetic fixtures — no real SPY session has been classified, every threshold is a provisional hypothesis, and no predictive accuracy or mean-reversion edge has been established.** The deterministic contract selector and the Options Strategy Agent still do not exist, and nothing downstream consumes the regime engine's output yet. **Next planned implementation step: step d, the offline VWAP-extension/reversion evaluation — not the deterministic contract selector or the Options Strategy Agent.** See [docs/OPTIONS_DECISION_WORKFLOW.md](docs/OPTIONS_DECISION_WORKFLOW.md) and Completed Work Log item 41. |
 
 ## Current Phase
 
@@ -50,10 +50,15 @@ expiration, strikes 740–790, 102 contracts received/inserted), followed by a
 read-only structural audit that found zero integrity or malformed-data
 issues — this confirms internal structural consistency only, not pricing
 accuracy, timeliness, usefulness, predictive edge, strategy validity, or
-profitability. The next planned implementation step is the deterministic SPY
-intraday feature/regime engine — not the deterministic contract selector or
-the Options Strategy Agent, neither of which exists. The manual-only execution boundary and the non-directional
-guarantee on the three existing analysis agents are unchanged.
+profitability. **Step c, the deterministic SPY intraday feature/regime
+engine, is also now done (2026-09-15) — implemented and tested entirely
+offline with synthetic fixtures; no real SPY session has been classified
+and every classifier threshold is a provisional hypothesis** (see Completed
+Work Log item 41). The next planned implementation step is step d, the
+offline VWAP-extension/reversion evaluation — not the deterministic contract
+selector or the Options Strategy Agent, neither of which exists. The
+manual-only execution boundary and the non-directional guarantee on the
+three existing analysis agents are unchanged.
 
 The prose below is retained as the Phase 0 history. Python environment and
 dependency configuration are in place. Read-only Alpaca market-data provider
@@ -4223,6 +4228,187 @@ entry describes something that has already been built, ingested, or attempted;
       not the deterministic contract selector or the Options Strategy
       Agent.**
 
+41. **Phase 1 step c — deterministic SPY intraday feature/regime engine
+    added (2026-09-15, offline, synthetic-fixture tests only; no real SPY
+    session classified).** The third Phase 1 implementation step from
+    [docs/OPTIONS_DECISION_WORKFLOW.md](docs/OPTIONS_DECISION_WORKFLOW.md),
+    built as three pure, offline modules under
+    `market_intelligence/market_features/`, deliberately independent of any
+    connector, storage, agent, orchestration, or config module (verified by
+    a static AST import scan plus a fresh-interpreter import check in
+    `test_spy_regime_engine_offline.py`).
+
+    - **Contracts (`spy_regime_contracts.py`).** Strict Pydantic v2 models,
+      `extra="forbid"`, every collection/string bounded. `IntradayBar`
+      (timestamp, OHLC, volume; rejects non-finite/non-positive prices,
+      negative volume, and inconsistent candles; accepts `volume=0` as a
+      legitimate observation). `PriorDayLevels` (prior high/low/close, or
+      the whole field is `None` when unavailable — never zero).
+      `RegimeEngineInput` (`symbol` fixed to `"SPY"` in the type itself;
+      `session_date`; 1-90 bars, validated strictly ascending with no
+      duplicates, each bar falling within `09:30`-`16:00`
+      `America/New_York` on a Monday-Friday `session_date` — premarket,
+      after-hours, weekend, and cross-date bars are all rejected before any
+      feature is computed; **every bar's America/New_York timestamp must
+      also land exactly on the canonical 5-minute grid** (`09:30`, `09:35`,
+      ..., `15:55`; zero seconds) — matching the stored
+      `alpaca_bars_spy_5min` dataset, this rejects a bar whose own offset is
+      not a multiple of 5 minutes, and grid alignment is checked on the
+      wall-clock time so it is unaffected by DST. **Grid alignment is not a
+      continuity guarantee and this module makes no claim to reject "mixed
+      cadence" in general** — `09:30`, `09:40`, `09:50` (10-minute spacing)
+      is just as grid-aligned as true continuous data, since every one of
+      those timestamps individually sits on the grid; an interior gap or a
+      coarser-but-still-aligned cadence is not rejected here (rejecting the
+      whole input would make one missing bar invalidate an entire session,
+      and an in-progress session is expected to be short) — it is instead
+      surfaced by `session_bars_complete`/`missing_interval_count` in
+      feature computation and fails classification closed (see below); an
+      optional `prior_day`; an optional
+      `same_time_historical_volume_baseline` (`> 0` or `None`); required
+      `catalyst_state`/`breadth_state` upstream-validated enums, each with
+      an explicit `unknown`/`unavailable` member — never defaulted). Fixed
+      output enums: `Regime` (`trend_continuation` / `vwap_mean_reversion` /
+      `range` / `event_driven` / `indeterminate`) and `ScenarioHorizon`
+      (`intraday_30m` / `intraday_2h` / `to_session_close` / `next_session`
+      / `indeterminate`), plus `OpeningRangePosition` /
+      `PriorDayRangePosition` / `TimeOfDayBucket` feature-value enums.
+      `RegimeFeatures` (including the always-computed `session_bars_complete`
+      bool and bounded `missing_interval_count`) and
+      `RegimeClassificationResult` are the two output contracts; every
+      numeric field that depends on an unavailable or insufficient input is
+      `None`, never a substituted zero.
+    - **Feature computation (`spy_regime_features.py`).** `compute_features`
+      is a pure function (`RegimeEngineInput -> RegimeFeatures`; same input
+      always produces the same output; no clock read, no randomness).
+      **`session_bars_complete`/`missing_interval_count`: every expected
+      5-minute grid slot from `09:30` through the latest bar is compared
+      against the supplied bar timestamps** (anchored to the session open,
+      not the first supplied bar, so a mid-session-starting input is never
+      reported complete) — always computed, never `None`; this is what
+      catches a coarser-but-grid-aligned gap that input validation cannot.
+      Also: a documented typical-price (`(H+L+C)/3`) cumulative session VWAP;
+      close-to-VWAP distance in bps; realized intraday volatility (sample
+      stdev, `ddof=1`, of bar-to-bar bps returns, requiring >= 4 bars);
+      **normalized VWAP extension is `close_to_vwap_distance_bps /
+      realized_intraday_volatility_bps` — both terms are already in basis
+      points, so the ratio is dimensionally consistent (bps / bps) and is
+      never a raw decimal distance divided by a bps volatility (which
+      would be wrong by a factor of 10,000); `None` if either input is
+      `None` or the volatility is zero or non-finite — never divided by a
+      zero/non-finite denominator** (`RegimeFeatures` itself also refuses
+      any non-finite Decimal output field as a second, independent
+      backstop); **VWAP slope requires the lookback to be exactly 6 bars
+      *and* exactly 30 elapsed minutes between the two endpoint bars** — an
+      internal gap that makes 6 bar-positions span more or less than 30
+      real minutes yields `None` rather than a slope computed over the
+      wrong elapsed time, instead of silently treating "6 observations" as
+      "30 continuous minutes"; opening gap vs. prior close (requires both a
+      supplied `prior_day` and an observed `09:30` open bar); **the opening
+      range is defined as exactly the three completed 5-minute bars at
+      `09:30`, `09:35`, and `09:40`** — `established` stays `False` (and
+      position `indeterminate`) until a bar at each of those three exact
+      times has been observed, so a gap at any one of them fails closed
+      instead of approximating the range from the others; session return;
+      a signed Kaufman-style trend-strength efficiency ratio over closes,
+      bounded in `[-1, 1]` by construction; relative volume (cumulative
+      volume divided by a baseline that must itself be computed on the
+      same 5-minute cadence and elapsed-session position — documented but
+      not independently verifiable by this module) only when a baseline
+      was supplied; prior-day high/low/close relationship; a fixed
+      time-of-day bucket (`open` / `mid_morning` / `midday` / `afternoon` /
+      `power_hour`); and minutes remaining in the session. There is no way
+      to pass a "future" bar — the engine always treats the last supplied
+      bar as "now," and classifying at any timestamp T from bars ending at
+      T gives identical output to classifying a longer session truncated
+      to the same T (proved by
+      `test_compute_features_never_reflects_bars_beyond_the_supplied_prefix`).
+    - **Classifier (`spy_regime_classifier.py`).** `RegimeThresholds` is one
+      frozen dataclass centralizing every threshold (documented as
+      provisional hypotheses, not validated values). `classify_regime`
+      applies a fixed, published decision order: **(0) `session_bars_complete
+      is False` -> `indeterminate` — checked before every other rule,
+      including event-driven, so a session with a missing 5-minute interval
+      (e.g. `09:30`, `09:40`, `09:45`, skipping `09:35`) is never classified
+      even with an active catalyst**; (1) `catalyst_state ==
+      active` -> `event_driven` — the *only* path to `event_driven`, never
+      inferred from price; (2) `trend_strength is None` (fewer than 2 bars)
+      -> `indeterminate`; (3) `trend_continuation` requires aligned
+      trend-strength / same-signed VWAP-slope / established-and-aligned
+      opening-range / same-signed VWAP-extension evidence; (4)
+      `vwap_mean_reversion` requires the extension to clear a fixed
+      threshold **and** the session to *not* be a trend day **and** at
+      least 2 of 4 independent corroborators (flat VWAP slope, volume not
+      elevated, price contained inside the opening range, not the opening
+      30 minutes) — so a large extension alone can never produce a
+      reversion call; (5) `range` requires both low trend strength and a
+      contained extension; (6) otherwise `indeterminate`. `classify_horizon`
+      applies the same completeness gate directly against the features
+      (independent of whatever regime it is called with), then its own
+      fixed order (indeterminate regime or inadequate time remaining ->
+      `indeterminate`; otherwise a regime-specific bucket bounded by minutes
+      remaining in the session). `classify_batch` is a pure batch interface
+      — `Sequence[RegimeEngineInput] -> list[RegimeClassificationResult]`,
+      preserving input order, with no cross-input state.
+    - **Tests.** 144 tests across four files (`test_spy_regime_contracts.py`,
+      `test_spy_regime_features.py`, `test_spy_regime_classifier.py`,
+      `test_spy_regime_engine_offline.py`), all synthetic fixtures, none
+      touching the real database: UTC-to-America/New_York conversion across
+      both 2026 DST transitions; premarket/after-hours/weekend/cross-date
+      bar rejection; duplicate, unordered, missing, malformed, and
+      non-finite input rejection; **5-minute-grid alignment (accept/reject
+      of an off-grid bar, including one mixed among otherwise-aligned
+      bars), an accepted internal gap that is not rejected at the input
+      layer, and grid alignment proved DST-invariant on both the
+      spring-forward and fall-back transition dates**; **session
+      completeness (`session_bars_complete`/`missing_interval_count`):
+      continuous data, 10-minute spacing, early/middle/gap-before-the-latest-
+      bar positions, a mid-session-starting input, continuous early-session
+      partial data staying complete, and descriptive features still
+      populated despite an incomplete session**; **the classifier's
+      completeness gate forcing both regime and horizon to `indeterminate`
+      ahead of every other rule — including an active catalyst that would
+      otherwise produce `event_driven`, and an otherwise-fully-qualifying
+      trend-continuation setup**; cumulative VWAP math including
+      zero/missing-volume behavior; VWAP
+      distance and normalization, including the zero-volatility-denominator
+      case, a non-finite-volatility case (`RegimeFeatures` itself refuses
+      the non-finite output), and **a golden-value test that independently
+      reimplements the VWAP-distance and volatility formulas (not calling
+      the production helpers) and would fail under a 10,000x unit-scaling
+      mistake**; **the VWAP-slope lookback computed once 30 elapsed minutes
+      are satisfied, and proved `None` when an internal gap makes 6 bar
+      positions span more than 30 minutes**; **the opening range proved
+      unavailable unless bars at all three of 09:30/09:35/09:40 are
+      present, including the two-of-three-present gap case**, and its
+      established high/low/position once all three are present; prior-day
+      levels; relative volume available and unavailable; every regime and
+      every horizon value reachable, each exercised directly; conflicting
+      evidence and a large-extension-alone case both resolving to
+      `indeterminate`; the explicit catalyst requirement for
+      `event_driven`; insufficient-history `indeterminate`; a no-lookahead
+      proof (a bars prefix yields identical features regardless of what a
+      longer series would look like beyond it, i.e. classification at
+      timestamp T is identical whether computed from bars ending at T or a
+      longer session truncated to T); determinism and batch
+      order-preservation; sanitized custom validator error messages that
+      never echo the rejected raw value; and a static-AST-scan plus
+      fresh-interpreter proof that none of the three modules imports a
+      connector, OpenAI, DuckDB, agent, orchestration, or config
+      dependency. Full suite: `python -m pytest` 2,770 passed, 4 skipped (up
+      from 2,626 passed, 4 skipped before this branch — exactly 144 new
+      passing tests, zero regressions); `python -m ruff check .` clean;
+      `git diff --check` clean.
+    - **Not done.** No real SPY session has been classified by this engine
+      (only synthetic fixtures were used). Every classifier threshold
+      (`RegimeThresholds`) is a provisional hypothesis — none has been
+      evaluated against real SPY history. No predictive accuracy or
+      mean-reversion edge has been established. The deterministic contract
+      selector and the Options Strategy Agent still do not exist, and
+      nothing downstream consumes this engine's output. **Next planned
+      implementation step: step d, the offline VWAP-extension/reversion
+      evaluation of this engine against real SPY history.**
+
 ## Next Planned Work
 
 This is the forward plan. It replaces the historical content now under
@@ -4389,17 +4575,35 @@ This is the forward plan. It replaces the historical content now under
    structural audit the same day that found zero integrity or malformed-data
    issues (see Completed Work Log item 40 for full sanitized detail and
    caveats). Open interest remains unavailable and unstored, and OPRA vs.
-   indicative observations remain kept separate. **Next: step c, the
-   deterministic SPY intraday feature/regime engine** — no model — then the
-   VWAP-extension/reversion hypothesis test (step d), deterministic contract
-   filtering (step e), the Options Strategy Agent (step f), shadow evaluation
-   (step g), and only then any alerts/dashboard (step h). **Apart from step
-   b's connector and storage (now live-exercised once), no options code,
-   schema, or agent exists, and no options component is validated** — one
-   successful ingestion and one structural audit do not validate pricing
-   accuracy, timeliness, usefulness, predictive edge, strategy validity, or
-   profitability. No brokerage integration, automatic execution, or Robinhood
-   automation is authorized.
+   indicative observations remain kept separate. **Step c, the deterministic
+   SPY intraday feature/regime engine, is also now done (2026-09-15) — no
+   model, implemented and tested entirely offline with synthetic fixtures**
+   (`spy_regime_contracts.py` / `spy_regime_features.py` /
+   `spy_regime_classifier.py`; see Completed Work Log item 41): strict
+   Pydantic v2 input/output contracts, pure feature computation (cumulative
+   VWAP, VWAP distance/extension/slope, opening gap/range, session return,
+   realized volatility, trend strength, relative volume, prior-day levels,
+   time-of-day bucket), and a deterministic classifier producing exactly one
+   `Regime` and one `ScenarioHorizon` by a fixed, published,
+   centralized-threshold decision order (event-driven only from an explicit
+   catalyst input; mean-reversion requires the extension threshold plus
+   multiple independent corroborators and a not-a-trend-day check, so a
+   large extension alone can never trigger it), plus a pure batch interface
+   for offline historical evaluation. **No real SPY session has been
+   classified by this engine, every classifier threshold is a provisional
+   hypothesis, and no predictive accuracy or mean-reversion edge has been
+   established.** **Next: step d, the offline VWAP-extension/reversion
+   hypothesis test** using this engine's forward-outcome features, then
+   deterministic contract filtering (step e), the Options Strategy Agent
+   (step f), shadow evaluation (step g), and only then any alerts/dashboard
+   (step h). **Apart from step b's connector and storage (now
+   live-exercised once) and step c's regime engine (offline, synthetic
+   tests only), no options code, schema, or agent exists, and no options
+   component is validated** — one successful ingestion and one structural
+   audit do not validate pricing accuracy, timeliness, usefulness,
+   predictive edge, strategy validity, or profitability, and no real SPY
+   session has been classified by the regime engine. No brokerage
+   integration, automatic execution, or Robinhood automation is authorized.
 
 Manual-only trading is preserved throughout. The three existing analysis
 agents (Market Evidence, News, Macro) remain non-directional; the Phase 1

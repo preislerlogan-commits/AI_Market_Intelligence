@@ -1012,6 +1012,37 @@ model-provider boundary only, documented in
   profitability. No recommendation, selector, agent, alert, dashboard, or
   execution action has consumed this data.
 
+### SPY intraday regime/setup features (not a stored dataset)
+
+Phase 1 step c
+([docs/OPTIONS_DECISION_WORKFLOW.md](docs/OPTIONS_DECISION_WORKFLOW.md)) adds
+a deterministic, offline SPY intraday feature/regime engine
+(`market_intelligence/market_features/spy_regime_contracts.py`,
+`spy_regime_features.py`, `spy_regime_classifier.py`). It is listed here only
+because it defines a new **structured feature contract** — it is
+deliberately **not a dataset record** in the sense above: it makes no
+network request, opens no database connection, reads no table, and writes
+no row anywhere. It is a pure function over caller-supplied, already-
+validated regular-session bars at the canonical 5-minute cadence — the same
+`5Min` interval as the stored `alpaca_bars_spy_5min` dataset above; a bar
+off the 5-minute grid is rejected, though grid alignment alone cannot
+prove continuity (a 10-minute-spaced feed is just as grid-aligned as true
+continuous data), so `RegimeFeatures` also reports
+`session_bars_complete`/`missing_interval_count`, and the classifier
+refuses to classify an incomplete session
+(`RegimeEngineInput` -> `RegimeFeatures` ->
+`RegimeClassificationResult`, all strict Pydantic v2 models,
+`extra="forbid"`), producing the regime (`trend_continuation` /
+`vwap_mean_reversion` / `range` / `event_driven` / `indeterminate`) and
+scenario-horizon (`intraday_30m` / `intraday_2h` / `to_session_close` /
+`next_session` / `indeterminate`) values consumed later in the Phase 1
+workflow. **Implemented offline with synthetic fixtures/tests only — no
+real SPY session has been classified by this engine, its thresholds are
+provisional hypotheses (not evaluated against real history), and no
+predictive accuracy or mean-reversion edge has been established.** See
+Completed Work Log item 41 in `PROJECT_STATE.md` and
+`docs/OPTIONS_DECISION_WORKFLOW.md` for full detail.
+
 ## Required Fields for Every Future Dataset
 
 Every dataset added to this catalog in the future must record:
