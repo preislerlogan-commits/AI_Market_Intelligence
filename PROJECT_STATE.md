@@ -10,7 +10,7 @@ Last updated: 2026-09-15
 
 | Area | Status |
 |---|---|
-| Phase | **Phase 0 — Infrastructure Foundation. Closed 2026-08-28.** Phase 1 (SPY options decision-support workflow) has begun; step b (read-only SPY option-chain ingestion and local storage) is complete and has been live-exercised once (2026-09-14), and step c (the deterministic SPY intraday feature/regime engine) is complete offline with synthetic tests only (2026-09-15). **Step d's offline SPY VWAP-extension/reversion evaluation tooling is implemented and verified with synthetic fixtures (2026-09-15) — step d itself remains in progress: no real historical evaluation has run.** The next action is one separately authorized, read-only evaluation run using stored SPY bars; step e, the deterministic Contract Selector, begins only after that run is completed, reviewed, and recorded. Closure is not a validation, accuracy, repeatability, or profitability claim for any agent, and does not mean every agent has been characterized; the regime engine's thresholds are provisional hypotheses, not validated values, and no real historical VWAP-reversion evaluation has run. |
+| Phase | **Phase 0 — Infrastructure Foundation. Closed 2026-08-28.** Phase 1 (SPY options decision-support workflow) has begun; step b (read-only SPY option-chain ingestion and local storage) is complete and has been live-exercised once (2026-09-14), step c (the deterministic SPY intraday feature/regime engine) is complete offline with synthetic tests only (2026-09-15), and **step d (the offline SPY VWAP-extension/reversion evaluator) is now complete, including its first real, read-only evaluation run against the stored SPY bars (2026-09-15, see Completed Work Log item 44)** — 5 gapless regular sessions / 390 candidate decision points, all eligible; observation-level sample-size thresholds were met for three of four forward horizons on both extension sides, session-level thresholds (≥ 20 sessions) were met for none (only 5 sessions are stored). **This one small, non-independent-sample run does not establish edge, accuracy, usefulness, strategy validity, or profitability and must not be read as evidence for or against the VWAP-reversion hypothesis.** Step e, the deterministic Contract Selector, has **not** begun — it requires its own separate authorization. Closure is not a validation, accuracy, repeatability, or profitability claim for any agent, and does not mean every agent has been characterized; the regime engine's thresholds remain provisional hypotheses, not validated values. |
 | Storage | Local DuckDB, healthy at schema version `0009` (9 migrations). Migration `0009` (`option_chain_snapshot_batches` + `option_chain_snapshots` + `option_chain_snapshot_batch_items`, three-table normalized design) has been **applied to the real database** (2026-09-14) — a read-only health check confirmed `healthy=True` at schema version `0009`. |
 | Data connectors | Read-only Alpaca (bars, news, market-data snapshot, and a bounded SPY option-chain snapshot connector — now exercised by exactly one live, indicative-feed request, 2026-09-14) and FRED (observations, series metadata). No order/account/position/exercise/execution methods exist. |
 | Ingested data | SPY 5-minute IEX bars (~3 trading days); ~20 SPY news articles; 7 FRED macro series (FEDFUNDS, GS10, CPIAUCSL, PCEPI, UNRATE, INDPRO, GDPC1) observations + metadata; one stored SPY indicative option-chain snapshot batch (102 contracts: 51 calls / 51 puts, one expiration, one retrieval instant, 2026-09-14). Each is one bounded ingestion run with limited coverage — none is complete, gap-free, or validated. |
@@ -19,8 +19,8 @@ Last updated: 2026-09-15
 | Agents | Market Evidence Agent, News Analyst, seven-series Macro Analyst. Each has exactly one accepted live run. Non-directional guarantee is structurally enforced. |
 | Trust layer | **P0-7 met (2026-08-28) — the methodology exists and the first real, human-reviewed Macro characterization is recorded; the other agents are not yet characterized.** `market_intelligence/evaluation/` provides the safe, offline foundation for the methodology: strict Pydantic v2 contracts (agent/severity/citation-classification/citation-reason/finding-category enums, one finding, one human citation adjudication, one evaluation-run record), a deterministic rubric-completeness validator, a symlink-refusing / no-overwrite / atomic / bounded local JSON round trip, and synthetic fixtures. It **also** provides the **first deterministic factual-transcription check — Macro Analyst only, over synthetic inputs** (`macro_factual_transcription.py`): it recognizes only the two exact controlled Macro Analyst statement forms (single stored observation; increase/decrease/unchanged two-observation comparison), verifies series ID / observation date / `Decimal` value / frequency wording / units-when-stated / previous observation / comparison direction, and emits one `info` (exact match — *not* a validation) / `failure` (mismatch, broad category only, no text reproduced) / `warning` (unrecognized wording → human review) finding. It **also** provides the **offline Macro characterization workflow** (`macro_characterization_input.py`, `macro_characterization_workflow.py`, `scripts/characterize_macro_report.py`): a strict local input contract (sanitized label; Macro claim IDs; claim series IDs and summaries; the sanitized evaluation evidence facts the transcription evaluator needs; expected claim/citation pairs — and nothing else), a pure builder that runs the transcription check for every claim, creates an `EvaluationRunRecord` carrying those findings, and emits one pending human-adjudication template per expected pair (never pre-classifying citation support, never treating a transcription match as citation support), a pure completion step that attaches completed human adjudications only when every expected pair has exactly one (refusing missing/duplicate/unexpected pairs; completion is not validation), a dry-run-first, offline, explicit-path **build CLI** (`scripts/characterize_macro_report.py`: `--write` required, no overwrite, no directory creation; with `--write` the resolved output path must be strictly inside gitignored `data/evaluations/local/`, and repository-root, tracked-directory, outside-repository, `..`-traversal, and symlink-escape targets are refused; dry-run behavior is unchanged), and a dry-run-first, offline **completion CLI** (`scripts/complete_macro_characterization.py`: a strict `MacroAdjudicationInput` contract — only the scaffold `run_id` plus a bounded human `CitationAdjudication` list, `extra="forbid"`, no credential/URL/response-ID/path/raw-evidence/model-reasoning/metadata field; `--record`/`--adjudications`/`--output` all confined strictly inside `data/evaluations/local/`; requires the adjudication `run_id` to match the scaffold; records human decisions only, no LLM judge, all four classifications preserved; sanitized counts/classification-tally output only — never a reviewer note, claim ID, citation ID, path, or record text; `--write` required to serialize, no overwrite, no directory creation). Committed fixtures and tests remain synthetic-only; real sanitized evidence facts may be used only through the explicit local characterization workflow under gitignored `data/evaluations/local/`, and real characterization inputs and outputs must never be committed. On 2026-08-28 the **first real, human-reviewed offline Macro Analyst characterization** was completed and recorded with the completion CLI, covering every claim: agent `macro_analyst`, 14 expected claim/citation pairs, 14 human adjudications (one per pair — none missing, duplicated, or unexpected), `rubric_complete: true`, classification tally `supported: 0` / `partially_supported: 14` / `unsupported: 0` / `unable_to_determine: 0`, all 14 reasons `claim_scope_exceeds_single_observation`, finding tally `info: 8` / `warning: 0` / `failure: 0` (seven factual-transcription findings were exact matches; the one scope-boundary information finding was preserved). All 14 pairs are `partially_supported` because each Macro claim is a two-observation comparison depending on two cited observations while each individual claim/citation pair carries only one of those observations. Every adjudication was the human reviewer's; no LLM judge generated, recommended, or changed any classification; no live request or Macro Analyst rerun occurred; the real artifacts remain gitignored under `data/evaluations/local/` and are not committed. This **closes P0-7 and Phase 0** (see [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md) and [docs/AGENT_EVALUATION_HARNESS.md](docs/AGENT_EVALUATION_HARNESS.md)) — it is **not** a claim that the Macro Analyst is validated, accurate, repeatable, or profitable. It still performs **no** lexical-overlap scoring, and the same transcription check and citation-support adjudication for the Market Evidence Agent and News Analyst, the abstention matrix, cross-agent consistency, and repeatability studies all remain future work that does **not** reopen Phase 0. |
 | Test baseline | `python -m pytest`: **2,921 passed, 8 skipped** (2,929 collected — up from 2,907 passed, 8 skipped: 14 new passing tests from item 43's evaluation-integrity fixes, zero new skips, zero regressions). The 8 skipped are symlink-refusal / symlink-escape tests (the evaluation-foundation serialization tests, the characterization build-CLI and completion-CLI symlink-escape tests, the step-d evaluation-serialization symlink tests, and the step-d evaluation CLI's symlink-escape test), which skip where the OS disallows creating a symlink; they are not passing tests. |
-| Not built | Predictive/forecast model, forecast records, agent orchestrator / combined brief, dashboard, trade journal, deterministic contract selector, Options Strategy Agent, scheduler, brokerage execution. (The SPY option-chain connector and storage are now applied and have one stored live batch — see "Storage" above — but no selector, agent, recommendation, or execution consumes it. The deterministic SPY intraday feature/regime engine now exists offline with synthetic tests only — see "Phase 1" below — and the offline VWAP-extension/reversion evaluator that exercises it against synthetic fixtures also now exists, but no real historical evaluation has run and nothing downstream — selector, agent, recommendation — consumes either module's output yet.) |
-| Phase 1 (design recorded, ready to begin) | An automated, evidence-based SPY options decision-support workflow: deterministic evidence + intraday regime classification (the deterministic regime engine also fixes one bounded scenario-horizon bucket, or `indeterminate`), a deterministic contract-eligibility selector that consumes that validated upstream horizon, then a bounded directional Options Strategy Agent (consumes only the upstream validated structured outputs plus the selector's eligible contract set, never a raw option chain; may reference but cannot invent, extend, or override the supplied horizon; `no_trade` is first-class), and a recorded evaluation before any usefulness claim. The three existing agents stay non-directional; the Options Strategy Agent is a separately bounded directional decision-support agent. **Step b is implemented and has been live-exercised once; step c is implemented and verified offline with synthetic tests; step d's tooling is implemented and verified with synthetic fixtures but remains in progress pending its first real historical evaluation; steps e–h remain design-only and unimplemented.** Phase 0 is now closed (2026-08-28), so Phase 1 has begun. Its **first implementation step — read-only SPY option-chain snapshot ingestion and local storage** (own reviewed connector, sanitized, no execution surface) — is **built in code and tests only** (2026-08-28; ceilings tightened and provenance normalized to two tables 2026-09-01; revised again 2026-09-14 to a three-table design after a batch-membership provenance fix): `AlpacaOptionsChainClient` (`data.alpaca.markets` `/v1beta1/options/snapshots/SPY` only, SPY-only, explicit `opra`/`indicative` feed, bounded expiration/strike/type/page/contract inputs — expiration ≤ 60 days, strike width ≤ $500, ≤ 10 pages, ≤ 5,000 contracts, ≤ 1,000/page — deterministic pagination, OCC-symbol parsing/cross-check, sanitized errors, no retry), migration `0009` (`option_chain_snapshot_batches`: one run-level provenance row per stored retrieval, including a zero-contract retrieval; `option_chain_snapshots`: one row per **immutable** contract observation; `option_chain_snapshot_batch_items`: one truthful membership row per contract per batch, so `contract_count` and membership can never drift apart), `OptionChainSnapshotRepository` (also re-validates every request field against its own canonical `normalize_option_chain_request` form before any write), and the dry-run-first `scripts/ingest_alpaca_options_chain.py`. **Superseding update (2026-09-14): migration `0009` has been applied to the real database, and one authorized live, `--execute` ingestion has succeeded** — provider `alpaca`, underlying `SPY`, requested feed `indicative` (explicitly not OPRA), one expiration (2026-09-18), strikes 740–790, 102 contracts received and inserted (51 calls, 51 puts), one successful batch and one successful ingestion run, no retry. **A subsequent read-only structural audit (2026-09-14, same day)** confirmed: 102 batch-membership rows and 102 snapshot rows, zero duplicate or orphan memberships, zero malformed OCC symbols or out-of-range contracts, quote and trade data present for all 102, implied volatility and each Greek present for 78 and unavailable for 24, zero negative/nonfinite values, zero crossed quotes, zero feed mismatches, and exactly one retrieval timestamp. **No recommendation, selector, agent, alert, dashboard, or execution action occurred as part of this ingestion or audit.** `indicative`-feed data may be delayed or modified and must not be described as live OPRA; the audit establishes internal structural consistency only — not pricing accuracy, timeliness, usefulness, predictive edge, strategy validity, or profitability; a future selector that requires IV/Greeks must reject or omit the 24 contracts with missing values, never substitute zero; open interest remains unavailable from this endpoint; and only one batch exists, so recurring reliability is not established. **Step c (2026-09-15): the deterministic SPY intraday feature/regime engine now also exists** — `market_intelligence/market_features/spy_regime_contracts.py` / `spy_regime_features.py` / `spy_regime_classifier.py` — strict Pydantic v2 contracts (`extra="forbid"`, bounded collections, and enforcement of a single canonical 5-minute bar cadence matching the stored `alpaca_bars_spy_5min` dataset — a bar off that 5-minute grid is rejected, though grid alignment alone does not prove continuity: a 10-minute-spaced feed is just as grid-aligned as true continuous data), pure feature computation (cumulative session VWAP, close-to-VWAP distance in bps, a bps-over-bps volatility-normalized extension, a VWAP slope requiring exactly 30 elapsed minutes, an opening range requiring exactly the three completed 09:30/09:35/09:40 bars, `session_bars_complete`/`missing_interval_count` comparing supplied timestamps against every expected 5-minute slot from 09:30 through the latest bar, opening gap, session return, realized volatility, signed trend strength, relative volume when a baseline is supplied, prior-day levels, time-of-day bucket), and a deterministic classifier that forces both `regime` and `scenario_horizon` to `indeterminate` whenever `session_bars_complete` is `False` — before every other rule, including event-driven — and otherwise producing exactly one `Regime` (`trend_continuation` / `vwap_mean_reversion` / `range` / `event_driven` / `indeterminate`) and one `ScenarioHorizon` (`intraday_30m` / `intraday_2h` / `to_session_close` / `next_session` / `indeterminate`) by a fixed, published, centralized-threshold decision order, plus a pure `classify_batch` for offline historical evaluation. **Implemented and tested entirely offline with synthetic fixtures — no real SPY session has been classified, every threshold is a provisional hypothesis, and no predictive accuracy or mean-reversion edge has been established.** The deterministic contract selector and the Options Strategy Agent still do not exist, and nothing downstream consumes the regime engine's output yet. **Step d (2026-09-15): the offline SPY VWAP-extension/reversion evaluation tooling now also exists, implemented and verified with synthetic fixtures — step d itself remains in progress; no real historical evaluation has run** — `market_intelligence/evaluation/spy_vwap_reversion_contracts.py` / `spy_vwap_reversion_evaluator.py` / `spy_vwap_reversion_serialization.py`, and the dry-run-first `scripts/evaluate_spy_vwap_reversion.py`. The evaluator is a pure function that, for every candidate bar in every supplied session, builds a no-lookahead bar-prefix signal via the step-c engine's own `compute_features`/`classify` (the signal-time regime, horizon, and session VWAP are frozen and never recomputed later), and scores four fixed forward horizons (`intraday_30m` / `intraday_2h` / `to_session_close` / `next_session`) only when each horizon exists gaplessly in the supplied data — touch/cross of the frozen VWAP, time to touch, percentage of the original extension retraced, signed return toward/away from VWAP, and maximum favorable/adverse excursion — reporting every summary at both an `observation_level` (pooled, overlapping five-minute observations) and a `session_level` (one number per session first, to avoid a long session dominating), each gated by a fixed, untuned minimum-sample-size threshold (`insufficient_sample` otherwise). **The evaluation always uses step c's existing, unmodified `RegimeThresholds` — this step tunes, optimizes, or grid-searches nothing.** No P&L, options return, win rate, profitability, or trade recommendation exists anywhere in it. **Implemented and tested entirely offline with synthetic fixtures — no real historical evaluation has run against the stored SPY bars, no threshold was tuned, and no edge, accuracy, usefulness, or profitability has been established for the underlying setup or any options overlay.** The deterministic contract selector and the Options Strategy Agent still do not exist. **The next action is one separately authorized, read-only evaluation run using the stored SPY bars — not another synthetic-fixture run.** **Step e, the deterministic Contract Selector, begins only after that run is completed, reviewed, and recorded** — it is not the current next implementation step. See [docs/OPTIONS_DECISION_WORKFLOW.md](docs/OPTIONS_DECISION_WORKFLOW.md) and Completed Work Log items 41–42. |
+| Not built | Predictive/forecast model, forecast records, agent orchestrator / combined brief, dashboard, trade journal, deterministic contract selector, Options Strategy Agent, scheduler, brokerage execution. (The SPY option-chain connector and storage are now applied and have one stored live batch — see "Storage" above — but no selector, agent, recommendation, or execution consumes it. The deterministic SPY intraday feature/regime engine now exists offline with synthetic tests only — see "Phase 1" below. **Superseding update (2026-09-15): the offline VWAP-extension/reversion evaluator has now also been run once against the stored SPY bars (Completed Work Log item 44) — 5 sessions, 390 candidate decision points — but nothing downstream (selector, agent, recommendation) consumes either module's output yet, and this one small-sample run establishes no edge, accuracy, usefulness, strategy validity, or profitability.**) |
+| Phase 1 (design recorded, ready to begin) | An automated, evidence-based SPY options decision-support workflow: deterministic evidence + intraday regime classification (the deterministic regime engine also fixes one bounded scenario-horizon bucket, or `indeterminate`), a deterministic contract-eligibility selector that consumes that validated upstream horizon, then a bounded directional Options Strategy Agent (consumes only the upstream validated structured outputs plus the selector's eligible contract set, never a raw option chain; may reference but cannot invent, extend, or override the supplied horizon; `no_trade` is first-class), and a recorded evaluation before any usefulness claim. The three existing agents stay non-directional; the Options Strategy Agent is a separately bounded directional decision-support agent. **Step b is implemented and has been live-exercised once; step c is implemented and verified offline with synthetic tests; step d is now complete, including its first real historical evaluation run (2026-09-15, Completed Work Log item 44); steps e–h remain design-only and unimplemented, and step e has not begun.** Phase 0 is now closed (2026-08-28), so Phase 1 has begun. Its **first implementation step — read-only SPY option-chain snapshot ingestion and local storage** (own reviewed connector, sanitized, no execution surface) — is **built in code and tests only** (2026-08-28; ceilings tightened and provenance normalized to two tables 2026-09-01; revised again 2026-09-14 to a three-table design after a batch-membership provenance fix): `AlpacaOptionsChainClient` (`data.alpaca.markets` `/v1beta1/options/snapshots/SPY` only, SPY-only, explicit `opra`/`indicative` feed, bounded expiration/strike/type/page/contract inputs — expiration ≤ 60 days, strike width ≤ $500, ≤ 10 pages, ≤ 5,000 contracts, ≤ 1,000/page — deterministic pagination, OCC-symbol parsing/cross-check, sanitized errors, no retry), migration `0009` (`option_chain_snapshot_batches`: one run-level provenance row per stored retrieval, including a zero-contract retrieval; `option_chain_snapshots`: one row per **immutable** contract observation; `option_chain_snapshot_batch_items`: one truthful membership row per contract per batch, so `contract_count` and membership can never drift apart), `OptionChainSnapshotRepository` (also re-validates every request field against its own canonical `normalize_option_chain_request` form before any write), and the dry-run-first `scripts/ingest_alpaca_options_chain.py`. **Superseding update (2026-09-14): migration `0009` has been applied to the real database, and one authorized live, `--execute` ingestion has succeeded** — provider `alpaca`, underlying `SPY`, requested feed `indicative` (explicitly not OPRA), one expiration (2026-09-18), strikes 740–790, 102 contracts received and inserted (51 calls, 51 puts), one successful batch and one successful ingestion run, no retry. **A subsequent read-only structural audit (2026-09-14, same day)** confirmed: 102 batch-membership rows and 102 snapshot rows, zero duplicate or orphan memberships, zero malformed OCC symbols or out-of-range contracts, quote and trade data present for all 102, implied volatility and each Greek present for 78 and unavailable for 24, zero negative/nonfinite values, zero crossed quotes, zero feed mismatches, and exactly one retrieval timestamp. **No recommendation, selector, agent, alert, dashboard, or execution action occurred as part of this ingestion or audit.** `indicative`-feed data may be delayed or modified and must not be described as live OPRA; the audit establishes internal structural consistency only — not pricing accuracy, timeliness, usefulness, predictive edge, strategy validity, or profitability; a future selector that requires IV/Greeks must reject or omit the 24 contracts with missing values, never substitute zero; open interest remains unavailable from this endpoint; and only one batch exists, so recurring reliability is not established. **Step c (2026-09-15): the deterministic SPY intraday feature/regime engine now also exists** — `market_intelligence/market_features/spy_regime_contracts.py` / `spy_regime_features.py` / `spy_regime_classifier.py` — strict Pydantic v2 contracts (`extra="forbid"`, bounded collections, and enforcement of a single canonical 5-minute bar cadence matching the stored `alpaca_bars_spy_5min` dataset — a bar off that 5-minute grid is rejected, though grid alignment alone does not prove continuity: a 10-minute-spaced feed is just as grid-aligned as true continuous data), pure feature computation (cumulative session VWAP, close-to-VWAP distance in bps, a bps-over-bps volatility-normalized extension, a VWAP slope requiring exactly 30 elapsed minutes, an opening range requiring exactly the three completed 09:30/09:35/09:40 bars, `session_bars_complete`/`missing_interval_count` comparing supplied timestamps against every expected 5-minute slot from 09:30 through the latest bar, opening gap, session return, realized volatility, signed trend strength, relative volume when a baseline is supplied, prior-day levels, time-of-day bucket), and a deterministic classifier that forces both `regime` and `scenario_horizon` to `indeterminate` whenever `session_bars_complete` is `False` — before every other rule, including event-driven — and otherwise producing exactly one `Regime` (`trend_continuation` / `vwap_mean_reversion` / `range` / `event_driven` / `indeterminate`) and one `ScenarioHorizon` (`intraday_30m` / `intraday_2h` / `to_session_close` / `next_session` / `indeterminate`) by a fixed, published, centralized-threshold decision order, plus a pure `classify_batch` for offline historical evaluation. **Implemented and tested entirely offline with synthetic fixtures — no real SPY session has been classified, every threshold is a provisional hypothesis, and no predictive accuracy or mean-reversion edge has been established.** The deterministic contract selector and the Options Strategy Agent still do not exist, and nothing downstream consumes the regime engine's output yet. **Step d (2026-09-15, tooling): the offline SPY VWAP-extension/reversion evaluation tooling was implemented and verified with synthetic fixtures** — `market_intelligence/evaluation/spy_vwap_reversion_contracts.py` / `spy_vwap_reversion_evaluator.py` / `spy_vwap_reversion_serialization.py`, and the dry-run-first `scripts/evaluate_spy_vwap_reversion.py`. The evaluator is a pure function that, for every candidate bar in every supplied session, builds a no-lookahead bar-prefix signal via the step-c engine's own `compute_features`/`classify` (the signal-time regime, horizon, and session VWAP are frozen and never recomputed later), and scores four fixed forward horizons (`intraday_30m` / `intraday_2h` / `to_session_close` / `next_session`) only when each horizon exists gaplessly in the supplied data — touch/cross of the frozen VWAP, time to touch, percentage of the original extension retraced, signed return toward/away from VWAP, and maximum favorable/adverse excursion — reporting every summary at both an `observation_level` (pooled, overlapping five-minute observations) and a `session_level` (one number per session first, to avoid a long session dominating), each gated by a fixed, untuned minimum-sample-size threshold (`insufficient_sample` otherwise). **The evaluation always uses step c's existing, unmodified `RegimeThresholds` — this step tunes, optimizes, or grid-searches nothing.** No P&L, options return, win rate, profitability, or trade recommendation exists anywhere in it. **Step d (2026-09-15, first real run): this tooling has now been run once, read-only, against the stored SPY bars (Completed Work Log item 44)** — 5 gapless regular sessions (2026-08-17 through 2026-08-21), 390 candidate decision points, all eligible. Observation-level sample-size thresholds (≥ 50) were met for both extension sides on three of the four horizons (`intraday_30m`, `intraday_2h`, `to_session_close`); `next_session` remains unavailable for every decision point by fixed design. Session-level thresholds (≥ 20 sessions) were met for **no** horizon or side, since only 5 sessions are stored. **This one small, non-independent-sample run establishes no edge, accuracy, usefulness, strategy validity, or profitability for the underlying setup or any options overlay, and must not be read as evidence for or against the VWAP-reversion hypothesis.** No threshold was tuned. The deterministic contract selector and the Options Strategy Agent still do not exist. **Step e, the deterministic Contract Selector, has NOT begun — it requires its own separate authorization** and is not the current next implementation step. See [docs/OPTIONS_DECISION_WORKFLOW.md](docs/OPTIONS_DECISION_WORKFLOW.md) and Completed Work Log items 41–44. |
 
 ## Current Phase
 
@@ -55,9 +55,8 @@ engine, is also now done (2026-09-15) — implemented and tested entirely
 offline with synthetic fixtures; no real SPY session has been classified
 and every classifier threshold is a provisional hypothesis** (see Completed
 Work Log item 41). **Step d's offline SPY VWAP-extension/reversion
-evaluation tooling is implemented and verified with synthetic fixtures
-(2026-09-15) — but step d itself remains in progress: no real historical
-evaluation has run against the stored SPY bars.** No threshold was tuned
+evaluation tooling was implemented and verified with synthetic fixtures
+(2026-09-15).** No threshold was tuned
 (the tooling always uses step c's existing, unmodified thresholds), and no
 edge, accuracy, usefulness, strategy validity, or profitability has been
 established (see Completed Work Log item 42). **Same day, two blocking
@@ -69,11 +68,17 @@ event-driven, and breadth-aware evaluation are not performed and require a
 future point-in-time context contract), and `next_session` forward-horizon
 scoring is now unavailable for every decision point with no exception (no
 exchange calendar exists to verify session contiguity, so it is never
-guessed) — see Completed Work Log item 43.** **The next action is one
-separately authorized, read-only evaluation run using the stored SPY bars —
-not another synthetic-fixture run. Step e, the deterministic Contract
-Selector, begins only after that run is completed, reviewed, and
-recorded** — not the Options Strategy Agent, which does not exist. The
+guessed) — see Completed Work Log item 43.** **Step d's first real,
+read-only evaluation run against the stored SPY bars has now been completed
+(2026-09-15, see Completed Work Log item 44): 5 gapless regular sessions,
+390 candidate decision points, all eligible. Observation-level sample-size
+thresholds were met for three of four forward horizons on both extension
+sides; session-level thresholds (≥ 20 sessions) were met for none. This one
+small-sample run establishes no edge, accuracy, usefulness, strategy
+validity, or profitability and must not be read as evidence for or against
+the VWAP-reversion hypothesis. Step e, the deterministic Contract Selector,
+has NOT begun** — it requires its own separate authorization, as does the
+Options Strategy Agent, which does not exist. The
 manual-only execution boundary and the non-directional guarantee on the
 three existing analysis agents are unchanged.
 
@@ -4681,6 +4686,214 @@ entry describes something that has already been built, ingested, or attempted;
       remains in progress; the next action is still one separately
       authorized, read-only evaluation run using the stored SPY bars.**
 
+44. **Step d — the first, separately authorized, read-only real-historical
+    VWAP-reversion evaluation run against the stored SPY bars (2026-09-15,
+    documentation-only branch `docs/record-spy-vwap-reversion-first-
+    evaluation`). This closes step d's "tooling implemented but never run"
+    gap from items 42–43. It is one single run over one small, non-
+    independent sample — it does not establish edge, accuracy, usefulness,
+    strategy validity, or profitability, and must not be read as evidence
+    for or against the VWAP-reversion hypothesis.** No code changed in this
+    entry — only the evaluation input/output artifacts (gitignored, not
+    committed) and this documentation.
+    - **Input construction (read-only against the real database).** The
+      stored `market_bars` table was inspected read-only (no write, no
+      migration, no schema change) for the one provenance group that
+      exists: `provider=alpaca`, `symbol=SPY`, `timeframe=5Min`, `feed=iex`,
+      `adjustment=raw`, `currency=USD` — 417 total rows,
+      2026-08-17T12:25Z–2026-08-21T20:10Z. As `DATA_CATALOG.md` already
+      documented, these rows are provider-returned unfiltered and include
+      pre-market/after-hours bars; filtering to the regular
+      09:30–16:00 America/New_York session (the same window
+      `RegimeEngineInput` itself requires) left **exactly five gapless,
+      78-bar regular sessions** — 2026-08-17 through 2026-08-21, a
+      contiguous Monday–Friday week — with every bar grid-aligned to the
+      canonical 5-minute slots and OHLC-consistent; no missing interval, no
+      duplicate, no off-grid or out-of-window bar, and no negative or
+      non-finite price in any of the 390 regular-session bars. This was
+      read-only inspection only; the database was never written to.
+      `prior_day` (SPY's actual prior regular session's high/low/close) was
+      supplied only for the four sessions with a real, gapless predecessor
+      already in this same stored set (2026-08-18 through 2026-08-21,
+      computed from that predecessor's own stored bars — never invented);
+      the first session (2026-08-17) has no stored predecessor, so its
+      `prior_day` is `None`. Every session's
+      `same_time_historical_volume_baseline=None`,
+      `catalyst_state=unknown`, `breadth_state=unavailable`, matching the
+      evaluator's fixed point-in-time-context narrowing (item 43) exactly —
+      relative-volume-, catalyst-, and breadth-aware classification were not
+      exercised by this run, as designed. The input was built by a local,
+      one-off, read-only script (not committed) and validated as a strict
+      `SpyVwapReversionEvaluationInput` before use.
+    - **Execution.** `scripts/evaluate_spy_vwap_reversion.py` was run dry-run
+      first against this real input (no `--write`); it validated and printed
+      the same summary as the write run below with `output_written: false`.
+      It was then run once more with `--write`, writing the resulting
+      `SpyVwapReversionEvaluationRecord` to a new file under gitignored
+      `data/evaluations/local/` (no existing output was overwritten — the
+      CLI's own no-overwrite guarantee was never exercised because no prior
+      output existed at that path). Both the input and output artifacts
+      remain local and gitignored; neither is committed. No network request
+      and no other database access occurred. The evaluation always used
+      step c's existing, unmodified `RegimeThresholds`
+      (`extension_threshold_for_reversion=1.5`,
+      `trend_strength_min_for_continuation=0.6`,
+      `trend_strength_max_for_reversion=0.35`,
+      `vwap_slope_min_bps_for_continuation=3`,
+      `vwap_slope_max_bps_for_reversion=4`,
+      `relative_volume_elevated_min=1.3`, `range_trend_strength_max=0.25`,
+      `range_extension_max=1.0`, `min_corroborators_for_reversion=2`,
+      `intraday_30m_min_minutes_remaining=30`,
+      `intraday_2h_min_minutes_remaining=120`) and the existing, unmodified
+      default sample-size gate (`min_observations_for_summary=50`,
+      `min_sessions_for_summary=20`) — nothing was tuned, and there is no
+      CLI flag to override either.
+    - **Sanitized results.** `unique_session_count=5`,
+      `candidate_decision_point_count=390` (every bar in every session is a
+      candidate), `eligible_observation_count=390`,
+      `no_signal_vwap_unavailable_count=0`,
+      `no_signal_zero_extension_count=0` (every candidate in this small
+      sample happened to have an available signal-time VWAP and a non-zero
+      extension). `regime_counts_eligible_only` (identical to
+      `regime_counts_all_candidates` here, since nothing was excluded):
+      `vwap_mean_reversion=151`, `range=141`, `indeterminate=98`,
+      `trend_continuation=0`, `event_driven=0` (expected — `catalyst_state`
+      is `unknown` for every candidate, so `event_driven` can never fire).
+      `extension_side_counts`: `above_vwap=122`, `below_vwap=268`.
+      `missing_horizon_counts`: `intraday_30m=30`, `intraday_2h=120`,
+      `to_session_close=5`, `next_session=390` (`next_session` is
+      unavailable for every decision point by fixed design — see item 43 —
+      not a finding of this run). Per-horizon, per-side, per-level detail:
+      - `intraday_30m`: above_vwap observation-level `n=117` available (of
+        122 eligible; 5 missing) — **`ok`** (≥ 50); below_vwap
+        observation-level `n=243` available (of 268; 25 missing) —
+        **`ok`**. Session-level: both sides `n=5` sessions — **
+        `insufficient_sample`** (< 20).
+      - `intraday_2h`: above_vwap observation-level `n=109` available (of
+        122; 13 missing) — **`ok`**; below_vwap observation-level `n=161`
+        available (of 268; 107 missing) — **`ok`**. Session-level: both
+        sides `n=5` — **`insufficient_sample`**.
+      - `to_session_close`: above_vwap observation-level `n=122` available
+        (of 122; 0 missing) — **`ok`**; below_vwap observation-level
+        `n=263` available (of 268; 5 missing) — **`ok`**. Session-level:
+        both sides `n=5` — **`insufficient_sample`**.
+      - `next_session`: both sides observation-level `n=0` available (of
+        122 / 268 eligible; all missing, by fixed design) —
+        **`insufficient_sample`**. Session-level: `0` of `5` sessions
+        contributed any available observation — **`insufficient_sample`**.
+      In summary: **the observation-level sample-size threshold (≥ 50) was
+      met for both extension sides on three of the four horizons
+      (`intraday_30m`, `intraday_2h`, `to_session_close`) and never met for
+      `next_session` (fixed unavailability, not a small-sample artifact).
+      The session-level sample-size threshold (≥ 20 sessions) was met for
+      **no** horizon or side — only 5 sessions are stored, so every
+      session-level statistic in this run is `insufficient_sample` and no
+      session-level mean/median/min/max was computed or reported for any
+      horizon.**
+
+    - **Regime breakdown, eligible decision points by extension side (390
+      total; `event_driven`/`trend_continuation` are `0` throughout, as
+      expected since `catalyst_state=unknown` for every candidate):**
+
+      | Regime | above_vwap | below_vwap | Total |
+      |---|---:|---:|---:|
+      | `vwap_mean_reversion` | 33 | 118 | 151 |
+      | `range` | 53 | 88 | 141 |
+      | `indeterminate` | 36 | 62 | 98 |
+      | `trend_continuation` | 0 | 0 | 0 |
+      | `event_driven` | 0 | 0 | 0 |
+
+    - **Aggregate outcome statistics — observation_level (the only level
+      that cleared any sample-size threshold; these are 390 heavily
+      *overlapping* five-minute observations from only 5 sessions, not
+      independent trials — see the caveats below the table).** All values
+      per `spy_vwap_reversion_evaluator.py`'s published formulas
+      (`pct_extension_retraced` in % of original extension;
+      `signed_return_toward_vwap_bps` / MFE / MAE in bps of signal close;
+      positive = toward VWAP, negative = further extension away from VWAP).
+      `next_session` is omitted — always `0` available, by fixed design
+      (no exchange calendar), not a small-sample result.
+
+      | Horizon | Side | N avail (of eligible) | Touched (rate) | Median mins-to-touch | Pct retraced: median / mean | Signed return bps: median / mean | MFE bps: median / mean | MAE bps: median / mean |
+      |---|---|---:|---:|---:|---:|---:|---:|---:|
+      | `intraday_30m` | above_vwap | 117 (122) | 72 (61.5%) | 5 | 62.05 / 70.90 | 4.37 / 2.73 | 8.55 / 9.63 | 4.45 / 7.13 |
+      | `intraday_30m` | below_vwap | 243 (268) | 117 (48.1%) | 5 | −8.25 / −2.95 | −1.04 / −0.82 | 4.90 / 6.11 | 5.68 / 6.78 |
+      | `intraday_2h` | above_vwap | 109 (122) | 89 (81.7%) | 10 | 140.41 / 169.61 | 9.86 / 9.06 | 17.04 / 17.74 | 6.53 / 11.12 |
+      | `intraday_2h` | below_vwap | 161 (268) | 124 (77.0%) | 10 | −74.16 / −299.61 | −5.78 / −5.55 | 8.20 / 11.75 | 11.84 / 14.75 |
+      | `to_session_close` | above_vwap | 122 (122) | 117 (95.9%) | 15 | 232.25 / 956.87 | 16.59 / 20.45 | 23.29 / 28.02 | 8.42 / 11.30 |
+      | `to_session_close` | below_vwap | 263 (268) | 159 (60.5%) | 10 | −125.77 / −743.29 | −11.40 / −15.55 | 6.19 / 9.59 | 17.77 / 22.09 |
+
+      Range across all six rows (min / max, observation level, not shown
+      per-row above for space): `pct_extension_retraced` spans roughly
+      −27,300% to +30,918% (driven by near-zero-denominator extensions —
+      the formula divides by the original, sometimes very small, extension,
+      so a handful of outliers dominate the mean far more than the median);
+      `signed_return_toward_vwap_bps` spans roughly −57 bps to +69 bps;
+      `max_favorable_excursion_bps` and `max_adverse_excursion_bps` both
+      include negative minimums (e.g. `intraday_30m` above_vwap MFE
+      min ≈ −1.30 bps) — by the published formula this happens when price
+      never even revisited the signal close in the "favorable" direction,
+      a real, preserved result, not an error.
+
+      **Session-level, every horizon and side:** `n=5` sessions available
+      (< 20 required) → `status=insufficient_sample` for every one of
+      `touch_rate`, `pct_extension_retraced`,
+      `signed_return_toward_vwap_bps`, `max_favorable_excursion_bps`, and
+      `max_adverse_excursion_bps`, at every horizon and both sides — **no
+      session-level mean/median/min/max exists anywhere in this run's
+      output.**
+
+      **Mixed / unfavorable results, preserved as-is (not filtered or
+      cherry-picked):** the two extension sides disagree in direction.
+      `above_vwap` observations show a positive median/mean
+      `signed_return_toward_vwap_bps` at every available horizon (price
+      moved toward VWAP, on average, after an above-VWAP extension) —
+      nominally favorable to the reversion hypothesis. `below_vwap`
+      observations show a **negative** median/mean
+      `signed_return_toward_vwap_bps` at every available horizon (price
+      moved *further away* from VWAP, on average, after a below-VWAP
+      extension) — the **opposite** of the reversion hypothesis. Touch
+      rates are also asymmetric (e.g. `to_session_close`: 95.9% above_vwap
+      vs. 60.5% below_vwap). **This asymmetry is reported, not
+      interpreted** — see the binding caveats immediately below.
+
+      **Binding caveats (repeated here because these are result-bearing
+      numbers, not just counts):**
+      - The 390 observation-level values above **overlap heavily** — they
+        are five-minute snapshots from the same 5 trading sessions, not
+        390 independent trials, exactly as
+        `spy_vwap_reversion_evaluator.py` and `spy_vwap_reversion_contracts.py`
+        document.
+      - **Only 5 sessions exist in the stored dataset.** Every
+        session-level result in this run is `insufficient_sample`.
+      - **This run establishes no edge, accuracy, strategy validity, or
+        profitability** for the VWAP-reversion hypothesis or for any
+        options overlay — observation-level values clearing the
+        sample-size gate is a data-volume fact, not evidence of a real
+        effect, and the above_vwap/below_vwap asymmetry must not be read
+        as a directional finding, a strategy signal, or a basis for step e.
+      - No threshold was tuned to produce, explain, or improve any of the
+        above numbers.
+
+      The full, unredacted record — every decision point, every horizon
+      outcome, and every descriptive statistic (including `minimum` and
+      `maximum` for each metric) — remains available locally at
+      `data/evaluations/local/` for direct review; it is gitignored and not
+      committed.
+    - **Verification.** `python -m pytest` **2,921 passed, 8 skipped**
+      (unchanged from item 43 — no code changed by this entry);
+      `python -m ruff check .` clean; `git diff --check` clean.
+    - **Not done.** No threshold was tuned, optimized, or grid-searched. No
+      edge, accuracy, usefulness, strategy validity, or profitability has
+      been established for the underlying setup or for any options overlay.
+      **Step e, the deterministic Contract Selector, has NOT begun.** This
+      entry records that the run itself is complete; user review of these
+      results and any decision to proceed are separate from — and have not
+      occurred as part of — this entry. Starting step e requires its own
+      separate authorization and is out of scope for this entry. No option,
+      contract, recommendation, alert, agent, or execution output exists
+      anywhere in this evaluation.
+
 ## Next Planned Work
 
 This is the forward plan. It replaces the historical content now under
@@ -4865,9 +5078,8 @@ This is the forward plan. It replaces the historical content now under
    classified by this engine, every classifier threshold is a provisional
    hypothesis, and no predictive accuracy or mean-reversion edge has been
    established.** **Step d's offline SPY VWAP-extension/reversion
-   evaluation tooling is implemented and verified with synthetic fixtures
-   (2026-09-15) — no model. Step d itself remains in progress: no real
-   historical evaluation has run.**
+   evaluation tooling was implemented and verified with synthetic fixtures
+   (2026-09-15) — no model.**
    (`spy_vwap_reversion_contracts.py` / `spy_vwap_reversion_evaluator.py` /
    `spy_vwap_reversion_serialization.py`; see Completed Work Log item 42): a
    pure function that builds the same no-lookahead bar-prefix signal the
@@ -4879,24 +5091,37 @@ This is the forward plan. It replaces the historical content now under
    reported at both an observation level and a session level with a fixed,
    untuned minimum-sample-size gate. **The evaluation always uses step c's
    existing, unmodified thresholds — nothing is tuned, optimized, or
-   grid-searched. No real historical evaluation has run against the stored
-   SPY bars, and no edge, accuracy, usefulness, strategy validity, or
-   profitability has been established.** **Next: one separately authorized,
-   read-only VWAP-reversion evaluation run using the stored SPY bars, to be
-   completed, reviewed, and recorded. Only after that is done does step e
-   (deterministic contract filtering) begin, followed by the Options
-   Strategy Agent (step f), shadow evaluation (step g), and only then any
-   alerts/dashboard (step h).**
+   grid-searched.** **Step d (2026-09-15): this tooling has now been run
+   once, read-only, against the stored SPY bars** (see Completed Work Log
+   item 44) — 5 gapless regular sessions (2026-08-17 through 2026-08-21,
+   the only contiguous regular-session data currently stored), 390
+   candidate decision points, all eligible (zero VWAP-unavailable, zero
+   zero-extension exclusions). Observation-level sample-size thresholds
+   (≥ 50 observations) were met for both extension sides on three of the
+   four horizons (`intraday_30m`, `intraday_2h`, `to_session_close`);
+   `next_session` remains unavailable for every decision point by fixed
+   design (no exchange calendar). Session-level thresholds (≥ 20 sessions)
+   were met for **no** horizon or side, since only 5 sessions are stored.
+   **This one small, non-independent-sample run establishes no edge,
+   accuracy, usefulness, strategy validity, or profitability, and must not
+   be read as evidence for or against the VWAP-reversion hypothesis.** No
+   threshold was tuned. **Step e (deterministic contract filtering) has
+   NOT begun and requires its own separate authorization** — it does not
+   begin automatically from this run's completion. The Options Strategy
+   Agent (step f), shadow evaluation (step g), and any alerts/dashboard
+   (step h) all remain design-only and unimplemented, each gated on the
+   step before it.
    **Apart from step b's connector and storage (live-exercised once),
    step c's regime engine (offline and synthetic-test-only), and step d's
-   reversion-evaluation tooling (offline and synthetic-test-only, with no
-   real historical evaluation yet), no options code,
+   reversion-evaluation tooling (now exercised once against real stored
+   SPY bars — see above), no options code,
    schema, or agent exists, and no
    options component is validated** — one successful ingestion and one
    structural audit do not validate pricing accuracy, timeliness,
    usefulness, predictive edge, strategy validity, or profitability, no
-   real SPY session has been classified by the regime engine, and no real
-   historical evaluation has been run by the reversion evaluator. No
+   real SPY session has been classified by the regime engine, and step d's
+   one real run does not establish any edge, accuracy, usefulness, strategy
+   validity, or profitability for the reversion hypothesis. No
    brokerage integration, automatic execution, or Robinhood automation is
    authorized.
 
