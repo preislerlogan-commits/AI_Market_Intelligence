@@ -13,15 +13,16 @@ database connection, or imports anything from
 before any future strategy agent -- there is no code path in this module
 that calls a model, ranks a contract, or emits a recommendation.
 
-## Decision order: two batch-level gates, then per-contract filters
+## Decision order: batch-level gates, then per-contract filters
 
-Three things can end this run before any per-contract filter is evaluated,
+Four things can end this run before any per-contract filter is evaluated,
 in exactly this order. When one of them fires, **every** candidate contract
 in the batch is counted under that one reason and no per-contract filter
-runs for any of them -- this is deliberate: a stale or feed-disallowed
-batch must never look like a pile of individual contract-quality failures
-(first-per-contract-failure counts would otherwise disguise an unusable
-*batch* as ordinary per-contract rejection noise).
+runs for any of them -- this is deliberate: a stale, future-dated, or
+feed-disallowed batch must never look like a pile of individual
+contract-quality failures (first-per-contract-failure counts would
+otherwise disguise an unusable *batch* as ordinary per-contract rejection
+noise).
 
 0. **Indeterminate horizon.** ``ContractSelectorInput.scenario_horizon ==
    ScenarioHorizon.INDETERMINATE`` -> ``SelectorStatus.INDETERMINATE``,
@@ -47,17 +48,29 @@ batch must never look like a pile of individual contract-quality failures
      filter go to ``research_only_contracts``, never ``eligible_contracts``
      (see ``contracts.py``, "Feed-safety boundary", for the schema-level
      enforcement of this separation).
-2. **Freshness gate.** ``age_seconds = abs((as_of_timestamp -
-   batch.retrieved_at).total_seconds())``. If ``age_seconds >
-   max_snapshot_age_seconds``, the **entire batch** is rejected -- every
-   candidate counted under ``RejectionReason.SNAPSHOT_STALE`` -- with
-   status ``NO_ELIGIBLE_CONTRACTS`` (operational path) or ``RESEARCH_ONLY``
-   with zero research contracts (research path). Every contract in one
-   batch shares the same ``retrieved_at``, so this is inherently a
-   batch-wide fact, not a per-contract one; evaluating it once here (before
-   per-contract filtering) is what keeps a stale batch's rejection reason
-   uniformly ``SNAPSHOT_STALE`` instead of getting mixed in with unrelated
-   per-contract reasons a contract might otherwise have failed on first.
+2. **Freshness gates (two, in order).** ``age_seconds = (as_of_timestamp -
+   batch.retrieved_at).total_seconds()`` -- computed **without** ``abs()``,
+   so a batch retrieved after ``as_of_timestamp`` and an old batch are
+   distinguished, not folded together:
+   - If ``age_seconds < 0`` (the retrieval instant is after
+     ``as_of_timestamp`` -- clock skew or a caller error), the **entire
+     batch** is rejected -- every candidate counted under
+     ``RejectionReason.SNAPSHOT_FROM_FUTURE`` -- with status
+     ``NO_ELIGIBLE_CONTRACTS`` (operational path) or ``RESEARCH_ONLY`` with
+     zero research contracts (research path). This gate runs first, so an
+     OPRA batch can never reach ``ELIGIBLE`` and an indicative research
+     batch can never expose a research contract when it is dated in the
+     future relative to ``as_of_timestamp``.
+   - Otherwise, if ``age_seconds > max_snapshot_age_seconds``, the **entire
+     batch** is rejected -- every candidate counted under
+     ``RejectionReason.SNAPSHOT_STALE`` -- with the same two possible
+     statuses as above.
+   Every contract in one batch shares the same ``retrieved_at``, so both
+   checks are inherently batch-wide facts, not per-contract ones;
+   evaluating them once here, before per-contract filtering, is what keeps
+   a stale or future-dated batch's rejection reason uniform instead of
+   getting mixed in with unrelated per-contract reasons a contract might
+   otherwise have failed on first.
 
 ## Published per-contract filter order
 
@@ -336,17 +349,27 @@ def select_eligible_contracts(
             gate_reason=RejectionReason.FEED_NOT_ALLOWED,
         )
 
-    # 2. Freshness gate -- evaluated once for the whole batch, since every
-    # contract shares the same retrieved_at.
-    age_seconds = abs((selector_input.as_of_timestamp - batch.retrieved_at).total_seconds())
-    if age_seconds > config.max_snapshot_age_seconds:
-        stale_status = SelectorStatus.RESEARCH_ONLY if research_mode else (
-            SelectorStatus.NO_ELIGIBLE_CONTRACTS
-        )
+    # 2. Freshness gates -- evaluated once each for the whole batch, since
+    # every contract shares the same retrieved_at. No abs(): a batch dated
+    # after as_of_timestamp (age_seconds < 0) is a distinct failure mode
+    # from an old batch, and this gate must run before the staleness gate
+    # so a future-dated batch is never counted as merely stale.
+    age_seconds = (selector_input.as_of_timestamp - batch.retrieved_at).total_seconds()
+    batch_time_gate_status = SelectorStatus.RESEARCH_ONLY if research_mode else (
+        SelectorStatus.NO_ELIGIBLE_CONTRACTS
+    )
+    if age_seconds < 0:
         return _batch_gated_result(
             selector_input,
             generated_at=generated_at,
-            status=stale_status,
+            status=batch_time_gate_status,
+            gate_reason=RejectionReason.SNAPSHOT_FROM_FUTURE,
+        )
+    if age_seconds > config.max_snapshot_age_seconds:
+        return _batch_gated_result(
+            selector_input,
+            generated_at=generated_at,
+            status=batch_time_gate_status,
             gate_reason=RejectionReason.SNAPSHOT_STALE,
         )
 

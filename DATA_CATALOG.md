@@ -1067,11 +1067,16 @@ never imports a data connector); the underlying price and as-of time; an
 optional explicit directional side (call/put); and bounded, centralized,
 documented `SelectorConfig` thresholds (all provisional hypotheses, never
 tuned against the step-d VWAP-reversion evaluation or the single stored
-option batch). Before any per-contract filter runs, two **batch-level
-gates** decide the run's fate — feed governance, then freshness — because
-every contract in one batch shares the same feed and the same
-`retrieved_at`, so both are batch-wide facts, not per-contract ones (see
-"Feed-safety boundary" below); the remaining nine filters then run per
+option batch). Before any per-contract filter runs, three **batch-level
+gates** decide the run's fate — feed governance, then two freshness checks
+— because every contract in one batch shares the same feed and the same
+`retrieved_at`, so all three are batch-wide facts, not per-contract ones
+(see "Feed-safety boundary" below). The freshness checks run without
+`abs()`: if `retrieved_at > as_of_timestamp`, the batch is rejected under
+`RejectionReason.SNAPSHOT_FROM_FUTURE`; otherwise `age =
+as_of_timestamp - retrieved_at`, and if `age` exceeds
+`max_snapshot_age_seconds` the batch is rejected under
+`RejectionReason.SNAPSHOT_STALE`. The remaining nine filters then run per
 contract, in this fixed published order: expiration/DTE; option type (only
 when a directional side is explicitly supplied); strike/moneyness; delta
 range; required implied volatility and Greeks; positive bid/ask;

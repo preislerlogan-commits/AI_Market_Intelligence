@@ -221,14 +221,23 @@ class SelectorStatus(StrEnum):
 class RejectionReason(StrEnum):
     """Fixed, bounded rejection-reason enum.
 
-    ``HORIZON_INDETERMINATE``, ``FEED_NOT_ALLOWED``, and ``SNAPSHOT_STALE``
-    are **batch-level** gates, each evaluated exactly once per run, in that
-    order, before any per-contract filter runs -- when one of them fires,
-    every candidate contract in the batch is counted under that single
-    reason and no per-contract filter is evaluated for any of them (see
-    ``selector.py``). This ordering exists specifically so a stale or
-    feed-disallowed batch is never disguised as a pile of individual
-    contract-quality failures.
+    ``HORIZON_INDETERMINATE``, ``FEED_NOT_ALLOWED``, ``SNAPSHOT_FROM_FUTURE``,
+    and ``SNAPSHOT_STALE`` are **batch-level** gates, each evaluated exactly
+    once per run, in that order, before any per-contract filter runs -- when
+    one of them fires, every candidate contract in the batch is counted
+    under that single reason and no per-contract filter is evaluated for any
+    of them (see ``selector.py``). This ordering exists specifically so a
+    stale, future-dated, or feed-disallowed batch is never disguised as a
+    pile of individual contract-quality failures.
+
+    ``SNAPSHOT_FROM_FUTURE`` and ``SNAPSHOT_STALE`` are two distinct
+    freshness gates, not one: ``age_seconds = (as_of_timestamp -
+    retrieved_at).total_seconds()`` is computed **without** ``abs()``, so a
+    batch retrieved after ``as_of_timestamp`` (``age_seconds < 0`` -- clock
+    skew or a caller error) is always rejected as ``SNAPSHOT_FROM_FUTURE``,
+    distinct from an old batch (``age_seconds > max_snapshot_age_seconds``)
+    rejected as ``SNAPSHOT_STALE``. The two can never both fire for the same
+    batch.
 
     Every other reason is evaluated per contract, in the fixed order
     ``selector.py`` publishes; the first filter a contract fails is the one
@@ -238,6 +247,7 @@ class RejectionReason(StrEnum):
 
     HORIZON_INDETERMINATE = "horizon_indeterminate"
     FEED_NOT_ALLOWED = "feed_not_allowed"
+    SNAPSHOT_FROM_FUTURE = "snapshot_from_future"
     SNAPSHOT_STALE = "snapshot_stale"
     EXPIRATION_OUTSIDE_WINDOW = "expiration_outside_window"
     OPTION_TYPE_MISMATCH = "option_type_mismatch"

@@ -90,9 +90,10 @@ engine (or `indeterminate`, which always yields an empty eligible set
 before any other filter runs), one bounded option-chain batch with one
 retrieval instant, the underlying price/as-of time, an optional explicit
 directional side, and bounded, centralized, documented `SelectorConfig`
-thresholds. Two **batch-level gates** — feed governance, then freshness —
-run before any per-contract filter, since every contract in one batch
-shares the same feed and the same `retrieved_at`; the remaining nine
+thresholds. Three **batch-level gates** — feed governance, then two
+freshness checks (future-dated, then stale) — run before any per-contract
+filter, since every contract in one batch shares the same feed and the
+same `retrieved_at`; the remaining nine
 filters then run per contract (expiration/DTE; option type when a
 directional side is explicitly supplied; strike/moneyness; delta range;
 required implied volatility and Greeks — never filled with zero when
@@ -762,11 +763,12 @@ before the previous one is complete and recorded.
   step-c classifier's "incomplete session forces indeterminate before every
   other rule."
 
-  **Feed-safety boundary: two batch-level gates run before any per-contract
-  filter.** Every contract in one batch shares the same `feed` and the same
-  `retrieved_at`, so both are batch-wide facts, not per-contract ones —
-  evaluating them once, first, keeps a stale or feed-disallowed batch from
-  ever being disguised as a pile of individual contract-quality failures:
+  **Feed-safety boundary: three batch-level gates run before any
+  per-contract filter.** Every contract in one batch shares the same `feed`
+  and the same `retrieved_at`, so all three are batch-wide facts, not
+  per-contract ones — evaluating them once, first, keeps a stale,
+  future-dated, or feed-disallowed batch from ever being disguised as a
+  pile of individual contract-quality failures:
 
   1. **Feed governance** (the operational/research boundary).
      `SelectorConfig.allow_indicative_for_research` defaults to `False` —
@@ -781,12 +783,17 @@ before the previous one is complete and recorded.
        (explicit opt-in): proceed to the freshness gate in **research
        mode** — the eventual status will be `RESEARCH_ONLY`, never
        `ELIGIBLE`.
-  2. **Freshness** — `age_seconds = abs(as_of_timestamp -
-     batch.retrieved_at)`; if it exceeds `max_snapshot_age_seconds`
-     (default `300`), the **entire batch** is rejected — every candidate
-     counted under `RejectionReason.SNAPSHOT_STALE` — with status
-     `NO_ELIGIBLE_CONTRACTS` (operational path) or `RESEARCH_ONLY` with
-     zero research contracts (research path).
+  2. **Freshness (two gates, in order)** — `age_seconds = (as_of_timestamp -
+     batch.retrieved_at).total_seconds()`, computed **without** `abs()`:
+     - if `age_seconds < 0` (the batch was retrieved after `as_of_timestamp`
+       — clock skew or a caller error), the **entire batch** is rejected —
+       every candidate counted under `RejectionReason.SNAPSHOT_FROM_FUTURE`
+       — with status `NO_ELIGIBLE_CONTRACTS` (operational path) or
+       `RESEARCH_ONLY` with zero research contracts (research path);
+     - otherwise, if `age_seconds` exceeds `max_snapshot_age_seconds`
+       (default `300`), the **entire batch** is rejected — every candidate
+       counted under `RejectionReason.SNAPSHOT_STALE` — with the same two
+       possible statuses as above.
 
   **Published per-contract filter order** (only reached once both batch
   gates pass; the first filter a contract fails is the one and only
@@ -929,8 +936,9 @@ before the previous one is complete and recorded.
   or against the VWAP-reversion hypothesis. **Step e, the deterministic
   Contract Selector, is also now done (2026-09-16) — implemented and tested
   entirely offline with synthetic fixtures, running without any AI model and
-  before any future strategy agent.** Two batch-level gates (feed
-  governance, then freshness) run before nine per-contract filters
+  before any future strategy agent.** Three batch-level gates (feed
+  governance, then two freshness checks — future-dated, then stale) run
+  before nine per-contract filters
   (expiration/DTE, option type when a directional side is explicitly
   supplied, strike/moneyness, delta range, required implied volatility and
   Greeks, positive bid/ask, non-crossed quote, maximum absolute/percentage

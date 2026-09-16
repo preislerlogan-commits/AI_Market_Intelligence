@@ -518,6 +518,21 @@ def test_feed_gate_precedes_per_contract_filtering():
 # ---------------------------------------------------------------------------
 
 
+def test_snapshot_retrieved_at_exactly_as_of_time_is_accepted():
+    """age_seconds == 0 is not "in the future" (age_seconds < 0) and not
+    stale -- the boundary sits exactly on the accepted side of both gates."""
+    result = select_eligible_contracts(
+        ContractSelectorInput(
+            scenario_horizon=ScenarioHorizon.INTRADAY_30M,
+            as_of_timestamp=AS_OF,
+            underlying_price=Decimal("680"),
+            batch=_batch([_quote()], retrieved_at=AS_OF),
+        ),
+        generated_at=GENERATED_AT,
+    )
+    assert result.status == SelectorStatus.ELIGIBLE
+
+
 def test_snapshot_within_freshness_bound_is_eligible():
     config = SelectorConfig()
     boundary_retrieved_at = AS_OF - timedelta(seconds=config.max_snapshot_age_seconds)
@@ -548,10 +563,47 @@ def test_snapshot_older_than_freshness_bound_is_rejected():
     assert _only_reason(result) == RejectionReason.SNAPSHOT_STALE
 
 
-def test_snapshot_retrieved_after_as_of_time_beyond_bound_is_also_rejected():
-    """A retrieval instant in the future relative to as_of (clock skew or a
-    caller error) is treated the same as staleness -- freshness is an
-    absolute-difference check, not merely a "not yet stale" check."""
+def test_snapshot_retrieved_one_second_in_the_future_is_rejected_from_future():
+    """age_seconds < 0 (retrieved_at after as_of_timestamp) is rejected under
+    the distinct SNAPSHOT_FROM_FUTURE reason -- never SNAPSHOT_STALE, and
+    regardless of how small the future offset is relative to
+    max_snapshot_age_seconds."""
+    future_retrieved_at = AS_OF + timedelta(seconds=1)
+    result = select_eligible_contracts(
+        ContractSelectorInput(
+            scenario_horizon=ScenarioHorizon.INTRADAY_30M,
+            as_of_timestamp=AS_OF,
+            underlying_price=Decimal("680"),
+            batch=_batch([_quote()], retrieved_at=future_retrieved_at),
+        ),
+        generated_at=GENERATED_AT,
+    )
+    assert _only_reason(result) == RejectionReason.SNAPSHOT_FROM_FUTURE
+    assert result.status == SelectorStatus.NO_ELIGIBLE_CONTRACTS
+
+
+def test_snapshot_retrieved_one_microsecond_in_the_future_is_rejected_from_future():
+    """Even a single microsecond of future skew -- far below
+    max_snapshot_age_seconds -- trips the future gate; this is not a
+    magnitude check, it is a sign check on age_seconds."""
+    future_retrieved_at = AS_OF + timedelta(microseconds=1)
+    result = select_eligible_contracts(
+        ContractSelectorInput(
+            scenario_horizon=ScenarioHorizon.INTRADAY_30M,
+            as_of_timestamp=AS_OF,
+            underlying_price=Decimal("680"),
+            batch=_batch([_quote()], retrieved_at=future_retrieved_at),
+        ),
+        generated_at=GENERATED_AT,
+    )
+    assert _only_reason(result) == RejectionReason.SNAPSHOT_FROM_FUTURE
+
+
+def test_snapshot_retrieved_far_in_the_future_is_still_from_future_not_stale():
+    """A large future offset (well beyond max_snapshot_age_seconds) must
+    still be reported as SNAPSHOT_FROM_FUTURE, not SNAPSHOT_STALE -- the
+    future gate is checked first and unconditionally, not only near the
+    boundary."""
     config = SelectorConfig()
     future_retrieved_at = AS_OF + timedelta(seconds=config.max_snapshot_age_seconds + 1)
     result = select_eligible_contracts(
@@ -563,7 +615,7 @@ def test_snapshot_retrieved_after_as_of_time_beyond_bound_is_also_rejected():
         ),
         generated_at=GENERATED_AT,
     )
-    assert _only_reason(result) == RejectionReason.SNAPSHOT_STALE
+    assert _only_reason(result) == RejectionReason.SNAPSHOT_FROM_FUTURE
 
 
 def test_stale_batch_gating_precedes_per_contract_rejection_reasons():
@@ -614,6 +666,101 @@ def test_stale_indicative_research_batch_yields_research_only_with_zero_candidat
     assert result.status != SelectorStatus.ELIGIBLE
     assert result.research_only_contract_count == 0
     assert result.rejection_counts[RejectionReason.SNAPSHOT_STALE] == 1
+
+
+def test_future_batch_gating_precedes_per_contract_rejection_reasons():
+    """A future-dated batch must be rejected wholesale under
+    SNAPSHOT_FROM_FUTURE -- never disguised as ordinary per-contract quality
+    failures for contracts that would also have failed other filters
+    first, and never as SNAPSHOT_STALE."""
+    future_retrieved_at = AS_OF + timedelta(seconds=1)
+    good = _quote()
+    bad_delta = _quote(
+        contract_symbol="SPY260916C00681000", strike_price=Decimal("681"), delta=None
+    )
+    crossed = _quote(
+        contract_symbol="SPY260916C00682000", strike_price=Decimal("682"),
+        bid_price=Decimal("2.00"), ask_price=Decimal("1.00"),
+    )
+    result = select_eligible_contracts(
+        ContractSelectorInput(
+            scenario_horizon=ScenarioHorizon.INTRADAY_30M,
+            as_of_timestamp=AS_OF,
+            underlying_price=Decimal("680"),
+            batch=_batch([good, bad_delta, crossed], retrieved_at=future_retrieved_at),
+        ),
+        generated_at=GENERATED_AT,
+    )
+    assert result.status == SelectorStatus.NO_ELIGIBLE_CONTRACTS
+    assert result.rejection_counts[RejectionReason.SNAPSHOT_FROM_FUTURE] == 3
+    assert result.rejection_counts[RejectionReason.SNAPSHOT_STALE] == 0
+    assert result.rejection_counts[RejectionReason.DELTA_OUTSIDE_RANGE] == 0
+    assert result.rejection_counts[RejectionReason.CROSSED_QUOTE] == 0
+    assert sum(result.rejection_counts.values()) == 3
+
+
+def test_opra_future_batch_is_never_eligible():
+    future_retrieved_at = AS_OF + timedelta(seconds=1)
+    result = select_eligible_contracts(
+        ContractSelectorInput(
+            scenario_horizon=ScenarioHorizon.INTRADAY_30M,
+            as_of_timestamp=AS_OF,
+            underlying_price=Decimal("680"),
+            batch=_batch([_quote()], feed="opra", retrieved_at=future_retrieved_at),
+        ),
+        generated_at=GENERATED_AT,
+    )
+    assert result.status != SelectorStatus.ELIGIBLE
+    assert result.status == SelectorStatus.NO_ELIGIBLE_CONTRACTS
+    assert result.eligible_contract_count == 0
+    assert result.eligible_contracts == []
+
+
+def test_indicative_future_batch_never_exposes_research_contracts():
+    config = SelectorConfig(allow_indicative_for_research=True)
+    future_retrieved_at = AS_OF + timedelta(seconds=1)
+    result = select_eligible_contracts(
+        ContractSelectorInput(
+            scenario_horizon=ScenarioHorizon.INTRADAY_30M,
+            as_of_timestamp=AS_OF,
+            underlying_price=Decimal("680"),
+            batch=_batch([_quote()], feed="indicative", retrieved_at=future_retrieved_at),
+            config=config,
+        ),
+        generated_at=GENERATED_AT,
+    )
+    assert result.status == SelectorStatus.RESEARCH_ONLY
+    assert result.research_only_contract_count == 0
+    assert result.research_only_contracts == []
+    assert result.rejection_counts[RejectionReason.SNAPSHOT_FROM_FUTURE] == 1
+
+
+def test_future_and_stale_batch_rejection_counts_remain_complete_and_deterministic():
+    """Both time-gate rejections still satisfy the whole-batch accounting
+    invariant (rejection_counts + eligible + research_only ==
+    candidate_contract_count) and are reproducible across repeated runs on
+    the same input."""
+    future_retrieved_at = AS_OF + timedelta(seconds=1)
+    contracts = [
+        _quote(),
+        _quote(contract_symbol="SPY260916C00681000", strike_price=Decimal("681")),
+    ]
+    selector_input = ContractSelectorInput(
+        scenario_horizon=ScenarioHorizon.INTRADAY_30M,
+        as_of_timestamp=AS_OF,
+        underlying_price=Decimal("680"),
+        batch=_batch(contracts, retrieved_at=future_retrieved_at),
+    )
+    first = select_eligible_contracts(selector_input, generated_at=GENERATED_AT)
+    second = select_eligible_contracts(selector_input, generated_at=GENERATED_AT)
+    assert first == second
+    total_accounted = (
+        sum(first.rejection_counts.values())
+        + first.eligible_contract_count
+        + first.research_only_contract_count
+    )
+    assert total_accounted == first.candidate_contract_count == 2
+    assert first.rejection_counts[RejectionReason.SNAPSHOT_FROM_FUTURE] == 2
 
 
 # ---------------------------------------------------------------------------
