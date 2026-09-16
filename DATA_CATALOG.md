@@ -1043,6 +1043,88 @@ predictive accuracy or mean-reversion edge has been established.** See
 Completed Work Log item 41 in `PROJECT_STATE.md` and
 `docs/OPTIONS_DECISION_WORKFLOW.md` for full detail.
 
+### SPY deterministic contract-eligibility selector (not a stored dataset)
+
+Phase 1 step e
+([docs/OPTIONS_DECISION_WORKFLOW.md](docs/OPTIONS_DECISION_WORKFLOW.md)) adds
+a deterministic, offline SPY options-contract eligibility selector
+(`market_intelligence/contract_selection/contracts.py`, `selector.py`,
+`serialization.py`) plus a dry-run-first offline CLI
+(`scripts/select_spy_option_contracts.py`). Listed here only because it
+defines a new **structured input/output contract** — like the regime engine
+above, it is deliberately **not a dataset record**: it makes no network
+request, opens no database connection, reads no table, and writes no row
+anywhere. It runs **without any AI model** and before any future strategy
+agent.
+
+It consumes exactly: SPY; one already-validated `ScenarioHorizon` from the
+step-c regime engine (or `indeterminate`, which always produces an empty
+eligible set before any other filter runs); one bounded option-chain batch
+with one retrieval instant (`OptionChainBatch`/`OptionContractQuote`,
+deliberately independent of
+`data_connectors.alpaca_options_chain.OptionChainSnapshot` — this package
+never imports a data connector); the underlying price and as-of time; an
+optional explicit directional side (call/put); and bounded, centralized,
+documented `SelectorConfig` thresholds (all provisional hypotheses, never
+tuned against the step-d VWAP-reversion evaluation or the single stored
+option batch). Before any per-contract filter runs, two **batch-level
+gates** decide the run's fate — feed governance, then freshness — because
+every contract in one batch shares the same feed and the same
+`retrieved_at`, so both are batch-wide facts, not per-contract ones (see
+"Feed-safety boundary" below); the remaining nine filters then run per
+contract, in this fixed published order: expiration/DTE; option type (only
+when a directional side is explicitly supplied); strike/moneyness; delta
+range; required implied volatility and Greeks; positive bid/ask;
+non-crossed quote; maximum absolute and percentage spread; minimum quote
+size where available. The selector produces eligible/research-only
+contracts in deterministic order, bounded rejection counts by a fixed
+reason enum, and one of four statuses (`eligible` / `no_eligible_contracts`
+/ `research_only` / `indeterminate`). **No recommendation, ranking, score,
+prediction, or trade action is produced anywhere in this package** — there
+is no field for one (see `DECISION_RULES.md`, "AI does not choose an
+unrestricted options contract").
+
+**Feed-safety boundary (hardened 2026-09-16, Completed Work Log item 46).**
+Operational eligibility (`SelectorStatus.ELIGIBLE`) defaults to **OPRA
+only** — `SelectorConfig.allow_indicative_for_research` defaults to
+`False`. An indicative-feed batch can **never** reach `ELIGIBLE`: without
+explicit research permission it is rejected in full at the batch-level feed
+gate (`RejectionReason.FEED_NOT_ALLOWED`, status
+`no_eligible_contracts`); with `allow_indicative_for_research=True` it may
+be processed, but the result status is always `research_only` and any
+passing contracts go into a **separate** `research_only_contracts` field —
+never `eligible_contracts`, which stays empty whenever `status != eligible`.
+This separation is enforced at the schema level (`ContractSelectorResult`
+validators refuse to construct an `eligible` result on a non-OPRA feed, or a
+`research_only` result on a non-indicative feed), not just by selector
+logic, so it is structurally impossible for a `research_only` result to
+satisfy whatever eligible-set contract a future strategy agent consumes.
+The `scripts/select_spy_option_contracts.py` CLI requires its own explicit
+`--allow-indicative-research` flag before processing indicative data at
+all, and that flag **always overrides** whatever `allow_indicative_for_research`
+value the `--input` JSON file itself carries — the CLI, not the input file,
+is the trust boundary.
+
+**Open interest is not available from the current option-chain endpoint**
+(see "SPY option-chain snapshots (indicative)" above) and is **never
+invented, inferred, or replaced with volume anywhere in this package** — it
+has no open-interest field and no open-interest-based filter. A contract
+missing required implied volatility or any required Greek is rejected, not
+filled with zero. A `research_only` result always carries
+`feed_is_live_opra=False` and a fixed non-live/non-OPRA note plus a fixed
+`research_only_not_operationally_eligible` note — it must never be
+described as live OPRA data or used to support an execution claim.
+
+**Implemented and tested offline only, with synthetic fixtures — no real
+selector run has been performed against the real local database or the one
+stored SPY option-chain batch, every filter threshold in `SelectorConfig` is
+a provisional hypothesis, and no contract recommendation, usefulness,
+pricing-accuracy, execution, or profitability claim has been made.** The
+Options Strategy Agent (Phase 1 step f) does not exist and is not built by
+this step, and this feed-safety fix does not authorize starting it. See
+Completed Work Log items 45–46 in `PROJECT_STATE.md` and
+`docs/OPTIONS_DECISION_WORKFLOW.md` for full detail.
+
 ## Required Fields for Every Future Dataset
 
 Every dataset added to this catalog in the future must record:
