@@ -85,6 +85,8 @@ def _small_valid_input() -> ContractSelectorInput:
     )
     return ContractSelectorInput(
         scenario_horizon=ScenarioHorizon.INTRADAY_30M,
+        regime_as_of_timestamp=RETRIEVED_AT,
+        underlying_price_timestamp=RETRIEVED_AT,
         as_of_timestamp=AS_OF,
         underlying_price=Decimal("680"),
         batch=batch,
@@ -359,6 +361,8 @@ def _indicative_input_file(tmp_path, *, allow_in_file: bool, name: str = "indica
     )
     selector_input = ContractSelectorInput(
         scenario_horizon=ScenarioHorizon.INTRADAY_30M,
+        regime_as_of_timestamp=RETRIEVED_AT,
+        underlying_price_timestamp=RETRIEVED_AT,
         as_of_timestamp=AS_OF,
         underlying_price=Decimal("680"),
         batch=batch,
@@ -475,6 +479,8 @@ def test_indeterminate_horizon_reports_no_eligible_contracts(tmp_path, capsys):
     )
     selector_input = ContractSelectorInput(
         scenario_horizon=ScenarioHorizon.INDETERMINATE,
+        regime_as_of_timestamp=RETRIEVED_AT,
+        underlying_price_timestamp=RETRIEVED_AT,
         as_of_timestamp=AS_OF,
         underlying_price=Decimal("680"),
         batch=batch,

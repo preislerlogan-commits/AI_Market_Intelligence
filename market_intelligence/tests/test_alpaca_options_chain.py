@@ -26,9 +26,11 @@ from market_intelligence.data_connectors.alpaca_options_chain import (
     AlpacaOptionsChainClient,
     AlpacaOptionsChainError,
     AlpacaOptionsChainInvalidInputError,
+    AlpacaOptionsChainTruncatedError,
     AlpacaOptionsCredentialsMissingError,
     OptionChainRequest,
     OptionChainSnapshotBatch,
+    OptionChainTruncationReason,
     normalize_option_chain_request,
     parse_occ_symbol,
 )
@@ -675,9 +677,13 @@ def test_max_pages_bound_enforced(monkeypatch, isolated_env_file):
         return httpx.Response(200, json=chain_payload(page, next_page_token=token))
 
     client = AlpacaOptionsChainClient(settings=configured_settings(monkeypatch, isolated_env_file))
-    with mock_client(handler) as http_client, pytest.raises(AlpacaOptionsChainError):
+    with mock_client(handler) as http_client, pytest.raises(
+        AlpacaOptionsChainTruncatedError
+    ) as exc_info:
         client.get_chain_snapshot(make_request(max_pages=3), client=http_client)
     assert len(calls) == 3
+    assert exc_info.value.reason == OptionChainTruncationReason.MAX_PAGES_EXCEEDED
+    assert isinstance(exc_info.value, AlpacaOptionsChainError)
 
 
 def test_max_total_contracts_bound_enforced(monkeypatch, isolated_env_file):
@@ -689,8 +695,32 @@ def test_max_total_contracts_bound_enforced(monkeypatch, isolated_env_file):
         return httpx.Response(200, json=chain_payload(snaps, next_page_token=None))
 
     client = AlpacaOptionsChainClient(settings=configured_settings(monkeypatch, isolated_env_file))
-    with mock_client(handler) as http_client, pytest.raises(AlpacaOptionsChainError):
+    with mock_client(handler) as http_client, pytest.raises(
+        AlpacaOptionsChainTruncatedError
+    ) as exc_info:
         client.get_chain_snapshot(make_request(max_total_contracts=3), client=http_client)
+    assert exc_info.value.reason == OptionChainTruncationReason.MAX_TOTAL_CONTRACTS_EXCEEDED
+    assert isinstance(exc_info.value, AlpacaOptionsChainError)
+
+
+def test_a_duplicate_contract_symbol_is_not_misclassified_as_truncation(
+    monkeypatch, isolated_env_file
+):
+    """A duplicate-symbol failure is a real, unrelated AlpacaOptionsChainError
+    -- never the typed AlpacaOptionsChainTruncatedError, even though both are
+    raised from the same pagination loop."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        token = request.url.params.get("page_token")
+        one = {SPY_CALL: snapshot_json(quote=FULL_QUOTE)}
+        if token is None:
+            return httpx.Response(200, json=chain_payload(one, next_page_token="T1"))
+        return httpx.Response(200, json=chain_payload(one, next_page_token=None))
+
+    client = AlpacaOptionsChainClient(settings=configured_settings(monkeypatch, isolated_env_file))
+    with mock_client(handler) as http_client, pytest.raises(AlpacaOptionsChainError) as exc_info:
+        client.get_chain_snapshot(make_request(), client=http_client)
+    assert not isinstance(exc_info.value, AlpacaOptionsChainTruncatedError)
 
 
 def test_invalid_page_token_type_rejected(monkeypatch, isolated_env_file):

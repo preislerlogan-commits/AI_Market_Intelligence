@@ -200,6 +200,55 @@ def input_from_json_str(text: str) -> ContractSelectorInput:
         ) from None
 
 
+def write_input(
+    selector_input: ContractSelectorInput,
+    path: str | os.PathLike[str],
+    *,
+    overwrite: bool = False,
+) -> None:
+    """Atomically write ``selector_input`` to ``path`` as JSON.
+
+    Same no-overwrite / no-symlink / atomic-publish guarantees as
+    ``write_record`` -- used by a live capture coordinator (see
+    ``market_features.spy_contract_capture`` /
+    ``scripts/capture_spy_contract_selector_input.py``) to persist a real,
+    already-validated ``ContractSelectorInput`` before it is separately fed
+    to ``scripts/select_spy_option_contracts.py``. The temporary file is
+    always removed.
+    """
+    target = Path(path)
+    directory = _validated_directory(target)
+
+    if target.exists() and not overwrite:
+        raise ContractSelectorSerializationError("target file already exists")
+
+    text = input_to_json_str(selector_input)
+    tmp_name = f".{target.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    tmp_path = directory / tmp_name
+    try:
+        with open(tmp_path, "x", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+        if overwrite:
+            os.replace(tmp_path, target)
+        else:
+            try:
+                os.link(tmp_path, target)
+            except FileExistsError:
+                raise ContractSelectorSerializationError(
+                    "target file already exists"
+                ) from None
+            finally:
+                tmp_path.unlink(missing_ok=True)
+    except ContractSelectorSerializationError:
+        raise
+    except OSError:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise ContractSelectorSerializationError("failed to write selector input") from None
+
+
 def read_input(path: str | os.PathLike[str]) -> ContractSelectorInput:
     """Read and validate a ``ContractSelectorInput`` from a local file.
 

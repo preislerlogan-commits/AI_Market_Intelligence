@@ -87,6 +87,30 @@ These are two different things and must not be conflated:
   field from the retained provenance record, and it must never be read as
   permission to store less.
 
+## Synchronized selector-capture coordinator: no new source or execution surface
+
+Added 2026-09-17 (Completed Work Log item 48 in `PROJECT_STATE.md`):
+`market_intelligence/orchestration/spy_contract_capture.py` and
+`scripts/capture_spy_contract_selector_input.py`. This coordinator adds
+**no new data source and no new API surface of any kind.** It only
+sequences three calls against Alpaca boundaries this policy and
+`DATA_CATALOG.md` already cover — `AlpacaBarsClient.get_bars`,
+`AlpacaMarketDataClient.get_snapshot`, and
+`AlpacaOptionsChainClient.get_chain_snapshot` — all read-only market-data
+endpoints under `https://data.alpaca.markets`. It does not call, wrap, or
+otherwise touch Alpaca's trading/account API: it defines no order, position,
+account, or exercise method, and per [CLAUDE.md](CLAUDE.md) never will.
+Every client is dependency-injected by the caller, so the coordinator itself
+never constructs credentials or a `Settings` object, and every test
+exercising it (`test_spy_contract_capture.py`) uses fakes/mocks only — no
+live request is made by importing or testing this module. The one thing it
+adds beyond composing existing calls is a bounded, indicative-feed
+option-chain retrieval sized from the selector's own configured moneyness
+band and the resolved scenario horizon's own DTE window — governed by the
+same already-reviewed `MAX_PAGES`/`MAX_TOTAL_CONTRACTS` ceilings documented
+in `DATA_CATALOG.md`'s option-chain connector entry, never a larger or
+smaller one.
+
 ## Known gap: no formal uncertainty-rating field
 
 The "Explicit uncertainty" requirement above is **not yet implemented as a
