@@ -923,12 +923,19 @@ before the previous one is complete and recorded.
 
   *Capture sequence.* Exactly three live calls, in order, never more: (1)
   `AlpacaBarsClient.get_bars` — SPY 5-minute bars from the session open
-  through "now"; (2) `AlpacaMarketDataClient.get_snapshot` — one
+  through "now" (`capture_start`, resolved once at the very start of the
+  sequence); (2) `AlpacaMarketDataClient.get_snapshot` — one
   underlying-price snapshot, whose *market-data* timestamp (the provider's
   own `latestTrade.t` / `latestQuote.t`, never request/wall-clock time) is
   carried as its provenance time; (3) `AlpacaOptionsChainClient
   .get_chain_snapshot` — made **only** when the regime and scenario horizon
   from step c's engine both resolve, never for an `indeterminate` result.
+  **No single wall-clock timestamp governs this entire sequence:** the
+  underlying price's own recency is validated against a second, later
+  instant, `price_validation_time`, resolved immediately after the snapshot
+  request returns — never against `capture_start` — so a live price request
+  that takes a moment to complete is judged against when it was actually
+  validated, not when the whole capture began.
 
   *10:00 ET earliest start.* Capture only runs from `10:00` through `16:00`
   America/New_York, Monday–Friday. `10:00` is not an arbitrary round number:

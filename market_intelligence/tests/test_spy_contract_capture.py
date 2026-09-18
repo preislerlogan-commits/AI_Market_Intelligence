@@ -427,6 +427,131 @@ def test_extract_underlying_price_rejects_a_non_positive_trade_price():
 
 
 # ---------------------------------------------------------------------------
+# Coordinator-level price-validation-time reference (PR #54 fix): the
+# underlying-price observation must be validated against its own
+# price_validation_time, taken right after the snapshot request returns --
+# never against capture_start, which governs only the regular-hours
+# preflight, the bars request's own upper bound, and completed-bar
+# filtering.
+# ---------------------------------------------------------------------------
+
+
+def test_price_after_capture_start_but_at_or_before_price_validation_time_is_accepted():
+    """A price timestamp later than capture_start -- which the old,
+    single-timestamp behavior would have rejected as "from the future" --
+    must be accepted once it is validated against the later
+    price_validation_time instead."""
+    capture_start = datetime(2026, 9, 16, 14, 12, 0, tzinfo=UTC)
+    price_validation_time = datetime(2026, 9, 16, 14, 12, 40, tzinfo=UTC)
+    bars = _FakeBarsClient(bars=_trending_bars())
+    price = _FakeMarketDataClient(
+        # After capture_start (14:12:00), but at/before price_validation_time
+        # (14:12:40) -- exactly the window the fix must accept.
+        payload=_snapshot_payload(trade_price="684.50", trade_ts="2026-09-16T14:12:20Z")
+    )
+    chain = _FakeOptionsChainClient(retrieved_at="2026-09-16T14:12:45Z")
+
+    result, clock = _run(
+        now=capture_start, as_of_timestamp=price_validation_time,
+        bars_client=bars, market_data_client=price, options_chain_client=chain,
+    )
+
+    assert result.status == CaptureStatus.RESOLVED
+    assert result.underlying_price == Decimal("684.50")
+    assert result.underlying_price_timestamp == datetime(2026, 9, 16, 14, 12, 20, tzinfo=UTC)
+
+
+def test_price_after_price_validation_time_is_rejected():
+    """A price timestamp after price_validation_time itself -- not merely
+    after capture_start -- must still be rejected as being from the
+    future, relative to the instant it was actually validated."""
+    capture_start = datetime(2026, 9, 16, 14, 12, 0, tzinfo=UTC)
+    price_validation_time = datetime(2026, 9, 16, 14, 12, 30, tzinfo=UTC)
+    price = _FakeMarketDataClient(
+        payload=_snapshot_payload(trade_price="684.50", trade_ts="2026-09-16T14:12:35Z")
+    )
+
+    result, _ = _run(
+        now=capture_start, as_of_timestamp=price_validation_time,
+        bars_client=_FakeBarsClient(bars=_trending_bars()), market_data_client=price,
+    )
+
+    assert result.status == CaptureStatus.PRICE_UNAVAILABLE
+
+
+def test_over_age_price_is_rejected_relative_to_price_validation_time():
+    """Recency is judged against price_validation_time, not capture_start --
+    an old price must be rejected even though capture_start (an unrelated,
+    earlier instant) is not itself stale relative to it."""
+    capture_start = datetime(2026, 9, 16, 14, 12, 0, tzinfo=UTC)
+    price_validation_time = datetime(2026, 9, 16, 14, 20, 0, tzinfo=UTC)
+    price = _FakeMarketDataClient(
+        # 20 minutes stale relative to price_validation_time -- exceeds the
+        # default 300-second max_quote_age_seconds.
+        payload=_snapshot_payload(trade_price="684.50", trade_ts="2026-09-16T14:00:00Z")
+    )
+
+    result, _ = _run(
+        now=capture_start, as_of_timestamp=price_validation_time,
+        bars_client=_FakeBarsClient(bars=_trending_bars()), market_data_client=price,
+    )
+
+    assert result.status == CaptureStatus.PRICE_UNAVAILABLE
+
+
+def test_bar_completeness_gate_still_uses_capture_start_not_price_validation_time():
+    """A bar that completes after capture_start but before the later
+    price_validation_time must still be dropped -- the bar-completeness
+    gate is always judged against capture_start, never the separate, later
+    clock read taken for price validation, even when that later read is
+    itself well after the bar completed."""
+    capture_start = datetime(2026, 9, 16, 14, 0, 0, tzinfo=UTC)  # 10:00 ET
+    # The 7th bar completes at 14:05 -- after capture_start, but before the
+    # price_validation_time used below (14:06).
+    bars = _flat_bars() + [_bar(14, 0)]
+    bars_client = _FakeBarsClient(bars=bars)
+    price_validation_time = datetime(2026, 9, 16, 14, 6, 0, tzinfo=UTC)
+    price = _FakeMarketDataClient(
+        payload=_snapshot_payload(trade_price="680.0", trade_ts="2026-09-16T13:59:50Z")
+    )
+
+    result, _ = _run(
+        now=capture_start, as_of_timestamp=price_validation_time,
+        bars_client=bars_client, market_data_client=price,
+        selector_config=SelectorConfig(max_quote_age_seconds=600),
+    )
+
+    # regime_as_of_timestamp is the completion time of the last bar the
+    # regime engine actually used -- 14:00 (the 6th flat bar), never 14:05
+    # (the 7th bar), proving the extra, later-completing bar was excluded
+    # even though price_validation_time (14:06) is well after it completed.
+    assert result.regime_as_of_timestamp == datetime(2026, 9, 16, 14, 0, tzinfo=UTC)
+
+
+def test_provenance_gap_violation_between_price_and_chain_still_fails_closed():
+    """The existing ordering/lag validator must still fail closed after the
+    fix -- unaffected by price validation now happening against its own,
+    separate, later clock read rather than capture_start."""
+    capture_start = datetime(2026, 9, 16, 14, 12, 0, tzinfo=UTC)
+    price_validation_time = datetime(2026, 9, 16, 14, 12, 10, tzinfo=UTC)
+    bars = _FakeBarsClient(bars=_trending_bars())
+    price = _FakeMarketDataClient(
+        payload=_snapshot_payload(trade_price="684.50", trade_ts="2026-09-16T14:12:05Z")
+    )
+    # 115 seconds after the price timestamp -- exceeds the default 60-second
+    # max_price_to_chain_gap_seconds.
+    chain = _FakeOptionsChainClient(retrieved_at="2026-09-16T14:14:00Z")
+
+    result, _ = _run(
+        now=capture_start, as_of_timestamp=price_validation_time,
+        bars_client=bars, market_data_client=price, options_chain_client=chain,
+    )
+
+    assert result.status == CaptureStatus.PROVENANCE_INVALID
+    assert result.selector_input is None
+
+
+# ---------------------------------------------------------------------------
 # Resolved horizon: happy path -- exactly three provider calls
 # ---------------------------------------------------------------------------
 
@@ -451,7 +576,10 @@ def test_resolved_horizon_makes_exactly_three_calls_and_builds_a_valid_input():
     assert len(bars.calls) == 1
     assert len(price.calls) == 1
     assert len(chain.calls) == 1
-    assert clock.call_count == 2
+    # capture_start, price_validation_time (taken right after the snapshot
+    # request returns), and the final as_of_timestamp -- three reads, never
+    # one reused wall-clock instant across the whole sequence.
+    assert clock.call_count == 3
 
     selector_input = result.selector_input
     assert selector_input is not None

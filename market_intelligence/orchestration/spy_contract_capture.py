@@ -21,10 +21,15 @@ requests the design requires (see ``docs/OPTIONS_DECISION_WORKFLOW.md`` and
 the recorded synchronized-capture design), never more:
 
 1. **Bars** (``AlpacaBarsClient.get_bars``) -- SPY 5-minute bars from the
-   session open through "now", never a bar completing after "now".
+   session open through "now" (``capture_start``, the one instant resolved
+   at the very start of the sequence), never a bar completing after it.
 2. **Underlying price** (``AlpacaMarketDataClient.get_snapshot``) -- one
    read-only snapshot; the *market-data* timestamp on the trade/quote is
-   used as its provenance time, never the request/wall-clock time.
+   used as its provenance time, never the request/wall-clock time. Its own
+   recency is judged against ``price_validation_time`` -- a second, later
+   instant resolved immediately *after* this request returns -- never
+   against ``capture_start``: no single wall-clock timestamp governs this
+   entire multi-request sequence.
 3. **Option chain** (``AlpacaOptionsChainClient.get_chain_snapshot``) -- made
    **only** when the regime and scenario horizon both resolved (never for an
    indeterminate result) -- one bounded, indicative-feed retrieval sized
@@ -42,9 +47,11 @@ own ``Settings`` or client, and every test exercising it uses fakes/mocks --
    bar (09:55-10:00) actually completes -- through ``16:00`` (session close),
    Monday-Friday. Outside that window, **no client is called at all**.
 2. **Bar-completeness gate.** Any bar the bars client returns that would not
-   yet be complete as of "now" (``bar.timestamp + 5min > now``) is dropped
-   before it ever reaches the regime engine -- defensive, independent of
-   trusting the provider's own ``end`` boundary semantics. If fewer than
+   yet be complete as of ``capture_start`` (``bar.timestamp + 5min >
+   capture_start``) is dropped before it ever reaches the regime engine --
+   defensive, independent of trusting the provider's own ``end`` boundary
+   semantics, and never relaxed by the later ``price_validation_time``. If
+   fewer than
    ``MIN_COMPLETED_BARS`` (6) genuinely-completed bars remain, capture stops
    -- **no price or chain request is made.**
 3. **Indeterminate-horizon gate.** The underlying price *is* still fetched
@@ -398,11 +405,22 @@ def capture_contract_selector_input(
     live calls its injected clients make, and no others: a test that injects
     fakes/mocks never touches the network.
     """
-    now = resolve_as_of(clock)
-    now_et = now.astimezone(EASTERN)
+    # ``capture_start`` is the one wall-clock reference for everything that
+    # must be judged relative to when this capture *began* -- the
+    # regular-hours preflight, the bars request's own "through now" upper
+    # bound, and completed-bar filtering. It is deliberately never reused to
+    # validate the underlying-price observation: that happens against its
+    # own later ``price_validation_time``, captured immediately after the
+    # price snapshot request returns (see below) -- a live price request can
+    # take long enough that judging its recency against the *start* of the
+    # whole sequence would be wrong in both directions (too lenient if the
+    # price is stale by the time it arrives, too strict if the request
+    # itself took a while and a fresh price is penalized for it).
+    capture_start = resolve_as_of(clock)
+    capture_start_et = capture_start.astimezone(EASTERN)
 
-    if now_et.weekday() >= 5 or not (
-        EARLIEST_CAPTURE_TIME <= now_et.time() < REGULAR_SESSION_END
+    if capture_start_et.weekday() >= 5 or not (
+        EARLIEST_CAPTURE_TIME <= capture_start_et.time() < REGULAR_SESSION_END
     ):
         return CaptureResult(
             status=CaptureStatus.OUTSIDE_REGULAR_HOURS,
@@ -410,7 +428,7 @@ def capture_contract_selector_input(
             notes=("outside_regular_trading_hours_after_six_completed_bars",),
         )
 
-    session_date = now_et.date()
+    session_date = capture_start_et.date()
     session_open_utc = datetime.combine(
         session_date, REGULAR_SESSION_START, tzinfo=EASTERN
     ).astimezone(UTC)
@@ -420,7 +438,7 @@ def capture_contract_selector_input(
             "SPY",
             "5Min",
             start=_format_rfc3339(session_open_utc),
-            end=_format_rfc3339(now),
+            end=_format_rfc3339(capture_start),
             limit=1000,
             max_pages=1,
         )
@@ -431,7 +449,7 @@ def capture_contract_selector_input(
             notes=("bars_request_failed",),
         )
 
-    completed_bars = select_completed_bars(raw_bars, now=now)
+    completed_bars = select_completed_bars(raw_bars, now=capture_start)
     if len(completed_bars) < MIN_COMPLETED_BARS:
         return CaptureResult(
             status=CaptureStatus.INSUFFICIENT_COMPLETED_BARS,
@@ -461,12 +479,29 @@ def capture_contract_selector_input(
     regime_as_of = classification.as_of_timestamp
 
     try:
+        snapshot_payload = market_data_client.get_snapshot("SPY")
+    except (AlpacaMarketDataError, AlpacaCredentialsMissingError):
+        return CaptureResult(
+            status=CaptureStatus.PRICE_UNAVAILABLE,
+            price_recency_max_age_seconds=selector_config.max_quote_age_seconds,
+            regime_as_of_timestamp=regime_as_of,
+            scenario_horizon=classification.scenario_horizon,
+            notes=("underlying_price_unavailable",),
+        )
+
+    # Captured *after* the snapshot request returns, never reused from
+    # ``capture_start`` -- the price's own recency must be judged against
+    # when it was actually validated, not when this whole capture began (see
+    # ``capture_start``'s comment above).
+    price_validation_time = resolve_as_of(clock)
+
+    try:
         price, price_timestamp = extract_underlying_price(
-            market_data_client.get_snapshot("SPY"),
-            now=now,
+            snapshot_payload,
+            now=price_validation_time,
             max_quote_age_seconds=selector_config.max_quote_age_seconds,
         )
-    except (PriceUnavailableError, AlpacaMarketDataError, AlpacaCredentialsMissingError):
+    except PriceUnavailableError:
         return CaptureResult(
             status=CaptureStatus.PRICE_UNAVAILABLE,
             price_recency_max_age_seconds=selector_config.max_quote_age_seconds,

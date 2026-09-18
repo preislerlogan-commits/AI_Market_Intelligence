@@ -87,7 +87,7 @@ beyond ``as_of_timestamp``: ``regime_as_of_timestamp`` (the upstream regime
 engine's own ``RegimeClassificationResult.as_of_timestamp`` -- the completion
 time of the last bar it used) and ``underlying_price_timestamp`` (the
 market-data timestamp of the underlying price observation, never a request/
-retrieval timestamp -- see ``market_features.spy_contract_capture`` for how a
+retrieval timestamp -- see ``orchestration.spy_contract_capture`` for how a
 live capture populates both). Together with ``batch.retrieved_at`` and
 ``as_of_timestamp`` themselves, these four timestamps describe one full,
 sequential, point-in-time-safe capture:
@@ -434,9 +434,11 @@ class SelectorConfig(BaseModel):
     max_price_to_chain_gap_seconds: Annotated[int, Field(gt=0)] = 60
 
     # How old a live underlying-price observation (trade or quote) may be,
-    # relative to the capture's own "now", before a live capture must treat
-    # it as unavailable rather than stale -- used only by
-    # ``market_features.spy_contract_capture``, not by this package's own
+    # relative to the coordinator's own price_validation_time (captured
+    # immediately after the price snapshot request returns, not the
+    # capture's initial start time), before a live capture must treat it as
+    # unavailable rather than stale -- used only by
+    # ``orchestration.spy_contract_capture``, not by this package's own
     # selector logic, but centralized here with every other threshold.
     max_quote_age_seconds: Annotated[int, Field(gt=0)] = 300
 
