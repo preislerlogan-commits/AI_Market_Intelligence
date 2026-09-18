@@ -33,6 +33,7 @@ from market_intelligence.contract_selection.serialization import (
     read_input,
     read_record,
     to_json_str,
+    write_input,
     write_record,
 )
 from market_intelligence.market_features.spy_regime_contracts import ScenarioHorizon
@@ -67,6 +68,8 @@ def _selector_input() -> ContractSelectorInput:
     )
     return ContractSelectorInput(
         scenario_horizon=ScenarioHorizon.INTRADAY_30M,
+        regime_as_of_timestamp=RETRIEVED_AT,
+        underlying_price_timestamp=RETRIEVED_AT,
         as_of_timestamp=AS_OF,
         underlying_price=Decimal("680"),
         batch=batch,
@@ -85,6 +88,9 @@ def _result() -> ContractSelectorResult:
         max_pct_spread=config.max_pct_spread,
         min_quote_size=config.min_quote_size,
         max_snapshot_age_seconds=config.max_snapshot_age_seconds,
+        max_regime_to_price_gap_seconds=config.max_regime_to_price_gap_seconds,
+        max_price_to_chain_gap_seconds=config.max_price_to_chain_gap_seconds,
+        max_quote_age_seconds=config.max_quote_age_seconds,
         allow_indicative_for_research=config.allow_indicative_for_research,
     )
     return ContractSelectorResult(
@@ -92,6 +98,8 @@ def _result() -> ContractSelectorResult:
         generated_at=AS_OF,
         scenario_horizon=ScenarioHorizon.INTRADAY_30M,
         requested_option_type=None,
+        regime_as_of_timestamp=RETRIEVED_AT,
+        underlying_price_timestamp=RETRIEVED_AT,
         as_of_timestamp=AS_OF,
         underlying_price=Decimal("680"),
         feed=FeedProvenance.OPRA,
@@ -276,3 +284,57 @@ def test_read_input_rejects_malformed_json(tmp_path):
     path.write_text("not json", encoding="utf-8")
     with pytest.raises(ContractSelectorSerializationError):
         read_input(path)
+
+
+# ---------------------------------------------------------------------------
+# write_input
+# ---------------------------------------------------------------------------
+
+
+def test_write_input_then_read_round_trips(tmp_path):
+    selector_input = _selector_input()
+    path = tmp_path / "input.json"
+    write_input(selector_input, path)
+    assert read_input(path) == selector_input
+
+
+def test_write_input_refuses_to_overwrite_by_default(tmp_path):
+    selector_input = _selector_input()
+    path = tmp_path / "input.json"
+    write_input(selector_input, path)
+    with pytest.raises(ContractSelectorSerializationError):
+        write_input(selector_input, path)
+
+
+def test_write_input_overwrites_when_requested(tmp_path):
+    selector_input = _selector_input()
+    path = tmp_path / "input.json"
+    write_input(selector_input, path)
+    write_input(selector_input, path, overwrite=True)
+    assert read_input(path) == selector_input
+
+
+def test_write_input_never_creates_a_directory(tmp_path):
+    selector_input = _selector_input()
+    path = tmp_path / "missing" / "input.json"
+    with pytest.raises(ContractSelectorSerializationError):
+        write_input(selector_input, path)
+    assert not path.parent.exists()
+
+
+def test_write_input_refuses_a_symlinked_parent_directory(tmp_path):
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    link_dir = tmp_path / "link"
+    _symlink_or_skip(real_dir, link_dir, target_is_directory=True)
+    with pytest.raises(ContractSelectorSerializationError):
+        write_input(_selector_input(), link_dir / "input.json")
+
+
+def test_write_input_refuses_a_symlinked_target_file(tmp_path):
+    real_file = tmp_path / "real.json"
+    real_file.write_text("sentinel", encoding="utf-8")
+    link_file = tmp_path / "link.json"
+    _symlink_or_skip(real_file, link_file)
+    with pytest.raises(ContractSelectorSerializationError):
+        write_input(_selector_input(), link_file)

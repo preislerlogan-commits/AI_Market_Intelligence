@@ -53,6 +53,16 @@ Request ceilings: ``MAX_EXPIRATION_RANGE_DAYS``, ``MAX_STRIKE_RANGE_WIDTH``,
 ``MAX_PAGES``, and ``MAX_TOTAL_CONTRACTS`` are conservative Phase 1 safety
 ceilings for the first SPY intraday milestone, not contract-selection rules
 -- callers must still supply explicit, bounded ranges.
+
+Truncation is a typed, public condition, not a string to match on: when a
+bounded retrieval would need more pages or contracts than its own requested
+``max_pages`` / ``max_total_contracts`` allows, ``get_chain_snapshot`` raises
+the public ``AlpacaOptionsChainTruncatedError`` (a subclass of
+``AlpacaOptionsChainError``) with a fixed ``reason``
+(``OptionChainTruncationReason.MAX_PAGES_EXCEEDED`` /
+``.MAX_TOTAL_CONTRACTS_EXCEEDED``) -- callers that need to distinguish
+"the window needed more data than requested" from any other chain failure
+should catch this type and read ``reason``, never match on exception text.
 """
 
 from __future__ import annotations
@@ -62,6 +72,7 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from enum import StrEnum
 from typing import Any
 
 import httpx
@@ -174,6 +185,48 @@ class AlpacaOptionsChainInvalidInputError(AlpacaOptionsChainError):
     malicious input never reaches the network. The message never echoes raw,
     unvalidated input.
     """
+
+
+class OptionChainTruncationReason(StrEnum):
+    """Which bounded ceiling a retrieval would have needed to exceed to
+    keep going. A fixed, two-value enum -- never inferred from provider
+    text -- so a caller can distinguish the two truncation causes without
+    ever matching on exception message text."""
+
+    MAX_PAGES_EXCEEDED = "max_pages_exceeded"
+    MAX_TOTAL_CONTRACTS_EXCEEDED = "max_total_contracts_exceeded"
+
+
+class AlpacaOptionsChainTruncatedError(AlpacaOptionsChainError):
+    """Public, typed truncation boundary.
+
+    Raised in place of a plain ``AlpacaOptionsChainError`` specifically when
+    ``get_chain_snapshot`` would need more pages, or more contracts, than
+    the request's own ``max_pages`` / ``max_total_contracts`` ceiling
+    allows -- i.e. the retrieval was genuinely bounded away from a further
+    page or contract that existed, not merely failed. No partial result is
+    ever returned in this case (same guarantee as every other
+    ``AlpacaOptionsChainError``).
+
+    A caller that needs to distinguish "the bounded window needed more data
+    than requested" from any other chain failure should catch this specific
+    type (subclass of ``AlpacaOptionsChainError``, so existing broad
+    ``except AlpacaOptionsChainError`` handling is unaffected) and read
+    ``reason`` -- never match on ``str(exc)``, which is not part of this
+    exception's stable interface. ``reason`` and the resulting message are
+    both drawn from the fixed ``OptionChainTruncationReason`` enum -- never
+    a raw provider value, request parameter, or page token.
+    """
+
+    def __init__(self, reason: OptionChainTruncationReason) -> None:
+        self.reason = reason
+        if reason == OptionChainTruncationReason.MAX_PAGES_EXCEEDED:
+            message = "Alpaca option-chain pagination exceeded the maximum page count."
+        else:
+            message = (
+                "Alpaca option-chain response exceeded the maximum total contract count."
+            )
+        super().__init__(message)
 
 
 class _MalformedSnapshotError(Exception):
@@ -788,13 +841,16 @@ class AlpacaOptionsChainClient:
 
         Raises ``AlpacaOptionsChainInvalidInputError`` if ``request`` is not
         an ``OptionChainRequest``; ``AlpacaOptionsCredentialsMissingError``
-        if credentials are not configured; or ``AlpacaOptionsChainError``
-        (sanitized) on request failure, malformed JSON, an unusable response
-        shape, a malformed/mismatched contract symbol, a malformed snapshot
-        field, a duplicate contract symbol, an invalid or repeated
-        pagination token, pagination exceeding ``max_pages``, or a total
-        contract count exceeding ``max_total_contracts``. On any failure --
-        including a later-page failure -- no partial result is returned.
+        if credentials are not configured; ``AlpacaOptionsChainTruncatedError``
+        (a typed, public ``AlpacaOptionsChainError`` subclass -- see that
+        class) if pagination would exceed ``max_pages`` or the total contract
+        count would exceed ``max_total_contracts``, distinguished via its
+        ``reason`` attribute; or the base ``AlpacaOptionsChainError``
+        (sanitized) on any other request failure, malformed JSON, an unusable
+        response shape, a malformed/mismatched contract symbol, a malformed
+        snapshot field, a duplicate contract symbol, or an invalid or
+        repeated pagination token. On any failure -- including a later-page
+        failure -- no partial result is returned.
         """
         if not isinstance(request, OptionChainRequest):
             raise AlpacaOptionsChainInvalidInputError(
@@ -867,9 +923,8 @@ class AlpacaOptionsChainClient:
                     snapshots_by_symbol[snapshot.contract_symbol] = snapshot
 
                     if len(snapshots_by_symbol) > request.max_total_contracts:
-                        raise AlpacaOptionsChainError(
-                            "Alpaca option-chain response exceeded the maximum total contract "
-                            "count."
+                        raise AlpacaOptionsChainTruncatedError(
+                            OptionChainTruncationReason.MAX_TOTAL_CONTRACTS_EXCEEDED
                         )
 
                 next_token = payload.get("next_page_token")
@@ -886,8 +941,8 @@ class AlpacaOptionsChainClient:
                 seen_tokens.add(next_token)
                 page_token = next_token
             else:
-                raise AlpacaOptionsChainError(
-                    "Alpaca option-chain pagination exceeded the maximum page count."
+                raise AlpacaOptionsChainTruncatedError(
+                    OptionChainTruncationReason.MAX_PAGES_EXCEEDED
                 )
         finally:
             if owns_client:

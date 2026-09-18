@@ -171,6 +171,9 @@ def _config_snapshot(config: SelectorConfig) -> SelectorConfigSnapshot:
         max_pct_spread=config.max_pct_spread,
         min_quote_size=config.min_quote_size,
         max_snapshot_age_seconds=config.max_snapshot_age_seconds,
+        max_regime_to_price_gap_seconds=config.max_regime_to_price_gap_seconds,
+        max_price_to_chain_gap_seconds=config.max_price_to_chain_gap_seconds,
+        max_quote_age_seconds=config.max_quote_age_seconds,
         allow_indicative_for_research=config.allow_indicative_for_research,
     )
 
@@ -292,6 +295,8 @@ def _batch_gated_result(
         generated_at=generated_at,
         scenario_horizon=selector_input.scenario_horizon,
         requested_option_type=selector_input.requested_option_type,
+        regime_as_of_timestamp=selector_input.regime_as_of_timestamp,
+        underlying_price_timestamp=selector_input.underlying_price_timestamp,
         as_of_timestamp=selector_input.as_of_timestamp,
         underlying_price=selector_input.underlying_price,
         feed=batch.feed,
@@ -408,6 +413,8 @@ def select_eligible_contracts(
         generated_at=generated_at,
         scenario_horizon=selector_input.scenario_horizon,
         requested_option_type=selector_input.requested_option_type,
+        regime_as_of_timestamp=selector_input.regime_as_of_timestamp,
+        underlying_price_timestamp=selector_input.underlying_price_timestamp,
         as_of_timestamp=selector_input.as_of_timestamp,
         underlying_price=selector_input.underlying_price,
         feed=batch.feed,

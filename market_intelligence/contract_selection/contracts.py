@@ -79,6 +79,40 @@ validated value** -- mirrors ``spy_regime_classifier.RegimeThresholds``: no
 threshold here has been evaluated against real SPY option-chain history, and
 none may be tuned against the step-d VWAP-reversion evaluation or the single
 stored option batch (see ``docs/OPTIONS_DECISION_WORKFLOW.md``).
+
+## Capture provenance chain (regime -> price -> chain -> selector)
+
+``ContractSelectorInput`` retains two additional provenance timestamps
+beyond ``as_of_timestamp``: ``regime_as_of_timestamp`` (the upstream regime
+engine's own ``RegimeClassificationResult.as_of_timestamp`` -- the completion
+time of the last bar it used) and ``underlying_price_timestamp`` (the
+market-data timestamp of the underlying price observation, never a request/
+retrieval timestamp -- see ``orchestration.spy_contract_capture`` for how a
+live capture populates both). Together with ``batch.retrieved_at`` and
+``as_of_timestamp`` themselves, these four timestamps describe one full,
+sequential, point-in-time-safe capture:
+
+    regime_as_of_timestamp <= underlying_price_timestamp
+        <= batch.retrieved_at <= as_of_timestamp
+
+**Only the first two legs of this chain are hardened here, at construction
+time** (see ``_check_provenance_ordering_and_lag`` below): a
+``ContractSelectorInput`` cannot be constructed at all if
+``underlying_price_timestamp`` precedes ``regime_as_of_timestamp``, if
+``batch.retrieved_at`` precedes ``underlying_price_timestamp``, or if either
+gap exceeds its own configured maximum (``SelectorConfig
+.max_regime_to_price_gap_seconds`` / ``.max_price_to_chain_gap_seconds``).
+**The final leg -- ``batch.retrieved_at`` vs. ``as_of_timestamp`` --
+deliberately remains the pre-existing, unchanged ``selector.py`` freshness
+gate** (``RejectionReason.SNAPSHOT_STALE`` / ``SNAPSHOT_FROM_FUTURE``,
+governed by ``SelectorConfig.max_snapshot_age_seconds``): that gate already
+treats a stale or future-dated batch as a reportable, structurally distinct
+*business outcome* of a selector run, not a caller/programming error, and a
+substantial existing test suite (``test_contract_selector.py``) depends on
+being able to construct exactly those stale/future-dated inputs and observe
+the selector report them. Hardening that specific leg into a construction-
+time error here would make those two already-tested, intentional outcomes
+unreachable, so it is left exactly as it was.
 """
 
 from __future__ import annotations
@@ -392,6 +426,22 @@ class SelectorConfig(BaseModel):
 
     max_snapshot_age_seconds: Annotated[int, Field(gt=0)] = 300
 
+    # Bounded lag rules for the first two legs of the capture provenance
+    # chain -- see the module docstring, "Capture provenance chain".
+    # Provisional, like every other threshold here: never tuned against any
+    # evaluation result.
+    max_regime_to_price_gap_seconds: Annotated[int, Field(gt=0)] = 300
+    max_price_to_chain_gap_seconds: Annotated[int, Field(gt=0)] = 60
+
+    # How old a live underlying-price observation (trade or quote) may be,
+    # relative to the coordinator's own price_validation_time (captured
+    # immediately after the price snapshot request returns, not the
+    # capture's initial start time), before a live capture must treat it as
+    # unavailable rather than stale -- used only by
+    # ``orchestration.spy_contract_capture``, not by this package's own
+    # selector logic, but centralized here with every other threshold.
+    max_quote_age_seconds: Annotated[int, Field(gt=0)] = 300
+
     allow_indicative_for_research: bool = False
 
     @model_validator(mode="after")
@@ -455,6 +505,8 @@ class ContractSelectorInput(BaseModel):
 
     symbol: Literal["SPY"] = SUPPORTED_SYMBOL
     scenario_horizon: ScenarioHorizon
+    regime_as_of_timestamp: _AwareUtcTimestamp
+    underlying_price_timestamp: _AwareUtcTimestamp
     as_of_timestamp: _AwareUtcTimestamp
     underlying_price: _FinitePositivePrice
     requested_option_type: OptionType | None = None
@@ -465,6 +517,31 @@ class ContractSelectorInput(BaseModel):
     def _check_batch_underlying_matches_symbol(self) -> ContractSelectorInput:
         if self.batch.underlying != self.symbol:
             raise ValueError("batch.underlying must match symbol")
+        return self
+
+    @model_validator(mode="after")
+    def _check_provenance_ordering_and_lag(self) -> ContractSelectorInput:
+        """Enforce the first two legs of the capture provenance chain -- see
+        the module docstring, "Capture provenance chain", for exactly which
+        leg is (and is not) hardened here and why."""
+        regime_ts = self.regime_as_of_timestamp
+        price_ts = self.underlying_price_timestamp
+        retrieved_at = self.batch.retrieved_at
+        if not (regime_ts <= price_ts <= retrieved_at):
+            raise ValueError(
+                "provenance timestamps must satisfy regime_as_of_timestamp <= "
+                "underlying_price_timestamp <= batch.retrieved_at"
+            )
+        if (price_ts - regime_ts).total_seconds() > self.config.max_regime_to_price_gap_seconds:
+            raise ValueError(
+                "underlying_price_timestamp is too far after regime_as_of_timestamp "
+                "(exceeds config.max_regime_to_price_gap_seconds)"
+            )
+        if (retrieved_at - price_ts).total_seconds() > self.config.max_price_to_chain_gap_seconds:
+            raise ValueError(
+                "batch.retrieved_at is too far after underlying_price_timestamp "
+                "(exceeds config.max_price_to_chain_gap_seconds)"
+            )
         return self
 
 
@@ -489,6 +566,9 @@ class SelectorConfigSnapshot(BaseModel):
     max_pct_spread: Decimal
     min_quote_size: int
     max_snapshot_age_seconds: int
+    max_regime_to_price_gap_seconds: int
+    max_price_to_chain_gap_seconds: int
+    max_quote_age_seconds: int
     allow_indicative_for_research: bool
 
 
@@ -521,6 +601,8 @@ class ContractSelectorResult(BaseModel):
 
     scenario_horizon: ScenarioHorizon
     requested_option_type: OptionType | None
+    regime_as_of_timestamp: _AwareUtcTimestamp
+    underlying_price_timestamp: _AwareUtcTimestamp
     as_of_timestamp: _AwareUtcTimestamp
     underlying_price: Decimal
 

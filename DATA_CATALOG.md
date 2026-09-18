@@ -1130,6 +1130,49 @@ this step, and this feed-safety fix does not authorize starting it. See
 Completed Work Log items 45–46 in `PROJECT_STATE.md` and
 `docs/OPTIONS_DECISION_WORKFLOW.md` for full detail.
 
+### SPY synchronized selector-capture coordinator (not a stored dataset)
+
+Added 2026-09-17 (Completed Work Log item 48):
+`market_intelligence/orchestration/spy_contract_capture.py`
+(`capture_contract_selector_input`) plus the dry-run-first
+`scripts/capture_spy_contract_selector_input.py`. Listed here only because
+it produces the selector's own input contract — like the selector above,
+it is deliberately **not a dataset record** in the sense of a DuckDB table:
+the coordinator itself opens no database connection and writes no row by
+default.
+
+It composes three already-cataloged, read-only Alpaca boundaries — SPY
+5-minute bars (`AlpacaBarsClient`), an underlying-price snapshot
+(`AlpacaMarketDataClient`), and one bounded `indicative`-feed option-chain
+retrieval (`AlpacaOptionsChainClient`, requested only once the step-c regime
+engine's regime and scenario horizon both resolve) — into exactly one
+`ContractSelectorInput`, gated to `10:00`–`16:00` America/New_York on a
+completed six-bar minimum. It lives in `orchestration/`, never
+`market_features/`, which remains untouched and fully pure/offline. Every
+client is dependency-injected, and every test exercising this module
+(`test_spy_contract_capture.py`) uses fakes/mocks only — **no live request
+has ever been made by importing or testing this module, and no synchronized
+live capture has occurred.**
+
+**Synchronized capture output is not yet a stored dataset.** The CLI's
+`--write` flag (only meaningful with `--execute`, and only when the capture
+status is `resolved`) is the only way a real, live-captured
+`ContractSelectorInput` can ever be persisted, and it writes to gitignored
+`data/evaluations/local/` only — the same directory step d's evaluation
+outputs and step e's selector inputs/outputs already use, via the new
+`contract_selection.serialization.write_input` (same no-overwrite/
+no-symlink/atomic-publish guarantees as `write_record`). No real capture has
+been written there as part of this change; if and when one is, it remains a
+local, gitignored artifact, not a committed or cataloged dataset, and is not
+by itself a selector result — a separate, explicit
+`scripts/select_spy_option_contracts.py` run is still required to apply the
+eligibility filters. **Implemented and tested offline only, against
+mocked/fake providers — no contract recommendation, usefulness,
+pricing-accuracy, execution, or profitability claim has been made, and the
+Options Strategy Agent (Phase 1 step f) is not started and not authorized by
+this addition.** See Completed Work Log item 48 in `PROJECT_STATE.md` and
+`docs/OPTIONS_DECISION_WORKFLOW.md` for full detail.
+
 ## Required Fields for Every Future Dataset
 
 Every dataset added to this catalog in the future must record:

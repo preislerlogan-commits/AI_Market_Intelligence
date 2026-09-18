@@ -8,7 +8,7 @@ on SelectorConfig and ContractSelectorResult.
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -66,11 +66,14 @@ def _batch(**overrides) -> OptionChainBatch:
 
 
 def _selector_input(**overrides) -> ContractSelectorInput:
+    batch = overrides.pop("batch", None) or _batch()
     fields = dict(
         scenario_horizon=ScenarioHorizon.INTRADAY_30M,
+        regime_as_of_timestamp=batch.retrieved_at,
+        underlying_price_timestamp=batch.retrieved_at,
         as_of_timestamp=AS_OF,
         underlying_price=Decimal("680"),
-        batch=_batch(),
+        batch=batch,
     )
     fields.update(overrides)
     return ContractSelectorInput(**fields)
@@ -287,6 +290,136 @@ def test_selector_input_rejects_extra_fields():
         ContractSelectorInput(**_selector_input().model_dump(), extra_field=1)
 
 
+def test_selector_input_requires_utc_aware_regime_as_of_timestamp():
+    with pytest.raises(ValidationError):
+        _selector_input(regime_as_of_timestamp=datetime(2026, 9, 16, 14, 58))  # naive
+
+
+def test_selector_input_requires_utc_aware_underlying_price_timestamp():
+    with pytest.raises(ValidationError):
+        _selector_input(underlying_price_timestamp=datetime(2026, 9, 16, 14, 58))  # naive
+
+
+# ---------------------------------------------------------------------------
+# Capture provenance chain: regime_as_of_timestamp <= underlying_price_timestamp
+# <= batch.retrieved_at (the final leg, batch.retrieved_at <= as_of_timestamp,
+# remains selector.py's own SNAPSHOT_STALE/SNAPSHOT_FROM_FUTURE gate -- see
+# test_contract_selector.py).
+# ---------------------------------------------------------------------------
+
+
+def test_provenance_chain_accepts_timestamps_at_the_exact_same_instant():
+    """Zero gap everywhere is not a violation of either ordering or lag."""
+    selector_input = _selector_input(
+        regime_as_of_timestamp=RETRIEVED_AT,
+        underlying_price_timestamp=RETRIEVED_AT,
+        batch=_batch(retrieved_at=RETRIEVED_AT),
+    )
+    assert selector_input.regime_as_of_timestamp == RETRIEVED_AT
+    assert selector_input.underlying_price_timestamp == RETRIEVED_AT
+
+
+def test_provenance_chain_rejects_price_timestamp_before_regime_as_of():
+    with pytest.raises(ValidationError):
+        _selector_input(
+            regime_as_of_timestamp=RETRIEVED_AT,
+            underlying_price_timestamp=RETRIEVED_AT - timedelta(seconds=1),
+        )
+
+
+def test_provenance_chain_rejects_retrieved_at_before_price_timestamp():
+    with pytest.raises(ValidationError):
+        _selector_input(
+            regime_as_of_timestamp=RETRIEVED_AT - timedelta(seconds=10),
+            underlying_price_timestamp=RETRIEVED_AT,
+            batch=_batch(retrieved_at=RETRIEVED_AT - timedelta(seconds=1)),
+        )
+
+
+def test_provenance_chain_accepts_gap_exactly_at_the_regime_to_price_bound():
+    config = SelectorConfig()
+    regime_ts = RETRIEVED_AT - timedelta(seconds=config.max_regime_to_price_gap_seconds)
+    selector_input = _selector_input(
+        regime_as_of_timestamp=regime_ts,
+        underlying_price_timestamp=RETRIEVED_AT,
+        batch=_batch(retrieved_at=RETRIEVED_AT),
+        config=config,
+    )
+    assert selector_input.regime_as_of_timestamp == regime_ts
+
+
+def test_provenance_chain_rejects_gap_one_second_past_the_regime_to_price_bound():
+    config = SelectorConfig()
+    regime_ts = RETRIEVED_AT - timedelta(seconds=config.max_regime_to_price_gap_seconds + 1)
+    with pytest.raises(ValidationError):
+        _selector_input(
+            regime_as_of_timestamp=regime_ts,
+            underlying_price_timestamp=RETRIEVED_AT,
+            batch=_batch(retrieved_at=RETRIEVED_AT),
+            config=config,
+        )
+
+
+def test_provenance_chain_accepts_gap_exactly_at_the_price_to_chain_bound():
+    config = SelectorConfig()
+    price_ts = RETRIEVED_AT - timedelta(seconds=config.max_price_to_chain_gap_seconds)
+    selector_input = _selector_input(
+        regime_as_of_timestamp=price_ts,
+        underlying_price_timestamp=price_ts,
+        batch=_batch(retrieved_at=RETRIEVED_AT),
+        config=config,
+    )
+    assert selector_input.underlying_price_timestamp == price_ts
+
+
+def test_provenance_chain_rejects_gap_one_second_past_the_price_to_chain_bound():
+    config = SelectorConfig()
+    price_ts = RETRIEVED_AT - timedelta(seconds=config.max_price_to_chain_gap_seconds + 1)
+    with pytest.raises(ValidationError):
+        _selector_input(
+            regime_as_of_timestamp=price_ts,
+            underlying_price_timestamp=price_ts,
+            batch=_batch(retrieved_at=RETRIEVED_AT),
+            config=config,
+        )
+
+
+def test_provenance_chain_ignores_the_final_leg_left_to_selector_py():
+    """batch.retrieved_at vs. as_of_timestamp is deliberately NOT enforced
+    here -- a batch retrieved long after as_of_timestamp (or long before it)
+    must still construct successfully; selector.py's own freshness gate is
+    what reports it."""
+    selector_input = _selector_input(
+        regime_as_of_timestamp=RETRIEVED_AT,
+        underlying_price_timestamp=RETRIEVED_AT,
+        batch=_batch(retrieved_at=RETRIEVED_AT),
+        as_of_timestamp=RETRIEVED_AT + timedelta(days=1),
+    )
+    assert selector_input.as_of_timestamp == RETRIEVED_AT + timedelta(days=1)
+
+
+# ---------------------------------------------------------------------------
+# SelectorConfig: new provenance-lag thresholds
+# ---------------------------------------------------------------------------
+
+
+def test_selector_config_provenance_lag_defaults():
+    config = SelectorConfig()
+    assert config.max_regime_to_price_gap_seconds == 300
+    assert config.max_price_to_chain_gap_seconds == 60
+    assert config.max_quote_age_seconds == 300
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["max_regime_to_price_gap_seconds", "max_price_to_chain_gap_seconds", "max_quote_age_seconds"],
+)
+@pytest.mark.parametrize("value", [0, -1])
+def test_selector_config_rejects_non_positive_lag_thresholds(field, value):
+    with pytest.raises(ValidationError):
+        SelectorConfig(**{field: value})
+
+
 def test_selector_input_has_no_news_model_credential_db_or_brokerage_field():
     forbidden_substrings = (
         "news", "article", "credential", "api_key", "secret", "token",
@@ -315,6 +448,9 @@ def _config_snapshot(**overrides) -> SelectorConfigSnapshot:
         max_pct_spread=config.max_pct_spread,
         min_quote_size=config.min_quote_size,
         max_snapshot_age_seconds=config.max_snapshot_age_seconds,
+        max_regime_to_price_gap_seconds=config.max_regime_to_price_gap_seconds,
+        max_price_to_chain_gap_seconds=config.max_price_to_chain_gap_seconds,
+        max_quote_age_seconds=config.max_quote_age_seconds,
         allow_indicative_for_research=config.allow_indicative_for_research,
     )
     fields.update(overrides)
@@ -331,6 +467,8 @@ def _result(**overrides) -> ContractSelectorResult:
         generated_at=AS_OF,
         scenario_horizon=ScenarioHorizon.INTRADAY_30M,
         requested_option_type=None,
+        regime_as_of_timestamp=RETRIEVED_AT,
+        underlying_price_timestamp=RETRIEVED_AT,
         as_of_timestamp=AS_OF,
         underlying_price=Decimal("680"),
         feed=FeedProvenance.OPRA,
@@ -371,6 +509,15 @@ def test_result_accepts_a_consistent_eligible_result():
     result = _result()
     assert result.status == SelectorStatus.ELIGIBLE
     assert result.schema_version == "spy-contract-selector-1"
+
+
+def test_result_retains_the_capture_provenance_timestamps():
+    result = _result(
+        regime_as_of_timestamp=RETRIEVED_AT - timedelta(minutes=1),
+        underlying_price_timestamp=RETRIEVED_AT,
+    )
+    assert result.regime_as_of_timestamp == RETRIEVED_AT - timedelta(minutes=1)
+    assert result.underlying_price_timestamp == RETRIEVED_AT
 
 
 def test_result_has_no_recommendation_ranking_score_or_trade_action_field():

@@ -66,11 +66,14 @@ def _batch(contracts, **overrides) -> OptionChainBatch:
 
 
 def _selector_input(contracts, **overrides) -> ContractSelectorInput:
+    batch = overrides.pop("batch", None) or _batch(contracts)
     fields = dict(
         scenario_horizon=ScenarioHorizon.INTRADAY_30M,
+        regime_as_of_timestamp=batch.retrieved_at,
+        underlying_price_timestamp=batch.retrieved_at,
         as_of_timestamp=AS_OF,
         underlying_price=Decimal("680"),
-        batch=_batch(contracts),
+        batch=batch,
     )
     fields.update(overrides)
     return ContractSelectorInput(**fields)
@@ -401,6 +404,8 @@ def test_default_indicative_batch_cannot_become_eligible():
     result = select_eligible_contracts(
         ContractSelectorInput(
             scenario_horizon=ScenarioHorizon.INTRADAY_30M,
+            regime_as_of_timestamp=RETRIEVED_AT,
+            underlying_price_timestamp=RETRIEVED_AT,
             as_of_timestamp=AS_OF,
             underlying_price=Decimal("680"),
             batch=_batch([_quote()], feed="indicative"),
@@ -421,6 +426,8 @@ def test_explicit_indicative_research_mode_returns_research_only_never_eligible(
     result = select_eligible_contracts(
         ContractSelectorInput(
             scenario_horizon=ScenarioHorizon.INTRADAY_30M,
+            regime_as_of_timestamp=RETRIEVED_AT,
+            underlying_price_timestamp=RETRIEVED_AT,
             as_of_timestamp=AS_OF,
             underlying_price=Decimal("680"),
             batch=_batch([_quote()], feed="indicative"),
@@ -451,6 +458,8 @@ def test_research_mode_still_applies_every_per_contract_filter():
     result = select_eligible_contracts(
         ContractSelectorInput(
             scenario_horizon=ScenarioHorizon.INTRADAY_30M,
+            regime_as_of_timestamp=RETRIEVED_AT,
+            underlying_price_timestamp=RETRIEVED_AT,
             as_of_timestamp=AS_OF,
             underlying_price=Decimal("680"),
             batch=_batch([good, bad_delta], feed="indicative"),
@@ -472,6 +481,8 @@ def test_a_research_only_result_cannot_be_passed_as_an_operational_eligible_set(
     result = select_eligible_contracts(
         ContractSelectorInput(
             scenario_horizon=ScenarioHorizon.INTRADAY_30M,
+            regime_as_of_timestamp=RETRIEVED_AT,
+            underlying_price_timestamp=RETRIEVED_AT,
             as_of_timestamp=AS_OF,
             underlying_price=Decimal("680"),
             batch=_batch([_quote()], feed="indicative"),
@@ -502,6 +513,8 @@ def test_feed_gate_precedes_per_contract_filtering():
     result = select_eligible_contracts(
         ContractSelectorInput(
             scenario_horizon=ScenarioHorizon.INTRADAY_30M,
+            regime_as_of_timestamp=RETRIEVED_AT,
+            underlying_price_timestamp=RETRIEVED_AT,
             as_of_timestamp=AS_OF,
             underlying_price=Decimal("680"),
             batch=_batch([good, bad_delta], feed="indicative"),
@@ -524,6 +537,8 @@ def test_snapshot_retrieved_at_exactly_as_of_time_is_accepted():
     result = select_eligible_contracts(
         ContractSelectorInput(
             scenario_horizon=ScenarioHorizon.INTRADAY_30M,
+            regime_as_of_timestamp=AS_OF,
+            underlying_price_timestamp=AS_OF,
             as_of_timestamp=AS_OF,
             underlying_price=Decimal("680"),
             batch=_batch([_quote()], retrieved_at=AS_OF),
@@ -539,6 +554,8 @@ def test_snapshot_within_freshness_bound_is_eligible():
     result = select_eligible_contracts(
         ContractSelectorInput(
             scenario_horizon=ScenarioHorizon.INTRADAY_30M,
+            regime_as_of_timestamp=boundary_retrieved_at,
+            underlying_price_timestamp=boundary_retrieved_at,
             as_of_timestamp=AS_OF,
             underlying_price=Decimal("680"),
             batch=_batch([_quote()], retrieved_at=boundary_retrieved_at),
@@ -554,6 +571,8 @@ def test_snapshot_older_than_freshness_bound_is_rejected():
     result = select_eligible_contracts(
         ContractSelectorInput(
             scenario_horizon=ScenarioHorizon.INTRADAY_30M,
+            regime_as_of_timestamp=stale_retrieved_at,
+            underlying_price_timestamp=stale_retrieved_at,
             as_of_timestamp=AS_OF,
             underlying_price=Decimal("680"),
             batch=_batch([_quote()], retrieved_at=stale_retrieved_at),
@@ -572,6 +591,8 @@ def test_snapshot_retrieved_one_second_in_the_future_is_rejected_from_future():
     result = select_eligible_contracts(
         ContractSelectorInput(
             scenario_horizon=ScenarioHorizon.INTRADAY_30M,
+            regime_as_of_timestamp=future_retrieved_at,
+            underlying_price_timestamp=future_retrieved_at,
             as_of_timestamp=AS_OF,
             underlying_price=Decimal("680"),
             batch=_batch([_quote()], retrieved_at=future_retrieved_at),
@@ -590,6 +611,8 @@ def test_snapshot_retrieved_one_microsecond_in_the_future_is_rejected_from_futur
     result = select_eligible_contracts(
         ContractSelectorInput(
             scenario_horizon=ScenarioHorizon.INTRADAY_30M,
+            regime_as_of_timestamp=future_retrieved_at,
+            underlying_price_timestamp=future_retrieved_at,
             as_of_timestamp=AS_OF,
             underlying_price=Decimal("680"),
             batch=_batch([_quote()], retrieved_at=future_retrieved_at),
@@ -609,6 +632,8 @@ def test_snapshot_retrieved_far_in_the_future_is_still_from_future_not_stale():
     result = select_eligible_contracts(
         ContractSelectorInput(
             scenario_horizon=ScenarioHorizon.INTRADAY_30M,
+            regime_as_of_timestamp=future_retrieved_at,
+            underlying_price_timestamp=future_retrieved_at,
             as_of_timestamp=AS_OF,
             underlying_price=Decimal("680"),
             batch=_batch([_quote()], retrieved_at=future_retrieved_at),
@@ -636,6 +661,8 @@ def test_stale_batch_gating_precedes_per_contract_rejection_reasons():
     result = select_eligible_contracts(
         ContractSelectorInput(
             scenario_horizon=ScenarioHorizon.INTRADAY_30M,
+            regime_as_of_timestamp=stale_retrieved_at,
+            underlying_price_timestamp=stale_retrieved_at,
             as_of_timestamp=AS_OF,
             underlying_price=Decimal("680"),
             batch=_batch([good, bad_delta, crossed], retrieved_at=stale_retrieved_at),
@@ -655,6 +682,8 @@ def test_stale_indicative_research_batch_yields_research_only_with_zero_candidat
     result = select_eligible_contracts(
         ContractSelectorInput(
             scenario_horizon=ScenarioHorizon.INTRADAY_30M,
+            regime_as_of_timestamp=stale_retrieved_at,
+            underlying_price_timestamp=stale_retrieved_at,
             as_of_timestamp=AS_OF,
             underlying_price=Decimal("680"),
             batch=_batch([_quote()], feed="indicative", retrieved_at=stale_retrieved_at),
@@ -685,6 +714,8 @@ def test_future_batch_gating_precedes_per_contract_rejection_reasons():
     result = select_eligible_contracts(
         ContractSelectorInput(
             scenario_horizon=ScenarioHorizon.INTRADAY_30M,
+            regime_as_of_timestamp=future_retrieved_at,
+            underlying_price_timestamp=future_retrieved_at,
             as_of_timestamp=AS_OF,
             underlying_price=Decimal("680"),
             batch=_batch([good, bad_delta, crossed], retrieved_at=future_retrieved_at),
@@ -704,6 +735,8 @@ def test_opra_future_batch_is_never_eligible():
     result = select_eligible_contracts(
         ContractSelectorInput(
             scenario_horizon=ScenarioHorizon.INTRADAY_30M,
+            regime_as_of_timestamp=future_retrieved_at,
+            underlying_price_timestamp=future_retrieved_at,
             as_of_timestamp=AS_OF,
             underlying_price=Decimal("680"),
             batch=_batch([_quote()], feed="opra", retrieved_at=future_retrieved_at),
@@ -722,6 +755,8 @@ def test_indicative_future_batch_never_exposes_research_contracts():
     result = select_eligible_contracts(
         ContractSelectorInput(
             scenario_horizon=ScenarioHorizon.INTRADAY_30M,
+            regime_as_of_timestamp=future_retrieved_at,
+            underlying_price_timestamp=future_retrieved_at,
             as_of_timestamp=AS_OF,
             underlying_price=Decimal("680"),
             batch=_batch([_quote()], feed="indicative", retrieved_at=future_retrieved_at),
@@ -747,6 +782,8 @@ def test_future_and_stale_batch_rejection_counts_remain_complete_and_determinist
     ]
     selector_input = ContractSelectorInput(
         scenario_horizon=ScenarioHorizon.INTRADAY_30M,
+        regime_as_of_timestamp=future_retrieved_at,
+        underlying_price_timestamp=future_retrieved_at,
         as_of_timestamp=AS_OF,
         underlying_price=Decimal("680"),
         batch=_batch(contracts, retrieved_at=future_retrieved_at),

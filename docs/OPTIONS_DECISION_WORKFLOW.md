@@ -15,8 +15,15 @@ batch can never reach `ELIGIBLE`, an explicitly-opted-in indicative batch
 instead returns a new, structurally separate `RESEARCH_ONLY` status, and
 the CLI requires its own explicit `--allow-indicative-research` flag
 (always overriding the input file) before processing indicative data at
-all.** Step f (the Options Strategy Agent) has NOT begun and this fix does
-not authorize starting it. As of
+all.** A freshness-boundary fix followed the same day, pre-merge (2026-09-16,
+Completed Work Log item 47), distinguishing a future-dated snapshot
+(`SNAPSHOT_FROM_FUTURE`) from a merely stale one (`SNAPSHOT_STALE`). **A
+synchronized selector-capture coordinator was then added (2026-09-17,
+Completed Work Log item 48), implemented and verified entirely offline
+against mocked/fake providers — no synchronized live capture and no real
+selector run has occurred.** Step f (the Options Strategy Agent) has NOT
+begun and none of this — the selector, its fixes, or the capture
+coordinator — authorizes starting it. As of
 2026-08-28,
 step b's **read-only SPY option-chain snapshot connector and local DuckDB
 storage** existed in code and tests only — mocked HTTP transports and
@@ -893,6 +900,132 @@ before the previous one is complete and recorded.
   batch, and no contract recommendation, usefulness, pricing-accuracy,
   execution, or profitability claim exists anywhere in this step.** See
   `PROJECT_STATE.md` (Completed Work Log items 45–46).
+
+  **Synchronized selector-capture coordinator (feeds step e; 2026-09-17,
+  Completed Work Log item 48), implemented and verified entirely offline
+  against mocked/fake providers.** Building one real `ContractSelectorInput`
+  requires composing three independent, already-reviewed, read-only Alpaca
+  boundaries — bars, an underlying-price snapshot, and an option-chain
+  snapshot — into one point-in-time-consistent record. That composition is a
+  coordinator, not a pure evidence builder, so it lives in
+  `market_intelligence/orchestration/spy_contract_capture.py`
+  (`capture_contract_selector_input`), **never** in `market_features/`,
+  which stays exactly as pure/offline as before — untouched by this
+  addition and still fully covered by its own offline-import-boundary
+  tests. The coordinator itself is dependency-injected (every client is
+  passed in; it constructs none of its own) and is exercised only against
+  fakes/mocks in `test_spy_contract_capture.py` — no test importing it ever
+  makes a network call. `scripts/capture_spy_contract_selector_input.py` is
+  the dry-run-first CLI: the default mode makes zero requests and prints
+  only the fixed capture plan; `--execute` runs the sequence live;
+  `--write` (only with `--execute`, only when the result is `resolved`)
+  persists the captured input under gitignored `data/evaluations/local/`.
+
+  *Capture sequence.* Exactly three live calls, in order, never more: (1)
+  `AlpacaBarsClient.get_bars` — SPY 5-minute bars from the session open
+  through "now" (`capture_start`, resolved once at the very start of the
+  sequence); (2) `AlpacaMarketDataClient.get_snapshot` — one
+  underlying-price snapshot, whose *market-data* timestamp (the provider's
+  own `latestTrade.t` / `latestQuote.t`, never request/wall-clock time) is
+  carried as its provenance time; (3) `AlpacaOptionsChainClient
+  .get_chain_snapshot` — made **only** when the regime and scenario horizon
+  from step c's engine both resolve, never for an `indeterminate` result.
+  **No single wall-clock timestamp governs this entire sequence:** the
+  underlying price's own recency is validated against a second, later
+  instant, `price_validation_time`, resolved immediately after the snapshot
+  request returns — never against `capture_start` — so a live price request
+  that takes a moment to complete is judged against when it was actually
+  validated, not when the whole capture began.
+
+  *10:00 ET earliest start.* Capture only runs from `10:00` through `16:00`
+  America/New_York, Monday–Friday. `10:00` is not an arbitrary round number:
+  it is the instant the sixth 09:30-grid 5-minute bar (09:55–10:00) actually
+  completes — the minimum bar history the step-c regime engine's opening
+  range and VWAP-slope features require. Outside that window, no client is
+  called at all. A second, independent gate then drops any bar the bars
+  client returns that would not yet be complete as of "now"
+  (`bar.timestamp + 5min > now`) before it ever reaches the regime engine —
+  defensive, and independent of trusting the provider's own request-boundary
+  semantics; if fewer than 6 genuinely-completed bars remain after that,
+  capture stops before any price or chain request.
+
+  *Indeterminate early stop.* The underlying price is fetched **before**
+  this gate (so a sanitized `INDETERMINATE` result still carries it), but if
+  the regime or the scenario horizon resolves to `INDETERMINATE`, capture
+  stops there — the option-chain request, the only one of the three calls
+  with a real cost/rate-limit footprint, is never made.
+
+  *Timestamp provenance fields and bounded lag rules.* `ContractSelectorInput`
+  (and `ContractSelectorResult`) now carry two additional provenance
+  timestamps beyond `as_of_timestamp`: `regime_as_of_timestamp` (the
+  upstream regime engine's own last-bar completion time) and
+  `underlying_price_timestamp` (the underlying price's own market-data
+  timestamp). Together with `batch.retrieved_at` and `as_of_timestamp`,
+  these four timestamps must satisfy, in order:
+
+      regime_as_of_timestamp <= underlying_price_timestamp
+          <= batch.retrieved_at <= as_of_timestamp
+
+  Only the first two legs are hardened as a construction-time validator
+  (`contract_selection.contracts._check_provenance_ordering_and_lag`), each
+  bounded by its own provisional `SelectorConfig` threshold
+  (`max_regime_to_price_gap_seconds`, default 300 seconds;
+  `max_price_to_chain_gap_seconds`, default 60 seconds) — a
+  `ContractSelectorInput` simply cannot be constructed if either ordering or
+  either bound is violated. The third leg (`batch.retrieved_at` vs.
+  `as_of_timestamp`) is deliberately left as the pre-existing, unchanged
+  `selector.py` freshness gate (`SNAPSHOT_STALE` / `SNAPSHOT_FROM_FUTURE`,
+  Completed Work Log item 47) — that gate already treats a stale or
+  future-dated batch as a reportable selector outcome, not a caller error,
+  and hardening it at construction time would make two already-tested
+  selector outcomes unreachable. A separate, coordinator-only threshold,
+  `max_quote_age_seconds` (default 300 seconds), governs how old the live
+  underlying-price observation itself may be before the coordinator must
+  treat it as unavailable — centralized in `SelectorConfig` with every
+  other threshold, but never consumed by `selector.py`.
+
+  *Complete moneyness-window request.* The option-chain request is sized
+  from the selector configuration's own full moneyness band — strike
+  bounds `floor(price * min_moneyness)` through `ceil(price * max_moneyness)`
+  — never an arbitrary fixed-dollar window, and from the resolved scenario
+  horizon's own existing `SelectorConfig.horizon_expiration_windows` DTE
+  window — never a fallback window, and never computed for an
+  `indeterminate` horizon. The request always asks for the option-chain
+  connector's own already-reviewed `MAX_PAGES` / `MAX_TOTAL_CONTRACTS`
+  ceilings — never a smaller, arbitrary one, and never a larger one.
+
+  *Typed truncation failure.* `AlpacaOptionsChainClient.get_chain_snapshot`
+  now raises a public, typed `AlpacaOptionsChainTruncatedError` (a subclass
+  of the existing `AlpacaOptionsChainError`, carrying a fixed
+  `OptionChainTruncationReason` — `MAX_PAGES_EXCEEDED` or
+  `MAX_TOTAL_CONTRACTS_EXCEEDED`) when a bounded retrieval would need more
+  pages or contracts than requested, in place of the previously generic
+  `AlpacaOptionsChainError` at those two ceilings. The coordinator catches
+  this specific type — never matching on exception text — and reports
+  `CaptureStatus.CHAIN_TRUNCATED`, structurally distinct from any other
+  chain failure (`CaptureStatus.CHAIN_UNAVAILABLE`), so a silently partial
+  eligible set can never reach the selector and an unrelated chain failure
+  can never be misreported as truncation.
+
+  *Indicative feed and the `RESEARCH_ONLY` boundary.* The coordinator always
+  requests the `indicative` feed (Alpaca does not offer live OPRA data on
+  the plan this project uses) — it never requests or fabricates an `opra`
+  feed. Because of the feed-safety boundary hardened in item 46 above, a
+  `ContractSelectorInput` the coordinator produces can therefore never reach
+  `SelectorStatus.ELIGIBLE` when later run through
+  `scripts/select_spy_option_contracts.py`: without the CLI's own explicit
+  `--allow-indicative-research` flag it is rejected in full at the feed gate
+  (`no_eligible_contracts`); with the flag it can only ever reach
+  `RESEARCH_ONLY` (or `NO_ELIGIBLE_CONTRACTS` / `INDETERMINATE`). The
+  coordinator itself never calls the selector — it only ever produces the
+  input for that later, separate, explicit invocation.
+
+  **Not done.** No synchronized live capture has been run, and no real
+  selector run has been performed against a live-captured input or the one
+  stored SPY option-chain batch. No filter or lag threshold was tuned. No
+  contract recommendation, usefulness, pricing-accuracy, execution, or
+  profitability claim is made anywhere in this addition. See
+  `PROJECT_STATE.md` (Completed Work Log item 48).
 - **f.** Add the Options Strategy Agent (bounded output above), consuming
   only validated structured inputs and the eligible set. **Not started —
   requires its own separate authorization; does not begin automatically
@@ -961,9 +1094,17 @@ before the previous one is complete and recorded.
   against the real local database or the one stored SPY option-chain
   batch, and every filter threshold is a provisional hypothesis, not tuned
   against the step-d VWAP-reversion evaluation or the single stored option
-  batch.** **Step f, the Options Strategy Agent, has NOT begun and requires
+  batch.** **A synchronized selector-capture coordinator was added
+  2026-09-17 (Completed Work Log item 48)** —
+  `market_intelligence/orchestration/spy_contract_capture.py` and
+  `scripts/capture_spy_contract_selector_input.py` — composing the bars,
+  underlying-price, and option-chain boundaries into one point-in-time-safe
+  `ContractSelectorInput`, implemented and verified entirely offline against
+  mocked/fake providers; `market_features/` remains untouched and fully
+  pure/offline. **No synchronized live capture and no real selector run has
+  occurred.** **Step f, the Options Strategy Agent, has NOT begun and requires
   its own separate authorization** — it does not begin automatically from
-  step e's completion, and this feed-safety fix does not authorize
-  starting it. Every other item in this
+  step e's completion, and neither the feed-safety fix nor the capture
+  coordinator authorizes starting it. Every other item in this
   document (steps f–h) is *planned* —
   not implemented — and **nothing is validated.**

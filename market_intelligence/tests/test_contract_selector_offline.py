@@ -105,6 +105,8 @@ def test_importing_the_selector_modules_in_a_fresh_interpreter_pulls_in_nothing_
         ")\n"
         "selector_input = ContractSelectorInput(\n"
         "    scenario_horizon=ScenarioHorizon.INTRADAY_30M,\n"
+        "    regime_as_of_timestamp=datetime(2026, 9, 16, 14, 58, tzinfo=UTC),\n"
+        "    underlying_price_timestamp=datetime(2026, 9, 16, 14, 58, tzinfo=UTC),\n"
         "    as_of_timestamp=datetime(2026, 9, 16, 15, 0, tzinfo=UTC),\n"
         "    underlying_price=Decimal('680'), batch=batch,\n"
         ")\n"
