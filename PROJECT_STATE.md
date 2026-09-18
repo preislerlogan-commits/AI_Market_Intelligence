@@ -5337,6 +5337,25 @@ entry describes something that has already been built, ingested, or attempted;
       entry's changes are on new branch `feature/synchronized-selector-capture`,
       not yet merged to `main`.
 
+49. **DuckDB dependency pinned to `1.5.4` (2026-09-18, environment/tooling
+    fix only — no application or database defect).** Local diagnosis found
+    that `duckdb==1.5.5`'s native `_duckdb` extension was blocked from
+    loading by Windows Smart App Control (Code Integrity event IDs
+    3033/3077, unsigned-extension reputation block) on this development
+    machine — not by a corrupt install, a code bug, or a database problem.
+    `duckdb==1.5.4` was verified in an isolated temporary virtual
+    environment to import successfully (native extension not blocked), and
+    was then verified read-only against a temporary copy of the real local
+    database (never the original file) at schema version `0009`: all 9
+    migrations and every table's row counts matched the values already
+    recorded above. `pyproject.toml` now pins `duckdb==1.5.4` (previously
+    `duckdb>=1.0`) so a fresh install resolves to the known-working version
+    on this platform. **No Windows security policy, Smart App Control
+    setting, or antivirus configuration was changed; no database migration
+    or write occurred.** This is a dependency-pin fix for a local
+    environment/Application-Control compatibility issue, not a correction
+    to `market_intelligence` code or to the stored data.
+
 ## Next Planned Work
 
 This is the forward plan. It replaces the historical content now under
