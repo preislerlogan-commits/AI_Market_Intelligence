@@ -5838,7 +5838,19 @@ This is the forward plan. It replaces the historical content now under
    the Options Strategy Agent.
 
 6. **Next research step — preregistered evaluation-hardening and
-   sample-expansion plan (not started; planning only).** Before any
+   sample-expansion plan (preregistration drafted 2026-09-23, under
+   review; nothing implemented, ingested, or run).** The plan is
+   [docs/SPY_VWAP_REVERSION_PREREGISTRATION.md](docs/SPY_VWAP_REVERSION_PREREGISTRATION.md):
+   confirmation window 2026-02-23 through 2026-08-14 (≥ 100 complete
+   sessions required, ≥ 80 per side/horizon cell), a reserved, untouched
+   holdout of 2026-09-23 through 2026-12-04 (≥ 40 complete sessions), a
+   primary above-VWAP session-level signed-return test over all eligible
+   points at three horizons, using session-blocked bootstrap intervals,
+   Holm correction, and a fixed 1.0-bps smallest effect of interest (a
+   research-relevance floor, not a cost or profitability threshold), and a
+   fixed decision-label mapping. The discovery sample (item 52) is not
+   confirmation evidence. Its implementation sequence (§10) is the
+   next planned work; each step needs its own review. Before any
    additional VWAP-reversion outcomes are inspected, write and review a
    preregistered plan that fixes, in advance: session-blocked uncertainty
    estimates (resampling whole sessions, never overlapping observations);

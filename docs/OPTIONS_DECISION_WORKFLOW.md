@@ -112,7 +112,10 @@ observation-level points; no significance test or uncertainty interval;
 thresholds not tuned; relative-volume, catalyst, and breadth context not
 evaluated; underlying setup only, no option return or P&L). It does **not**
 authorize step f; the next research step is a preregistered
-evaluation-hardening and sample-expansion plan (see step d below).
+evaluation-hardening and sample-expansion plan (see step d below), now
+drafted as
+[SPY_VWAP_REVERSION_PREREGISTRATION.md](SPY_VWAP_REVERSION_PREREGISTRATION.md)
+and not yet implemented or run.
 **Step e — the deterministic Contract Selector — is now also done
 (2026-09-16), implemented and tested entirely offline with synthetic
 fixtures only.**
@@ -804,7 +807,15 @@ before the previous one is complete and recorded.
   recommendation, strategy-agent output, brokerage action, or accuracy,
   edge, or profitability claim exists.
 
-  **Next research step (planning only, not started).** Before inspecting
+  **Next research step (preregistration drafted 2026-09-23, under review;
+  nothing implemented, ingested, or run).** The plan is
+  [SPY_VWAP_REVERSION_PREREGISTRATION.md](SPY_VWAP_REVERSION_PREREGISTRATION.md).
+  It treats the 26-session run above as the closed discovery sample and
+  fixes a confirmation window (2026-02-23 through 2026-08-14), a reserved
+  untouched holdout (2026-09-23 through 2026-12-04), the primary
+  above-VWAP outcome over all eligible points, session-blocked bootstrap
+  intervals with Holm correction, a 1.0-bps smallest effect of interest,
+  and the decision labels, all before any new data is ingested. Before inspecting
   any additional outcomes, write and review a preregistered
   evaluation-hardening and sample-expansion plan: session-blocked
   uncertainty estimates; robust distribution/quantile statistics; fixed,
