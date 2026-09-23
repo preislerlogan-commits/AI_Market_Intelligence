@@ -1043,6 +1043,30 @@ predictive accuracy or mean-reversion edge has been established.** See
 Completed Work Log item 41 in `PROJECT_STATE.md` and
 `docs/OPTIONS_DECISION_WORKFLOW.md` for full detail.
 
+### SPY VWAP-reversion evaluation input builder (not a stored dataset)
+
+Added 2026-09-23 (Completed Work Log item 50 in `PROJECT_STATE.md`):
+`market_intelligence/orchestration/spy_vwap_reversion_input_builder.py`
+(in `orchestration/`, keeping the pure `market_features/` regime modules
+storage-free) plus the dry-run-first `scripts/build_spy_vwap_reversion_input.py`. Listed
+here only because it derives the step-d evaluator's input contract
+(`SpyVwapReversionEvaluationInput`) from the stored **SPY 5-minute IEX
+market bars** above — it is **not a new dataset** and adds no table,
+column, or migration. It reads `market_bars` over a read-only DuckDB
+connection, restricted to the exact identity `alpaca` / `SPY` / `5Min` /
+`iex` / `raw` / `USD`, for an explicit date range; keeps only complete,
+gapless, grid-aligned, OHLC-consistent 78-bar regular sessions (excluded
+weekdays are reported as fixed-reason counts only); supplies `prior_day`
+only from a qualifying stored immediately-preceding weekday session, never
+invented; and sets `same_time_historical_volume_baseline=None`,
+`catalyst_state=unknown`, `breadth_state=unavailable`. Its only persisted
+output is an optional local JSON file under gitignored
+`data/evaluations/local/` (`--write`), never committed. **It is an
+input-building tool only — its output is not an evaluation result and not
+evidence of any edge. It has not yet been run against the real local
+database.** The same limitations as the source dataset apply (IEX-only,
+no exchange-holiday/early-close calendar, limited coverage).
+
 ### SPY deterministic contract-eligibility selector (not a stored dataset)
 
 Phase 1 step e
