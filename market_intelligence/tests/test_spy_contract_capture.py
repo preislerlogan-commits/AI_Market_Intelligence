@@ -34,6 +34,7 @@ from market_intelligence.data_connectors.alpaca_bars import (
 )
 from market_intelligence.data_connectors.alpaca_market_data import (
     AlpacaCredentialsMissingError,
+    AlpacaMarketDataError,
 )
 from market_intelligence.data_connectors.alpaca_options_chain import (
     AlpacaOptionsChainError,
@@ -356,6 +357,11 @@ def test_indeterminate_regime_stops_before_the_option_chain_request():
 
 
 def test_price_unavailable_stops_before_the_option_chain_request():
+    """Snapshot request succeeds but carries no usable trade/quote --
+    ``extract_underlying_price`` path -- must be distinguished from a
+    request-level failure by a fixed, sanitized ``price_payload_unusable``
+    note, with no exception text, price, timestamp, or payload content
+    leaked into it."""
     bars = _FakeBarsClient(bars=_flat_bars())
     price = _FakeMarketDataClient(payload={})
     chain = _FakeOptionsChainClient()
@@ -364,16 +370,38 @@ def test_price_unavailable_stops_before_the_option_chain_request():
         bars_client=bars, market_data_client=price, options_chain_client=chain,
     )
     assert result.status == CaptureStatus.PRICE_UNAVAILABLE
+    assert result.notes == ("underlying_price_unavailable", "price_payload_unusable")
     assert chain.calls == []
 
 
 def test_price_credentials_missing_yields_price_unavailable():
+    """``get_snapshot`` itself raising -- a request-level failure -- must be
+    distinguished from an unusable payload by a fixed, sanitized
+    ``price_request_failed`` note, never the raised exception's own text."""
     price = _FakeMarketDataClient(error=AlpacaCredentialsMissingError("no creds"))
     result, _ = _run(
         now=datetime(2026, 9, 16, 14, 0, tzinfo=UTC),
         bars_client=_FakeBarsClient(bars=_flat_bars()), market_data_client=price,
     )
     assert result.status == CaptureStatus.PRICE_UNAVAILABLE
+    assert result.notes == ("underlying_price_unavailable", "price_request_failed")
+    assert "no creds" not in result.notes
+
+
+def test_price_request_failure_yields_price_unavailable_without_leaking_status():
+    """``AlpacaMarketDataError`` (e.g. a non-2xx status or a network error)
+    is the other exception this branch catches; its own sanitized message --
+    which may carry a status code -- must never reach ``notes``."""
+    price = _FakeMarketDataClient(
+        error=AlpacaMarketDataError("Alpaca snapshot request failed with status 503.")
+    )
+    result, _ = _run(
+        now=datetime(2026, 9, 16, 14, 0, tzinfo=UTC),
+        bars_client=_FakeBarsClient(bars=_flat_bars()), market_data_client=price,
+    )
+    assert result.status == CaptureStatus.PRICE_UNAVAILABLE
+    assert result.notes == ("underlying_price_unavailable", "price_request_failed")
+    assert not any("503" in note for note in result.notes)
 
 
 def test_extract_underlying_price_uses_the_trade_market_data_timestamp_not_now():
@@ -477,6 +505,7 @@ def test_price_after_price_validation_time_is_rejected():
     )
 
     assert result.status == CaptureStatus.PRICE_UNAVAILABLE
+    assert result.notes == ("underlying_price_unavailable", "price_payload_unusable")
 
 
 def test_over_age_price_is_rejected_relative_to_price_validation_time():
@@ -497,6 +526,7 @@ def test_over_age_price_is_rejected_relative_to_price_validation_time():
     )
 
     assert result.status == CaptureStatus.PRICE_UNAVAILABLE
+    assert result.notes == ("underlying_price_unavailable", "price_payload_unusable")
 
 
 def test_bar_completeness_gate_still_uses_capture_start_not_price_validation_time():
