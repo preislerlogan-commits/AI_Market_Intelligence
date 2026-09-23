@@ -28,6 +28,7 @@ from market_intelligence.evaluation.spy_vwap_reversion_serialization import (
     read_input,
     read_record,
     to_json_str,
+    write_input,
     write_record,
 )
 from market_intelligence.market_features.spy_regime_contracts import IntradayBar
@@ -281,3 +282,39 @@ def test_read_input_rejects_malformed_json_file(tmp_path):
     target.write_text("{not json", encoding="utf-8")
     with pytest.raises(EvaluationSerializationError):
         read_input(target)
+
+
+# --- write_input (never overwrites) ----------------------------------------------------
+
+
+def test_write_input_writes_byte_stable_json_that_reads_back(tmp_path):
+    target = tmp_path / "input.json"
+    write_input(_input(), target)
+    assert target.read_text(encoding="utf-8") == input_to_json_str(_input())
+    assert read_input(target) == _input()
+    assert [p.name for p in tmp_path.iterdir()] == ["input.json"]
+
+
+def test_write_input_never_overwrites(tmp_path):
+    target = tmp_path / "input.json"
+    target.write_text("keep", encoding="utf-8")
+    with pytest.raises(EvaluationSerializationError):
+        write_input(_input(), target)
+    assert target.read_text(encoding="utf-8") == "keep"
+
+
+def test_write_input_does_not_create_directories(tmp_path):
+    with pytest.raises(EvaluationSerializationError) as excinfo:
+        write_input(_input(), tmp_path / "missing" / "input.json")
+    assert not (tmp_path / "missing").exists()
+    assert str(tmp_path) not in str(excinfo.value)
+
+
+def test_write_input_refuses_a_symlinked_parent_directory(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    _symlink_or_skip(real, link, target_is_directory=True)
+    with pytest.raises(EvaluationSerializationError):
+        write_input(_input(), link / "input.json")
+    assert list(real.iterdir()) == []

@@ -84,6 +84,17 @@ must not be read as evidence for or against the VWAP-reversion
 hypothesis.** See "Implementation
 order" below (step d) for the exact contracts, outcome formulas, and
 sample-size rules, and `PROJECT_STATE.md` (Completed Work Log item 44).
+**Step d input builder (2026-09-23, Completed Work Log item 50):** the
+evaluator's input can now be built reproducibly from stored bars by the
+read-only, dry-run-first `scripts/build_spy_vwap_reversion_input.py`
+(`orchestration/spy_vwap_reversion_input_builder.py`) instead of a local
+one-off script — exact `alpaca`/`SPY`/`5Min`/`iex`/`raw`/`USD` provenance,
+complete 78-bar regular sessions only, fixed-reason exclusion counts,
+`prior_day` only from a qualifying immediately-preceding stored weekday,
+narrowed point-in-time context, byte-stable JSON written only inside
+`data/evaluations/local/`. **This is an input-building tool, not an
+evaluation result or evidence of an edge; it has not been run against the
+real database as part of that change.**
 **Step e — the deterministic Contract Selector — is now also done
 (2026-09-16), implemented and tested entirely offline with synthetic
 fixtures only.**

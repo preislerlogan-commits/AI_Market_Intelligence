@@ -64,6 +64,34 @@ def test_no_regime_engine_module_imports_a_forbidden_dependency(path):
             )
 
 
+EXPECTED_PURE_SPY_MODULES = {
+    "spy_regime_contracts.py",
+    "spy_regime_features.py",
+    "spy_regime_classifier.py",
+}
+
+
+def test_scanned_regime_engine_files_are_exactly_the_pure_modules():
+    assert {p.name for p in REGIME_ENGINE_FILES} == EXPECTED_PURE_SPY_MODULES
+
+
+def test_storage_reading_input_builder_lives_in_orchestration_not_market_features():
+    """The read-only VWAP-reversion input builder opens DuckDB, so it belongs
+    in ``orchestration/``, never beside the pure regime engine in
+    ``market_features/``; the pure modules stay free of forbidden imports."""
+    assert not (PACKAGE_DIR / "spy_vwap_reversion_input_builder.py").exists()
+    assert (
+        PACKAGE_DIR.parent / "orchestration" / "spy_vwap_reversion_input_builder.py"
+    ).is_file()
+    for path in REGIME_ENGINE_FILES:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for name in _imported_names(tree):
+            for prefix in FORBIDDEN_IMPORT_PREFIXES:
+                assert not (name == prefix or name.startswith(prefix + ".")), (
+                    f"{path.name} imports forbidden module {name!r}"
+                )
+
+
 def test_importing_the_regime_engine_in_a_fresh_interpreter_pulls_in_nothing_networked():
     code = (
         "import sys\n"

@@ -13,14 +13,14 @@ gitignored data.
 Boundary (all enforced below):
 
 - **Pure helpers.** ``*_to_json_str`` / ``*_from_json_str`` do no I/O.
-- **Explicit path only.** ``write_record`` / ``read_record`` /
-  ``read_input`` take a caller-provided ``Path``. There is no default
-  location and no automatic output directory.
-- **Parent must already exist.** ``write_record`` never creates directories.
+- **Explicit path only.** ``write_record`` / ``write_input`` /
+  ``read_record`` / ``read_input`` take a caller-provided ``Path``. There
+  is no default location and no automatic output directory.
+- **Parent must already exist.** Neither writer ever creates directories.
 - **No symlinks.** Both the target file and its parent directory are
   refused if either is a symlink.
 - **No silent overwrite.** ``write_record`` refuses an existing target
-  unless ``overwrite=True``.
+  unless ``overwrite=True``; ``write_input`` always refuses one.
 - **Atomic write.** Same temp-file-then-publish strategy as
   ``evaluation/serialization.py``.
 - **Bounded read.** Both ``read_record`` and ``read_input`` refuse a file
@@ -97,25 +97,22 @@ def _validated_directory(path: Path) -> Path:
     return parent
 
 
-def write_record(
-    record: SpyVwapReversionEvaluationRecord,
-    path: str | os.PathLike[str],
+def _write_text_atomically(
+    text: str,
+    target: Path,
     *,
-    overwrite: bool = False,
+    overwrite: bool,
+    failure_message: str,
 ) -> None:
-    """Atomically write ``record`` to ``path`` as JSON.
-
-    Same no-overwrite / no-symlink / atomic-publish guarantees as
-    ``evaluation.serialization.write_record``. The temporary file is always
-    removed.
-    """
-    target = Path(path)
+    """Shared no-overwrite / no-symlink / atomic-publish writer behind
+    ``write_record`` and ``write_input``. The temporary file is always
+    removed; every failure raises ``EvaluationSerializationError`` with a
+    fixed message."""
     directory = _validated_directory(target)
 
     if target.exists() and not overwrite:
         raise EvaluationSerializationError("target file already exists")
 
-    text = to_json_str(record)
     tmp_name = f".{target.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
     tmp_path = directory / tmp_name
     try:
@@ -139,7 +136,27 @@ def write_record(
             tmp_path.unlink(missing_ok=True)
         except OSError:
             pass
-        raise EvaluationSerializationError("failed to write evaluation record") from None
+        raise EvaluationSerializationError(failure_message) from None
+
+
+def write_record(
+    record: SpyVwapReversionEvaluationRecord,
+    path: str | os.PathLike[str],
+    *,
+    overwrite: bool = False,
+) -> None:
+    """Atomically write ``record`` to ``path`` as JSON.
+
+    Same no-overwrite / no-symlink / atomic-publish guarantees as
+    ``evaluation.serialization.write_record``. The temporary file is always
+    removed.
+    """
+    _write_text_atomically(
+        to_json_str(record),
+        Path(path),
+        overwrite=overwrite,
+        failure_message="failed to write evaluation record",
+    )
 
 
 def read_record(path: str | os.PathLike[str]) -> SpyVwapReversionEvaluationRecord:
@@ -179,6 +196,28 @@ def input_to_json_str(model: SpyVwapReversionEvaluationInput) -> str:
     byte-stable JSON (same formatting as ``to_json_str``)."""
     payload = model.model_dump(mode="json")
     return json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+
+
+def write_input(
+    model: SpyVwapReversionEvaluationInput,
+    path: str | os.PathLike[str],
+) -> None:
+    """Atomically write an already-validated
+    ``SpyVwapReversionEvaluationInput`` to ``path`` as byte-stable JSON
+    (``input_to_json_str``).
+
+    Same no-symlink / atomic-publish guarantees as ``write_record``, and
+    **never** overwrites: there is deliberately no ``overwrite`` parameter.
+    Used by ``scripts/build_spy_vwap_reversion_input.py`` to persist an input
+    built read-only from stored bars; the file is only an evaluation
+    *input*, never an evaluation result.
+    """
+    _write_text_atomically(
+        input_to_json_str(model),
+        Path(path),
+        overwrite=False,
+        failure_message="failed to write evaluation input",
+    )
 
 
 def input_from_json_str(text: str) -> SpyVwapReversionEvaluationInput:
