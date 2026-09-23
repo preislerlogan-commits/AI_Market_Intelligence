@@ -325,7 +325,11 @@ The following tickers are the known initial universe of interest:
 **Storage foundation status (2026-09-14): the real local database is healthy
 at schema version `0009` (9 migrations applied)**, following the live
 option-chain ingestion described under "Option-chain snapshot storage"
-below.
+below. **Update (2026-09-23):** after the bounded SPY bars ingestion
+recorded under "SPY 5-minute IEX market bars" (run 3), a post-run health
+check again reported schema version `0009` (9 migrations applied), required
+tables/columns present, valid migration history and checksums, latest
+migration applied, and `healthy=True`; the schema version is unchanged.
 
 A local DuckDB storage foundation exists at `data/market_intelligence.duckdb`
 (`market_intelligence/storage/`, documented in
@@ -806,14 +810,20 @@ model-provider boundary only, documented in
 - **Source** — Alpaca market-data API (`https://data.alpaca.markets`,
   `/v2/stocks/SPY/bars`), via `AlpacaBarsClient`. Fixed request provenance:
   `feed=iex`, `adjustment=raw`, `currency=USD`.
-- **Status** — connected; two controlled ingestion runs; **not validated as a
-  dataset**.
+- **Status** — connected; three controlled ingestion runs (the third on
+  2026-09-23); **not validated as a dataset**.
 - **Provenance** — (1) 2026-08-21 standalone run
   (`scripts/ingest_alpaca_bars.py`), requested interval
   2026-08-15T00:00:00Z–2026-08-20T00:00:00Z, `limit=500`, `max_pages=1`: 248
   received, 248 inserted, 0 failed. (2) 2026-08-23 orchestrated run
   (`alpaca_bars_spy_5min` job, `lookback_days=5`): 334 received, 169 inserted,
-  165 existing/updated, 0 failed.
+  165 existing/updated, 0 failed. (3) 2026-09-23 standalone run
+  (`scripts/ingest_alpaca_bars.py --execute`, database backed up
+  beforehand), requested interval 2026-08-24T00:00:00Z–2026-09-23T00:00:00Z,
+  `limit=1000`, `max_pages=5`: 1,731 received, 1,731 inserted, 0
+  existing/updated, 0 failed; ingestion-run status `succeeded`; post-run
+  health check `healthy=True` at schema version `0009` (9 migrations). See
+  `PROJECT_STATE.md`, Completed Work Log item 52.
 - **Schema / table** — `market_bars` (migration `0005`): `provider`, `symbol`,
   `timeframe`, `feed`, `adjustment`, `currency`, `bar_timestamp` (UTC),
   `open`/`high`/`low`/`close`/`vwap` (`DECIMAL(18,6)`, `vwap` nullable),
@@ -826,7 +836,17 @@ model-provider boundary only, documented in
   2026-08-19T20:00:00Z. The later orchestrated run added 169 further bars
   within its own bounded 5-day window; the combined stored set has not had an
   end-to-end coverage/gap inspection. Roughly 3–4 trading days total. No other
-  symbol, timeframe, or date range is stored.
+  symbol, timeframe, or date range is stored. **Superseding update
+  (2026-09-23):** after run (3), the read-only SPY VWAP-reversion input
+  builder (below) inspected 2026-08-17 through 2026-09-22 and found 27
+  weekdays: 26 complete, gapless, grid-aligned 78-bar regular sessions
+  (including the original five), 1 weekday with no regular-session bars
+  (holiday vs. data gap not distinguished — no exchange calendar), zero
+  off-grid / invalid-price-or-volume / OHLC-inconsistent / incomplete /
+  contract-rejected sessions, and 120 outside-regular-session bars in that
+  range. That is a regular-session completeness check for that range only,
+  not an end-to-end gap inspection of every stored row or a validation of
+  the data. Still SPY / `5Min` / IEX only.
 - **Known limitations** — IEX is a single exchange's feed, not the
   consolidated SIP tape: narrower coverage (fewer trades, potentially
   different prices/volume). SIP connectivity has never been verified. Bars are
@@ -836,9 +856,14 @@ model-provider boundary only, documented in
   from mid-August 2026 and is now well past the market-context snapshot
   layer's 72-hour bars-staleness threshold — the Market Evidence Agent's
   preflight would currently abstain with `bars_stale` until a fresh ingestion.
+  (Superseded in part 2026-09-23: run (3) extended coverage through the
+  2026-09-22 session; it remains a static, manually refreshed snapshot that
+  becomes stale again without further ingestion.)
 - **Validation status** — connectivity and response normalization verified on
-  IEX; two controlled runs verified transactional, idempotent storage. No gap
-  analysis, no completeness claim, no economic cross-check.
+  IEX; three controlled runs verified transactional storage (the second also
+  idempotent overlap). No full-dataset gap analysis beyond the input
+  builder's regular-session check above, no completeness claim, no economic
+  cross-check.
 
 ### SPY news
 
@@ -1064,7 +1089,13 @@ output is an optional local JSON file under gitignored
 `data/evaluations/local/` (`--write`), never committed. **It is an
 input-building tool only — its output is not an evaluation result and not
 evidence of any edge. It has not yet been run against the real local
-database.** The same limitations as the source dataset apply (IEX-only,
+database.** **Superseding update (2026-09-23, `PROJECT_STATE.md` Completed
+Work Log item 52):** it has since been run once, read-only, for 2026-08-17
+through 2026-09-22 — 26 complete sessions included, 1 weekday with no
+regular-session bars, no other exclusions, `prior_day` available for 24
+sessions and unavailable for 2, 120 outside-regular-session bars excluded;
+its input and the resulting evaluation output remain gitignored under
+`data/evaluations/local/`. The same limitations as the source dataset apply (IEX-only,
 no exchange-holiday/early-close calendar, limited coverage).
 
 ### SPY deterministic contract-eligibility selector (not a stored dataset)

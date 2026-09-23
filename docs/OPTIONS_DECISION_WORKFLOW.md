@@ -95,6 +95,24 @@ narrowed point-in-time context, byte-stable JSON written only inside
 `data/evaluations/local/`. **This is an input-building tool, not an
 evaluation result or evidence of an edge; it has not been run against the
 real database as part of that change.**
+**Step d expanded run (2026-09-23, `PROJECT_STATE.md` Completed Work Log
+item 52):** after one bounded SPY bars ingestion, the input builder and
+evaluator were run read-only over 2026-08-17 through 2026-09-22 — 26
+complete sessions, 2,028 candidate / 2,027 eligible decision points
+(`above_vwap` 975, `below_vwap` 1,052). All six available session-level
+cells (both sides × `intraday_30m` / `intraday_2h` / `to_session_close`)
+passed the fixed 20-session threshold; `next_session` remains unavailable
+by fixed design. Above-VWAP signed return toward VWAP was positive at every
+evaluated horizon and both aggregation levels; below-VWAP results were
+mixed — positive at the shorter horizons, weaker, and adverse at
+observation level by session close. **This is an asymmetry worth further
+research, not a validated strategy, edge, or directional signal** (only
+25–26 sessions from about five weeks; overlapping, non-independent
+observation-level points; no significance test or uncertainty interval;
+thresholds not tuned; relative-volume, catalyst, and breadth context not
+evaluated; underlying setup only, no option return or P&L). It does **not**
+authorize step f; the next research step is a preregistered
+evaluation-hardening and sample-expansion plan (see step d below).
 **Step e — the deterministic Contract Selector — is now also done
 (2026-09-16), implemented and tested entirely offline with synthetic
 fixtures only.**
@@ -192,7 +210,12 @@ observation-level sample-size thresholds met for three of four horizons,
 session-level thresholds met for none (only 5 sessions stored), no
 threshold tuned, and no edge, accuracy, usefulness, strategy validity, or
 profitability established. This one small-sample run must not be read as
-evidence for or against the VWAP-reversion hypothesis. Step e (the
+evidence for or against the VWAP-reversion hypothesis. (Superseding update,
+2026-09-23: an expanded 26-session run passed the fixed session-level
+threshold for all six available horizon/side cells and recorded an
+above-/below-VWAP asymmetry worth further research — still no edge,
+accuracy, strategy validity, or profitability established; see
+`PROJECT_STATE.md` Completed Work Log item 52.) Step e (the
 deterministic Contract Selector) is also now done (2026-09-16), offline
 with synthetic tests only, including a same-day feed-safety-boundary fix
 (operational eligibility defaults to OPRA only, indicative data requires
@@ -745,6 +768,52 @@ before the previous one is complete and recorded.
   `maximum` for each metric)
   remains available locally, gitignored, under `data/evaluations/local/`
   — not committed. See `PROJECT_STATE.md` (Completed Work Log item 44).
+  The 5-session record above is preserved unchanged as the historical
+  first-run result.
+
+  **Expanded run (2026-09-23, `PROJECT_STATE.md` Completed Work Log item
+  52).** After one bounded, authorized SPY bars ingestion
+  (2026-08-24T00:00:00Z through 2026-09-23T00:00:00Z; 1,731 bars inserted),
+  the read-only input builder covered 2026-08-17 through 2026-09-22: 27
+  weekdays, 26 complete sessions, 1 weekday with no regular-session bars,
+  no other exclusions, `prior_day` available for 24 sessions and
+  unavailable for 2, 120 outside-regular-session bars excluded. The
+  evaluation found 2,028 candidate / 2,027 eligible decision points (0
+  missing-VWAP, 1 zero-extension exclusion; `above_vwap` 975, `below_vwap`
+  1,052; regimes `trend_continuation` 57, `vwap_mean_reversion` 757,
+  `range` 599, `indeterminate` 614, `event_driven` 0; missing horizons
+  `intraday_30m` 156, `intraday_2h` 624, `to_session_close` 26,
+  `next_session` 2,027). All six available session-level cells passed the
+  fixed 20-session threshold (26 above-VWAP sessions, 25 below-VWAP
+  sessions, for `intraday_30m`, `intraday_2h`, `to_session_close`);
+  `next_session` remained unavailable by fixed design. Selected aggregate
+  statistics are tabulated in `PROJECT_STATE.md` item 52. **Interpretation,
+  bounded:** above-VWAP signed return toward VWAP was positive at every
+  evaluated horizon and both aggregation levels; below-VWAP results were
+  mixed — positive at the shorter horizons, weaker, and adverse at
+  observation level by session close. This is an asymmetry worth further
+  research, **not a validated strategy**. Only 25–26 sessions from roughly
+  five weeks; observation-level points overlap and are not independent; no
+  significance test or uncertainty interval was performed;
+  percentage-retraced means are unstable (tiny initial extensions produce
+  extreme ratios) and are not robust evidence; minutes-to-touch figures
+  derived during the audit from decision points are supplementary, not
+  fields of the validated aggregate summary, and not canonical results.
+  Thresholds were not tuned or changed; relative-volume, catalyst, and
+  breadth context were not evaluated; no option return, P&L, selector
+  recommendation, strategy-agent output, brokerage action, or accuracy,
+  edge, or profitability claim exists.
+
+  **Next research step (planning only, not started).** Before inspecting
+  any additional outcomes, write and review a preregistered
+  evaluation-hardening and sample-expansion plan: session-blocked
+  uncertainty estimates; robust distribution/quantile statistics; fixed,
+  pre-declared minimum-extension buckets; regime and time-of-day
+  breakdowns; explicitly separate above-VWAP and below-VWAP hypotheses; and
+  an untouched holdout period. Later data must be treated as new evidence,
+  never used to tune the existing five-week result. Implementing any of
+  these additions requires its own separate review. **Step f (the Options
+  Strategy Agent) is not authorized or begun by this result.**
 - **e.** *(fifth Phase 1 step — done offline, 2026-09-16, synthetic tests
   only; feed-safety-boundary fix applied the same day, Completed Work Log
   item 46)* Build the Deterministic Contract Selector (eligible-set
