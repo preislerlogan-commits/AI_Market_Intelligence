@@ -486,7 +486,7 @@ def capture_contract_selector_input(
             price_recency_max_age_seconds=selector_config.max_quote_age_seconds,
             regime_as_of_timestamp=regime_as_of,
             scenario_horizon=classification.scenario_horizon,
-            notes=("underlying_price_unavailable",),
+            notes=("underlying_price_unavailable", "price_request_failed"),
         )
 
     # Captured *after* the snapshot request returns, never reused from
@@ -507,7 +507,7 @@ def capture_contract_selector_input(
             price_recency_max_age_seconds=selector_config.max_quote_age_seconds,
             regime_as_of_timestamp=regime_as_of,
             scenario_horizon=classification.scenario_horizon,
-            notes=("underlying_price_unavailable",),
+            notes=("underlying_price_unavailable", "price_payload_unusable"),
         )
 
     if (
