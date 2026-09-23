@@ -1,12 +1,21 @@
 """Manual, one-shot Alpaca historical-bars ingestion into the local
 market_bars table.
 
-Makes at most one bounded, explicit, read-only Alpaca bars request (via
-``AlpacaBarsClient.get_bars``, always with the connector's fixed IEX/raw/USD
-provenance -- see ``market_intelligence/data_connectors/alpaca_bars.py``)
-for a single supplied symbol/timeframe/window, then stores the normalized
-results through ``BarRepository``. This script performs no indicator,
-prediction, or trading logic -- storage only.
+**Dry-run by default.** A default invocation parses and normalizes every
+argument, enforces every connector bound, prints a sanitized request plan,
+and exits: it constructs no ``Settings``, no bars client, no repository and
+no database connection, makes zero provider requests and writes nothing.
+Only an explicit ``--execute`` flag performs the provider request and the
+database ingestion described below; invalid input is rejected identically
+in both modes, before either can perform any I/O.
+
+With ``--execute``, makes at most one bounded, explicit, read-only Alpaca
+bars request (via ``AlpacaBarsClient.get_bars``, always with the connector's
+fixed IEX/raw/USD provenance -- see
+``market_intelligence/data_connectors/alpaca_bars.py``) for a single supplied
+symbol/timeframe/window, then stores the normalized results through
+``BarRepository``. This script performs no indicator, prediction, or trading
+logic -- storage only.
 
 Command-line ``--symbol``, ``--timeframe``, ``--start``, ``--end``,
 ``--limit``, and ``--max-pages`` are all strictly validated before any
@@ -35,9 +44,16 @@ the start of the current UTC day (rather than "now") as the default window's
 end deliberately excludes today's still-in-progress trading session, so the
 default window only ever covers completed history, never a partial/live bar.
 
-Only sanitized metadata is ever printed: configured, fetch outcome, symbol,
-timeframe, feed, adjustment, currency, and received/inserted/existing-or-
-updated/failed counts plus the ingestion-run status. Never OHLCV values,
+The dry-run plan prints only: mode, configured (always ``not_checked``,
+since checking would require constructing ``Settings``), symbol, timeframe,
+normalized start/end, limit, max_pages, the maximum total row ceiling
+(``limit * max_pages``), the fixed feed/adjustment/currency, and
+``request_planned: False``.
+
+With ``--execute``, only sanitized metadata is ever printed: configured,
+fetch outcome, symbol, timeframe, feed, adjustment, currency, and
+received/inserted/existing-or-updated/failed counts plus the ingestion-run
+status. Never OHLCV values,
 individual bar timestamps, database rows, credentials, headers, URLs, raw
 responses, or page tokens.
 
@@ -98,11 +114,39 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--end", default=None)
     parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
     parser.add_argument("--max-pages", type=int, default=DEFAULT_MAX_PAGES)
+    parser.add_argument(
+        "--execute",
+        action="store_true",
+        help=(
+            "Actually perform the provider request and database ingestion. "
+            "Omitted by default (dry run: zero requests, zero writes)."
+        ),
+    )
     return parser.parse_args(argv)
 
 
+def _print_dry_run_plan(
+    *, symbol: str, timeframe: str, start: str, end: str, limit: int, max_pages: int
+) -> None:
+    """Print the sanitized request plan. No Settings, client, or database is touched."""
+    print("mode: dry_run")
+    print("configured: not_checked")
+    print(f"symbol: {symbol}")
+    print(f"timeframe: {timeframe}")
+    print(f"start: {start}")
+    print(f"end: {end}")
+    print(f"limit: {limit}")
+    print(f"max_pages: {max_pages}")
+    print(f"max_total_rows: {limit * max_pages}")
+    print(f"feed: {DATA_FEED}")
+    print(f"adjustment: {DATA_ADJUSTMENT}")
+    print(f"currency: {DATA_CURRENCY}")
+    print("request_planned: False")
+
+
 def main(argv: list[str] | None = None, *, settings: Settings | None = None) -> int:
-    """Run one ingestion pass. ``settings`` is an injection point for tests only.
+    """Run one dry-run (default) or ``--execute`` ingestion pass. ``settings`` is
+    an injection point for tests only; it is never used in dry-run mode.
 
     Real usage never passes ``settings`` -- it always defaults to a fresh
     ``Settings()`` reading the process environment/local ``.env``.
@@ -133,6 +177,17 @@ def main(argv: list[str] | None = None, *, settings: Settings | None = None) -> 
         print("symbol: (invalid)")
         print(f"error: {exc}")
         return 2
+
+    if not args.execute:
+        _print_dry_run_plan(
+            symbol=symbol,
+            timeframe=timeframe,
+            start=start,
+            end=end,
+            limit=limit,
+            max_pages=max_pages,
+        )
+        return 0
 
     settings = settings or Settings()
     client = AlpacaBarsClient(settings=settings)

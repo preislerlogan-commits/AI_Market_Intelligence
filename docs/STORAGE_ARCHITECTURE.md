@@ -267,6 +267,28 @@ results through `BarRepository`. Invalid `--symbol`/`--timeframe`/`--start`/
 `--end`/`--limit`/`--max-pages` values are rejected before any network
 request is constructed or any database write occurs.
 
+**Dry-run by default (2026-09-23 safety/operability correction).** A default
+invocation only validates and normalizes its arguments (enforcing every
+connector bound) and prints a sanitized request plan — `mode`, `configured:
+not_checked`, symbol, timeframe, normalized start/end, `limit`, `max_pages`,
+`max_total_rows` (`limit × max_pages`), the fixed `feed`/`adjustment`/
+`currency`, and `request_planned: False`. It constructs no `Settings`, bars
+client, `BarRepository`, or database connection, makes zero provider
+requests, and writes nothing. Only an explicit `--execute` performs the
+provider request and ingestion, with unchanged behavior (same pagination
+ceilings, all-or-nothing batch transaction, sanitized errors, no retries).
+Invalid input is rejected identically in both modes before any I/O. Example:
+
+```
+python scripts/ingest_alpaca_bars.py --symbol SPY --timeframe 5Min   --start 2026-08-24T00:00:00Z --end 2026-09-23T00:00:00Z   --limit 1000 --max-pages 5
+```
+
+prints the plan only; appending `--execute` to the same command performs the
+live request and write.
+
+The historical runs recorded below predate this flag; they ran the
+then-default execute path, which today requires `--execute`.
+
 **First authorized live run (2026-08-21):** `data/market_intelligence.duckdb`
 was backed up, migration `0005` was applied to the real database, and this
 script was then run once, live, against the real database: single-symbol
@@ -762,8 +784,9 @@ directly.
 - `scripts/ingest_alpaca_news.py` — one-shot manual news ingestion (see
   "News article storage" above); not run live as part of this change.
 - `scripts/ingest_alpaca_bars.py` — one-shot manual bars ingestion (see
-  "Market-bar storage" above); first authorized live run succeeded
-  2026-08-21 (see above).
+  "Market-bar storage" above); dry-run by default, `--execute` required for
+  any provider request or database write; first authorized live run
+  succeeded 2026-08-21 (see above).
 - `scripts/ingest_fred_series_metadata.py` — one-shot manual macro
   series-metadata ingestion (see "Macro series-metadata storage" above).
   This standalone script itself has not been run live; the real database's
