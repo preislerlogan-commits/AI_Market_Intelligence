@@ -227,7 +227,7 @@ def test_start_after_end_never_echoes_raw_timestamps(
     assert secret_end not in captured.out
 
 
-# --- not configured makes zero requests and writes ------------------------------
+# --- --execute, not configured: zero requests and writes ------------------------
 
 
 def test_not_configured_makes_zero_requests_and_writes(monkeypatch, tmp_path, isolated_env_file):
@@ -235,7 +235,7 @@ def test_not_configured_makes_zero_requests_and_writes(monkeypatch, tmp_path, is
     module = load_script_module()
     settings = unconfigured_settings(tmp_path, isolated_env_file)
 
-    exit_code = module.main([], settings=settings)
+    exit_code = module.main(["--execute"], settings=settings)
 
     assert exit_code == 1
     assert calls == []
@@ -249,7 +249,7 @@ def test_not_configured_prints_only_sanitized_status(
     module = load_script_module()
     settings = unconfigured_settings(tmp_path, isolated_env_file)
 
-    module.main([], settings=settings)
+    module.main(["--execute"], settings=settings)
 
     captured = capsys.readouterr()
     assert "configured: False" in captured.out
@@ -322,7 +322,14 @@ def test_successful_ingestion_prints_sanitized_output_and_stores_bars(
     settings = configured_settings(monkeypatch, tmp_path, isolated_env_file)
 
     exit_code = module.main(
-        ["--start", "2026-08-15T00:00:00Z", "--end", "2026-08-16T00:00:00Z"], settings=settings
+        [
+            "--execute",
+            "--start",
+            "2026-08-15T00:00:00Z",
+            "--end",
+            "2026-08-16T00:00:00Z",
+        ],
+        settings=settings,
     )
 
     captured = capsys.readouterr()
@@ -377,7 +384,14 @@ def test_database_initialization_failure_is_sanitized(
     settings = configured_settings(monkeypatch, tmp_path, isolated_env_file)
 
     exit_code = module.main(
-        ["--start", "2026-08-15T00:00:00Z", "--end", "2026-08-16T00:00:00Z"], settings=settings
+        [
+            "--execute",
+            "--start",
+            "2026-08-15T00:00:00Z",
+            "--end",
+            "2026-08-16T00:00:00Z",
+        ],
+        settings=settings,
     )
 
     captured = capsys.readouterr()
@@ -405,7 +419,14 @@ def test_repository_storage_error_is_sanitized(monkeypatch, tmp_path, isolated_e
     settings = configured_settings(monkeypatch, tmp_path, isolated_env_file)
 
     exit_code = module.main(
-        ["--start", "2026-08-15T00:00:00Z", "--end", "2026-08-16T00:00:00Z"], settings=settings
+        [
+            "--execute",
+            "--start",
+            "2026-08-15T00:00:00Z",
+            "--end",
+            "2026-08-16T00:00:00Z",
+        ],
+        settings=settings,
     )
 
     captured = capsys.readouterr()
@@ -435,7 +456,14 @@ def test_unexpected_repository_exception_is_sanitized(
     settings = configured_settings(monkeypatch, tmp_path, isolated_env_file)
 
     exit_code = module.main(
-        ["--start", "2026-08-15T00:00:00Z", "--end", "2026-08-16T00:00:00Z"], settings=settings
+        [
+            "--execute",
+            "--start",
+            "2026-08-15T00:00:00Z",
+            "--end",
+            "2026-08-16T00:00:00Z",
+        ],
+        settings=settings,
     )
 
     captured = capsys.readouterr()
@@ -467,7 +495,14 @@ def test_repository_validation_error_is_sanitized(
     settings = configured_settings(monkeypatch, tmp_path, isolated_env_file)
 
     exit_code = module.main(
-        ["--start", "2026-08-15T00:00:00Z", "--end", "2026-08-16T00:00:00Z"], settings=settings
+        [
+            "--execute",
+            "--start",
+            "2026-08-15T00:00:00Z",
+            "--end",
+            "2026-08-16T00:00:00Z",
+        ],
+        settings=settings,
     )
 
     captured = capsys.readouterr()
@@ -475,3 +510,188 @@ def test_repository_validation_error_is_sanitized(
     assert "storage outcome: failed" in captured.out
     assert "error category: storage_error" in captured.out
     assert "ingestion-run status: succeeded" not in captured.out
+
+
+# --- dry-run default: zero HTTP, zero Settings/client/repository/database -------
+
+
+PLANNED_ARGS = [
+    "--start",
+    "2026-08-24T00:00:00Z",
+    "--end",
+    "2026-09-23T00:00:00Z",
+    "--limit",
+    "1000",
+    "--max-pages",
+    "5",
+]
+
+
+def forbid_execute_side_effects(monkeypatch, module: ModuleType) -> list[str]:
+    """Replace every I/O-capable collaborator in the script's namespace with a
+    recorder that raises, so any construction in dry-run mode fails loudly."""
+    constructed: list[str] = []
+
+    def _forbidden(name: str):
+        def _factory(*args, **kwargs):
+            constructed.append(name)
+            raise AssertionError(f"{name} must not be constructed in dry-run mode")
+
+        return _factory
+
+    for name in ("Settings", "AlpacaBarsClient", "BarRepository", "DuckDBManager"):
+        monkeypatch.setattr(module, name, _forbidden(name))
+
+    import duckdb
+
+    monkeypatch.setattr(duckdb, "connect", _forbidden("duckdb.connect"))
+    return constructed
+
+
+def test_default_mode_makes_zero_http_and_database_activity(
+    monkeypatch, tmp_path, isolated_env_file
+):
+    calls = blocked_http_send(monkeypatch)
+    module = load_script_module()
+    constructed = forbid_execute_side_effects(monkeypatch, module)
+    settings = unconfigured_settings(tmp_path, isolated_env_file)
+
+    exit_code = module.main(PLANNED_ARGS, settings=settings)
+
+    assert exit_code == 0
+    assert calls == []
+    assert constructed == []
+    assert database_file_exists(settings) is False
+    assert not (tmp_path / "data").exists()
+
+
+def test_default_mode_with_no_arguments_is_a_dry_run(monkeypatch):
+    calls = blocked_http_send(monkeypatch)
+    module = load_script_module()
+    constructed = forbid_execute_side_effects(monkeypatch, module)
+
+    assert module.main([]) == 0
+    assert calls == []
+    assert constructed == []
+
+
+def test_dry_run_prints_only_the_sanitized_plan(monkeypatch, capsys):
+    blocked_http_send(monkeypatch)
+    module = load_script_module()
+    forbid_execute_side_effects(monkeypatch, module)
+
+    module.main(PLANNED_ARGS)
+
+    lines = capsys.readouterr().out.splitlines()
+    assert lines == [
+        "mode: dry_run",
+        "configured: not_checked",
+        "symbol: SPY",
+        "timeframe: 5Min",
+        "start: 2026-08-24T00:00:00Z",
+        "end: 2026-09-23T00:00:00Z",
+        "limit: 1000",
+        "max_pages: 5",
+        "max_total_rows: 5000",
+        "feed: iex",
+        "adjustment: raw",
+        "currency: USD",
+        "request_planned: False",
+    ]
+
+
+def test_dry_run_never_prints_credentials_even_when_configured(monkeypatch, capsys):
+    blocked_http_send(monkeypatch)
+    monkeypatch.setenv("ALPACA_API_KEY", "unit-test-alpaca-key")
+    monkeypatch.setenv("ALPACA_API_SECRET", "unit-test-alpaca-secret")
+    module = load_script_module()
+    forbid_execute_side_effects(monkeypatch, module)
+
+    assert module.main(PLANNED_ARGS) == 0
+
+    out = capsys.readouterr().out
+    assert "unit-test-alpaca-key" not in out
+    assert "unit-test-alpaca-secret" not in out
+    assert "duckdb" not in out.lower()
+    assert "configured: not_checked" in out
+
+
+@pytest.mark.parametrize(
+    "bad_args",
+    [
+        ["--symbol", "not a valid symbol!!"],
+        ["--timeframe", "1Hour"],
+        ["--start", "not-a-date"],
+        ["--end", "2026-08-20"],
+        ["--limit", "0"],
+        ["--limit", "100000"],
+        ["--max-pages", "0"],
+        ["--max-pages", "51"],
+        ["--start", "2026-08-16T00:00:00Z", "--end", "2026-08-15T00:00:00Z"],
+    ],
+)
+@pytest.mark.parametrize("mode_args", [[], ["--execute"]])
+def test_invalid_input_fails_before_any_io_in_either_mode(
+    monkeypatch, capsys, bad_args, mode_args
+):
+    calls = blocked_http_send(monkeypatch)
+    module = load_script_module()
+    constructed = forbid_execute_side_effects(monkeypatch, module)
+
+    exit_code = module.main([*mode_args, *bad_args])
+
+    out = capsys.readouterr().out
+    assert exit_code == 2
+    assert calls == []
+    assert constructed == []
+    assert "fetch outcome: invalid_input" in out
+    assert "mode: dry_run" not in out
+
+
+# --- --execute never leaks response bodies, raw exceptions, or database paths -----
+
+
+def test_execute_http_failure_never_leaks_response_body_or_paths(
+    monkeypatch, tmp_path, isolated_env_file, capsys
+):
+    body_marker = "SECRET-RESPONSE-BODY-MARKER"
+
+    def failing_send(self, request: httpx.Request, **kwargs) -> httpx.Response:
+        return httpx.Response(500, text=f"internal error {body_marker}", request=request)
+
+    monkeypatch.setattr(httpx.Client, "send", failing_send)
+    module = load_script_module()
+    settings = configured_settings(monkeypatch, tmp_path, isolated_env_file)
+
+    exit_code = module.main(["--execute", *PLANNED_ARGS], settings=settings)
+
+    out = capsys.readouterr().out
+    assert exit_code == 1
+    assert "fetch outcome: failed" in out
+    assert "error category: AlpacaBarsError" in out
+    assert body_marker not in out
+    assert "unit-test-alpaca-key" not in out
+    assert "unit-test-alpaca-secret" not in out
+    assert str(tmp_path) not in out
+    assert database_file_exists(settings) is False
+
+
+def test_execute_success_output_never_contains_database_path(
+    monkeypatch, tmp_path, isolated_env_file, capsys
+):
+    monkeypatch.setattr(httpx.Client, "send", _fetch_bars_fake_send)
+    module = load_script_module()
+    settings = configured_settings(monkeypatch, tmp_path, isolated_env_file)
+
+    exit_code = module.main(
+        ["--execute", "--start", "2026-08-15T00:00:00Z", "--end", "2026-08-16T00:00:00Z"],
+        settings=settings,
+    )
+
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "ingestion-run status: succeeded" in out
+    assert "mode: dry_run" not in out
+    assert str(tmp_path) not in out
+    assert "market_intelligence.duckdb" not in out
+    assert database_file_exists(settings) is True
