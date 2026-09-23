@@ -314,6 +314,20 @@ run: 334 bars received, 169 inserted, 165 existing/updated, 0 failed. The
 already stored above, within this job's own bounded request window — not
 new distinct dataset coverage.
 
+**Authorized bounded run with `--execute` (2026-09-23):** the database was
+backed up before execution, and this script was run once with `--execute`
+against the real database: SPY, `5Min`, `feed=iex`, `adjustment=raw`,
+`currency=USD`, requested interval 2026-08-24T00:00:00Z through
+2026-09-23T00:00:00Z, `limit=1000`, `max_pages=5`. 1,731 bars were
+received, 1,731 inserted, 0 existing/updated, 0 failed, and the
+ingestion-run record was `succeeded`. A post-run health check reported
+schema version `0009`, 9 migrations, required tables/columns present,
+valid migration history and checksums, latest migration applied, and
+`healthy=True`. The earlier stored sessions remain present. This is one
+more bounded, controlled run — not a complete, gap-free, or
+research-validated bars dataset; see `PROJECT_STATE.md` (Completed Work Log
+item 52) and the bars entry in `DATA_CATALOG.md`.
+
 ## Macro-observation storage
 
 `macro_observations`
