@@ -4,14 +4,14 @@ This document is the **authoritative source of truth** for the current status
 of AI Market Intelligence. It must be read before beginning any work in this
 repository, and updated whenever the project's status materially changes.
 
-Last updated: 2026-09-23
+Last updated: 2026-09-25
 
 ## Current State at a Glance
 
 | Area | Status |
 |---|---|
 | Phase | **Phase 0 — Infrastructure Foundation. Closed 2026-08-28.** Phase 1 (SPY options decision-support workflow) has begun; step b (read-only SPY option-chain ingestion and local storage) is complete and has been live-exercised once (2026-09-14), step c (the deterministic SPY intraday feature/regime engine) is complete offline with synthetic tests only (2026-09-15), and **step d (the offline SPY VWAP-extension/reversion evaluator) is now complete, including its first real, read-only evaluation run against the stored SPY bars (2026-09-15, see Completed Work Log item 44)** — 5 gapless regular sessions / 390 candidate decision points, all eligible; observation-level sample-size thresholds were met for three of four forward horizons on both extension sides, session-level thresholds (≥ 20 sessions) were met for none (only 5 sessions are stored). **This one small, non-independent-sample run does not establish edge, accuracy, usefulness, strategy validity, or profitability and must not be read as evidence for or against the VWAP-reversion hypothesis.** **Superseding update (2026-09-23, Completed Work Log item 52): after a bounded bars ingestion, an expanded, read-only evaluation ran over 26 complete sessions (2026-08-17 through 2026-09-22; 2,027 eligible decision points). All six available session-level cells (above/below VWAP × `intraday_30m`/`intraday_2h`/`to_session_close`) passed the fixed 20-session threshold; `next_session` remains unavailable by fixed design. Above-VWAP signed return toward VWAP was positive at every evaluated horizon and both aggregation levels; below-VWAP results were mixed (positive at the shorter horizons, weaker and adverse at observation level by session close). This is an asymmetry worth further research, not a validated strategy — ~5 weeks, 25–26 sessions, overlapping observations, no significance test or uncertainty interval — and no edge, accuracy, or profitability is claimed.** **Step e, the deterministic Contract Selector, is now also complete offline with synthetic tests only (2026-09-16, see Completed Work Log item 45)** — a pure, model-free filtering function that consumes SPY, one validated `ScenarioHorizon`, one bounded option-chain batch, the underlying price/as-of time, and bounded selector configuration, and produces eligible/research-only contracts in deterministic order plus bounded rejection counts — no real selector run has been performed and no contract recommendation exists. **The same day, a feed-safety-boundary fix (Completed Work Log item 46) hardened operational eligibility to default to OPRA only: an indicative-feed batch can never reach `SelectorStatus.ELIGIBLE`; explicit research opt-in (`allow_indicative_for_research=True`) instead yields a new, schema-enforced `RESEARCH_ONLY` status with its passing contracts kept in a field structurally separate from the operational eligible set; and the CLI now requires its own explicit `--allow-indicative-research` flag, which always overrides the input file.** Step f, the Options Strategy Agent, has **not** begun — it requires its own separate authorization, and this fix does not authorize starting it. Closure is not a validation, accuracy, repeatability, or profitability claim for any agent, and does not mean every agent has been characterized; the regime engine's thresholds and the selector's filter thresholds remain provisional hypotheses, not validated values. |
-| Storage | Local DuckDB, healthy at schema version `0009` (9 migrations). Migration `0009` (`option_chain_snapshot_batches` + `option_chain_snapshots` + `option_chain_snapshot_batch_items`, three-table normalized design) has been **applied to the real database** (2026-09-14) — a read-only health check confirmed `healthy=True` at schema version `0009`. After the 2026-09-23 bounded SPY bars ingestion (Completed Work Log item 52; database backed up beforehand), a post-run health check again confirmed schema version `0009`, 9 migrations, required tables/columns present, valid migration history and checksums, latest migration applied, and `healthy=True`. |
+| Storage | Local DuckDB, healthy at schema version `0009` (9 migrations). Migration `0009` (`option_chain_snapshot_batches` + `option_chain_snapshots` + `option_chain_snapshot_batch_items`, three-table normalized design) has been **applied to the real database** (2026-09-14) — a read-only health check confirmed `healthy=True` at schema version `0009`. After the 2026-09-23 bounded SPY bars ingestion (Completed Work Log item 52; database backed up beforehand), a post-run health check again confirmed schema version `0009`, 9 migrations, required tables/columns present, valid migration history and checksums, latest migration applied, and `healthy=True`. After the seven bounded 2026-09-25 SPY confirmation-window ingestion runs (Completed Work Log item 54; database backed up beforehand; 10,543 bars inserted), a read-only health check again reported schema `0009`, 9 migrations, and `healthy=True`. |
 | Data connectors | Read-only Alpaca (bars, news, market-data snapshot, and a bounded SPY option-chain snapshot connector — now exercised by exactly one live, indicative-feed request, 2026-09-14) and FRED (observations, series metadata). No order/account/position/exercise/execution methods exist. |
 | Ingested data | SPY 5-minute IEX bars: originally five complete regular sessions (2026-08-17 through 2026-08-21), plus 27 additional stored rows outside the regular-session evaluation set; **superseding update (2026-09-23, Completed Work Log item 52):** one further bounded, authorized ingestion (2026-08-24T00:00:00Z through 2026-09-23T00:00:00Z; 1,731 bars received and inserted, 0 existing/updated, 0 failed) extended stored coverage — the read-only input builder found 26 complete regular sessions between 2026-08-17 and 2026-09-22 (the original five still present), one weekday with no regular-session bars, and 120 outside-regular-session bars in that range, which it excluded; ~20 SPY news articles; 7 FRED macro series (FEDFUNDS, GS10, CPIAUCSL, PCEPI, UNRATE, INDPRO, GDPC1) observations + metadata; one stored SPY indicative option-chain snapshot batch (102 contracts: 51 calls / 51 puts, one expiration, one retrieval instant, 2026-09-14). Each is one bounded ingestion run with limited coverage — none is complete, gap-free, or validated. |
 | Orchestration | Deterministic, manually invoked ingestion path: dry-run-first CLI over the three reviewed jobs, per-job failure isolation, fail-closed overlap lock, persistent audit trail; one authorized `--execute` run. Meets the Phase 0 ingestion criterion (with limited-verification caveats). Scheduling, unattended operation, automatic stale-lock recovery, and freshness monitoring are Phase 1 / later and unimplemented. |
@@ -5712,6 +5712,111 @@ entry describes something that has already been built, ingested, or attempted;
       separately authorized, bounded confirmation-ingestion plan
       (preregistration §10 step 5), not the Strategy Agent.
 
+54. **SPY VWAP confirmation ingestion and the single preregistered
+    confirmation run (2026-09-25). Completed and independently verified.
+    This is a research result about the underlying SPY setup only -- not
+    validation, not an options edge, not a recommendation, and not a
+    trading signal.** Full report:
+    [docs/SPY_VWAP_REVERSION_CONFIRMATION_RESULT.md](docs/SPY_VWAP_REVERSION_CONFIRMATION_RESULT.md).
+    - **Ingestion.** The database was backed up first. Seven bounded,
+      separately executed `scripts/ingest_alpaca_bars.py --execute` runs
+      covered the fetch window 2026-02-20T00:00:00Z → 2026-08-15T00:00:00Z
+      (Feb 20 for prior-day context only), `alpaca` / `SPY` / `5Min` /
+      `iex` / `raw` / `USD`, `limit=1000`, `max_pages=5`, split by calendar
+      month as preregistered (§10 step 5). Run IDs, with bars received and
+      inserted:
+      - `0f18d2ae-13fc-4091-b473-8ff9fde740c7`: 545
+      - `4f568365-56d1-4bdc-b2e3-91c923cbd678`: 2,015
+      - `c05e0348-46d3-4ad6-b571-7b204bc3b320`: 1,847
+      - `25bc38e1-d602-4f54-8965-ef2fca2395a9`: 1,739
+      - `4b4839ad-4a27-43e3-9ef7-268a1f531290`: 1,772
+      - `8427d52d-da63-4875-b88a-4f688b573c52`: 1,800
+      - `de061400-9282-4048-a645-188ae8bb421e`: 825
+
+      Total: 10,543 received and inserted. Zero refreshed, failed, or
+      partial; every run `succeeded`.
+    - **Post-ingestion audit (read-only).**
+      - The database is healthy at schema `0009` (9 migrations).
+      - One provenance group, no duplicate bar identities.
+      - Discovery rows (2026-08-17 → 2026-09-22) are unchanged at 2,148.
+      - Zero rows on or after the 2026-09-23 holdout boundary; no holdout
+        data was ingested or evaluated.
+    - **Confirmation sample.** The input builder included 121 complete
+      78-bar sessions from 2026-02-23 through 2026-08-14.
+      - Four weekdays were excluded as `no_regular_session_bars`; all four
+        are market holidays (2026-04-03, 05-25, 06-19, 07-03).
+      - Zero incomplete, off-grid, invalid-price/volume, OHLC-inconsistent,
+        or contract-rejected sessions.
+      - Prior-day context exists for 117 sessions. The four post-holiday
+        sessions correctly have none.
+    - **Provenance.**
+      - Input SHA-256 `509db0ac94a98511245e1871edeb985b41f31909f909fa742b3018a93b5dc455`
+      - Evaluation-record SHA-256 `e5a2f8649a1b944f274fd5222e178fb5c0a9f447a46dd5b903eb6e265bbcd248`
+      - Result SHA-256 `c8d838f441005a4122cda93f4572e8f1b6eca429b130ed545c1fdcb9ad69877b`
+      - Code commit `cd587f132b914208ef95c892a74bea68f4bd35ef`
+        (operator-supplied, not externally attested)
+      - Base preregistration `f77d30f8e6e90a6b77eeca11fd11c3da9c9540c1`
+      - C1 `1ff654de6dbbd54aeecb471010d1a612ca5abda6`
+      - Schemas `spy-vwap-reversion-evaluation-1` and
+        `spy-vwap-reversion-confirmation-1`
+
+      The artifacts remain gitignored under `data/evaluations/local/`.
+    - **Verification.** An independent read-only audit confirmed:
+      - the hashes match the exact bytes, and all files are canonical;
+      - the record re-evaluates byte for byte from the input;
+      - `verify_confirmation_result` passed;
+      - recomputation from the stored record is byte-identical;
+      - there was no configuration or threshold drift.
+    - **Primary (above-VWAP, all eligible points).** Estimates are in bps.
+      Exact stored fractions, not the displayed decimals, governed every
+      decision.
+
+      | Horizon | Estimate | 95% interval | Raw p | Holm p | Sessions / obs | Status |
+      |---|---:|---|---:|---:|---|---|
+      | 30m | 4.0522 | [2.3883, 5.8168] | 2/10001 | 6/10001 | 121 / 4,851 | positive |
+      | 2h | 12.8834 | [7.1608, 19.0576] | 2/10001 | 6/10001 | 121 / 3,672 | positive |
+      | close | 16.9561 | [9.0180, 25.0790] | 2/10001 | 6/10001 | 121 / 5,177 | positive |
+
+      **Primary label `supported_for_further_shadow_research`.** It permits
+      proposing a separately reviewed shadow-research stage. It does not
+      authorize recommendations, options selection, execution, or an agent.
+    - **Secondary (below-VWAP).**
+      - 30m: 6.5284 [4.2679, 8.8572], 117 sessions / 3,860 obs, positive.
+      - 2h: 18.0900 [12.2374, 24.0618], 117 / 2,861, positive.
+      - Close: 20.3960 [11.6964, 29.3471], 117 / 4,139, positive.
+      - Close-minus-30m paired contrast: 13.8676 [6.4955, 21.3878], raw p
+        2/10001, 117 paired sessions, `materially_different`.
+
+      **Secondary label `below_horizon_dependent`.** The magnitude changes
+      with horizon; the direction does not reverse (all three below-VWAP
+      horizons were positive).
+    - **Other counts.** 121 complete and 0 incomplete sessions. 5,244
+      eligible above-VWAP and 4,193 below-VWAP decision points. 70
+      subgroup cells passed their gates and 14 were insufficient; subgroups
+      are exploratory and support no claim.
+    - **Caveats.**
+      - The eight fixed result notes, verbatim:
+        `underlying_setup_only_no_options_or_pnl`,
+        `research_result_not_validation`,
+        `not_a_recommendation_or_trading_action`,
+        `labels_never_mean_validated_profitable_accurate_or_tradeable`,
+        `observation_level_points_overlap_no_inference`,
+        `thresholds_frozen_unmodified`,
+        `next_session_unavailable_no_exchange_calendar`,
+        `options_strategy_agent_not_authorized`.
+      - IEX data only.
+      - Relative-volume, catalyst, and breadth context were not evaluated.
+      - p-values reached the resolution floor of the fixed 10,000-replicate
+        method.
+      - The code SHA is operator-supplied, not externally attested.
+      - No options returns, transaction costs, or P&L were measured.
+      - The prospective holdout (2026-09-23 → 2026-12-04) remains sealed
+        and must not be opened early.
+    - **Unchanged.** No code, test, schema, migration, dependency,
+      configuration, threshold, population, gate, label, preregistration,
+      or C1 changed. **The Options Strategy Agent (step f) remains
+      unauthorized and not begun.**
+
 ## Next Planned Work
 
 This is the forward plan. It replaces the historical content now under
@@ -5981,13 +6086,13 @@ This is the forward plan. It replaces the historical content now under
    reason to begin step f — and it is followed by item 6 below, not by
    the Options Strategy Agent.
 
-6. **Next research step — preregistered evaluation-hardening and
-   sample-expansion plan (preregistration and C1 merged; analysis tooling
-   implemented and synthetic-tested 2026-09-25, Completed Work Log item
-   53; nothing ingested and no real confirmation or holdout evaluation
-   run).** The next step is the separately authorized, bounded
-   confirmation ingestion (§10 step 5), not the Options Strategy Agent.
-   The plan is
+6. **Preregistered evaluation-hardening and sample-expansion plan — DONE
+   for the confirmation sample (2026-09-25, Completed Work Log items 53–54;
+   report [docs/SPY_VWAP_REVERSION_CONFIRMATION_RESULT.md](docs/SPY_VWAP_REVERSION_CONFIRMATION_RESULT.md)).**
+   Primary label `supported_for_further_shadow_research`; secondary label
+   `below_horizon_dependent`. Neither is validation, an options edge, or
+   a trading signal. The historical record of the plan follows. The plan
+   is
    [docs/SPY_VWAP_REVERSION_PREREGISTRATION.md](docs/SPY_VWAP_REVERSION_PREREGISTRATION.md):
    confirmation window 2026-02-23 through 2026-08-14 (≥ 100 complete
    sessions required, ≥ 80 per side/horizon cell), a reserved, untouched
@@ -6023,6 +6128,19 @@ This is the forward plan. It replaces the historical content now under
    separate review and is not authorized by the item-52 documentation
    change. **The Options Strategy Agent (step f) remains not authorized
    and not begun.**
+
+7. **Next planned work (after the confirmation result, item 54).**
+   1. **Preserve the sealed prospective holdout** (2026-09-23 →
+      2026-12-04). Do not ingest, build, inspect, or evaluate it before
+      the full window exists, and then only under its own authorization,
+      through the identical frozen pipeline, exactly once (§4, C1.1).
+   2. **Draft a separately reviewed shadow-research protocol** for the
+      confirmed underlying behavior. This is design only. It needs its own
+      review before any implementation or live recording, and it must not
+      tune or re-explain the confirmation result.
+   3. **Do not begin the Options Strategy Agent (step f).** The
+      confirmation result does not authorize it, nor any recommendation,
+      options selection, selector run, or execution.
 
 Manual-only trading is preserved throughout. The three existing analysis
 agents (Market Evidence, News, Macro) remain non-directional; the Phase 1

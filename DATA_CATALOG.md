@@ -810,8 +810,8 @@ model-provider boundary only, documented in
 - **Source** — Alpaca market-data API (`https://data.alpaca.markets`,
   `/v2/stocks/SPY/bars`), via `AlpacaBarsClient`. Fixed request provenance:
   `feed=iex`, `adjustment=raw`, `currency=USD`.
-- **Status** — connected; three controlled ingestion runs (the third on
-  2026-09-23); **not validated as a dataset**.
+- **Status** — connected; ten controlled ingestion runs (runs 4–10 on
+  2026-09-25); **not validated as a dataset**.
 - **Provenance** — (1) 2026-08-21 standalone run
   (`scripts/ingest_alpaca_bars.py`), requested interval
   2026-08-15T00:00:00Z–2026-08-20T00:00:00Z, `limit=500`, `max_pages=1`: 248
@@ -824,6 +824,24 @@ model-provider boundary only, documented in
   existing/updated, 0 failed; ingestion-run status `succeeded`; post-run
   health check `healthy=True` at schema version `0009` (9 migrations). See
   `PROJECT_STATE.md`, Completed Work Log item 52.
+  - **Runs (4)–(10), 2026-09-25.** Seven bounded standalone runs
+    (`scripts/ingest_alpaca_bars.py --execute`, database backed up
+    beforehand) covered the preregistered SPY VWAP confirmation fetch
+    window 2026-02-20T00:00:00Z–2026-08-15T00:00:00Z, split by calendar
+    month, with `limit=1000` and `max_pages=5`. Run IDs and bars received
+    and inserted:
+    - `0f18d2ae-13fc-4091-b473-8ff9fde740c7`: 545
+    - `4f568365-56d1-4bdc-b2e3-91c923cbd678`: 2,015
+    - `c05e0348-46d3-4ad6-b571-7b204bc3b320`: 1,847
+    - `25bc38e1-d602-4f54-8965-ef2fca2395a9`: 1,739
+    - `4b4839ad-4a27-43e3-9ef7-268a1f531290`: 1,772
+    - `8427d52d-da63-4875-b88a-4f688b573c52`: 1,800
+    - `de061400-9282-4048-a645-188ae8bb421e`: 825
+
+    Total: 10,543 received and inserted; 0 existing/updated, 0 failed, and
+    every run `succeeded`. The post-run health check reported
+    `healthy=True` at schema version `0009`. See `PROJECT_STATE.md`,
+    Completed Work Log item 54.
 - **Schema / table** — `market_bars` (migration `0005`): `provider`, `symbol`,
   `timeframe`, `feed`, `adjustment`, `currency`, `bar_timestamp` (UTC),
   `open`/`high`/`low`/`close`/`vwap` (`DECIMAL(18,6)`, `vwap` nullable),
@@ -846,7 +864,28 @@ model-provider boundary only, documented in
   contract-rejected sessions, and 120 outside-regular-session bars in that
   range. That is a regular-session completeness check for that range only,
   not an end-to-end gap inspection of every stored row or a validation of
-  the data. Still SPY / `5Min` / IEX only.
+  the data. Still SPY / `5Min` / IEX only. **Superseding update
+  (2026-09-25):**
+  - **Stored rows:** 12,691 in one provenance group, spanning
+    2026-02-20T13:20:00Z to 2026-09-22T20:55:00Z, with zero duplicate bar
+    identities. That is 2,148 unchanged discovery rows plus 10,543 new rows
+    from runs (4)–(10).
+  - **Nothing outside the window:** zero rows exist in the 2026-08-15/16
+    gap or on or after 2026-09-23. The prospective holdout was not
+    ingested.
+  - **Confirmation-window builder result** (2026-02-23 to 2026-08-14,
+    read-only):
+    - 125 weekdays, 121 complete 78-bar regular sessions.
+    - 4 weekdays with no regular-session bars; all four are market
+      holidays (2026-04-03, 05-25, 06-19, 07-03).
+    - Zero off-grid, invalid-price/volume, OHLC-inconsistent, incomplete,
+      or contract-rejected sessions.
+    - Prior-day context for 117 sessions; none for the 4 post-holiday
+      sessions.
+    - 1,018 outside-regular-session bars.
+
+  This is again a regular-session completeness check for that range only,
+  not a validation of the data.
 - **Known limitations** — IEX is a single exchange's feed, not the
   consolidated SIP tape: narrower coverage (fewer trades, potentially
   different prices/volume). SIP connectivity has never been verified. Bars are
@@ -860,10 +899,12 @@ model-provider boundary only, documented in
   2026-09-22 session; it remains a static, manually refreshed snapshot that
   becomes stale again without further ingestion.)
 - **Validation status** — connectivity and response normalization verified on
-  IEX; three controlled runs verified transactional storage (the second also
+  IEX; ten controlled runs verified transactional storage (the second also
   idempotent overlap). No full-dataset gap analysis beyond the input
-  builder's regular-session check above, no completeness claim, no economic
-  cross-check.
+  builder's regular-session checks above, no completeness claim, no economic
+  cross-check. The data feeds the SPY VWAP confirmation result
+  ([docs/SPY_VWAP_REVERSION_CONFIRMATION_RESULT.md](docs/SPY_VWAP_REVERSION_CONFIRMATION_RESULT.md)),
+  which is a research result, not a validation of this dataset.
 
 ### SPY news
 
