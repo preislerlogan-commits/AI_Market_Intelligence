@@ -820,7 +820,23 @@ before the previous one is complete and recorded.
   holdout-specific sample gates (≥ 40), unrounded-`Decimal` decision
   arithmetic, provenance fields, and the separate result-contract
   architecture. It changes no window, threshold, or decision mapping.
-  Nothing is implemented or run yet. Before inspecting
+  **Update (2026-09-25, `PROJECT_STATE.md` Completed Work Log item 53):
+  the confirmation-analysis tooling is implemented and tested with
+  synthetic fixtures only.** It consists of a separate result contract, a
+  pure analysis over a validated evaluation record, its serialization, and
+  a dry-run-first `scripts/run_spy_vwap_confirmation.py`, plus a pure
+  recomputation verifier. Schema validation rejects malformed or internally
+  inconsistent results but not coherent hand edits; the source hashes
+  identify the claimed input and record bytes; the code commit is
+  operator-supplied and not attested; statistical correctness is checked by
+  recomputing from the referenced record; authenticity (custody or
+  signatures) is out of scope. The existing
+  evaluator and record schema are unchanged. The only bound change is the
+  record read ceiling, raised to 64 MiB as approved by C1.4. No
+  confirmation or holdout bar has been ingested, no real confirmation or
+  holdout evaluation has run, and no result or edge claim exists. The next
+  step is the separately authorized, bounded confirmation ingestion, not
+  step f. Before inspecting
   any additional outcomes, write and review a preregistered
   evaluation-hardening and sample-expansion plan: session-blocked
   uncertainty estimates; robust distribution/quantile statistics; fixed,

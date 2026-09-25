@@ -318,3 +318,82 @@ def test_write_input_refuses_a_symlinked_parent_directory(tmp_path):
     with pytest.raises(EvaluationSerializationError):
         write_input(_input(), link / "input.json")
     assert list(real.iterdir()) == []
+
+
+# --- Record read ceiling (C1.4) and prior-record byte stability -------------------------
+#
+# The only bound changed for the confirmation analysis: the evaluation-record
+# read ceiling, from 20,000,000 bytes to exactly 64 MiB. Everything else
+# (input ceiling, record shape, schema version, write guarantees) is pinned.
+
+_RECORD_SHA256 = "ac4db7155ee0cf6b81da6a5d3b428daa9e9f173f13642706e7479d1e7f935fe2"
+_INPUT_SHA256 = "dce8e0a25796444a3bfe74b0c7819dba23b38efd109c90064aa75a155f83b5a0"
+
+
+def test_record_read_ceiling_is_exactly_64_mib_and_input_ceiling_is_unchanged():
+    import market_intelligence.evaluation.spy_vwap_reversion_serialization as ser
+
+    assert ser.MAX_RECORD_BYTES == 67_108_864 == 64 * 1024 * 1024
+    assert ser.MAX_INPUT_BYTES == 20_000_000
+
+
+def test_canonical_record_and_input_bytes_are_unchanged():
+    # Hashes pinned from the unmodified serializer before this change.
+    import hashlib
+
+    assert hashlib.sha256(to_json_str(_record()).encode("utf-8")).hexdigest() == _RECORD_SHA256
+    assert hashlib.sha256(input_to_json_str(_input()).encode("utf-8")).hexdigest() == _INPUT_SHA256
+
+
+def test_evaluation_record_schema_and_field_set_are_unchanged():
+    from market_intelligence.evaluation.spy_vwap_reversion_contracts import (
+        SCHEMA_VERSION,
+        SpyVwapReversionEvaluationRecord,
+    )
+
+    assert SCHEMA_VERSION == "spy-vwap-reversion-evaluation-1"
+    assert set(SpyVwapReversionEvaluationRecord.model_fields) == {
+        "schema_version",
+        "symbol",
+        "generated_at",
+        "regime_thresholds",
+        "sample_thresholds",
+        "unique_session_count",
+        "candidate_decision_point_count",
+        "eligible_observation_count",
+        "no_signal_vwap_unavailable_count",
+        "no_signal_zero_extension_count",
+        "regime_counts_all_candidates",
+        "regime_counts_eligible_only",
+        "extension_side_counts",
+        "missing_horizon_counts",
+        "horizon_summaries",
+        "decision_points",
+        "notes",
+    }
+
+
+def test_a_record_file_above_the_former_ceiling_but_below_64_mib_is_readable(tmp_path):
+    # Trailing JSON whitespace pads a valid record past 20,000,000 bytes.
+    target = tmp_path / "record.json"
+    text = to_json_str(_record())
+    padding = 20_000_001 - len(text.encode("utf-8"))
+    target.write_text(text + " " * padding, encoding="utf-8")
+    assert 20_000_000 < target.stat().st_size < 67_108_864
+    assert read_record(target) == _record()
+
+
+def test_a_record_file_above_64_mib_is_refused_before_parsing(tmp_path, monkeypatch):
+    import market_intelligence.evaluation.spy_vwap_reversion_serialization as ser
+
+    target = tmp_path / "record.json"
+    with open(target, "wb") as handle:
+        handle.truncate(67_108_864 + 1)
+
+    def fail(*args, **kwargs):
+        raise AssertionError("an oversized record must not be read or parsed")
+
+    monkeypatch.setattr(ser, "from_json_str", fail)
+    monkeypatch.setattr(type(target), "read_text", fail)
+    with pytest.raises(EvaluationSerializationError, match="too large"):
+        read_record(target)

@@ -54,8 +54,11 @@ from market_intelligence.evaluation.spy_vwap_reversion_contracts import (
 MAX_INPUT_BYTES = 20_000_000
 
 # The output record additionally carries one row per candidate decision
-# point (bounded by MAX_DECISION_POINTS); bounded the same way.
-MAX_RECORD_BYTES = 20_000_000
+# point (bounded by MAX_DECISION_POINTS). Exactly 64 MiB, as approved by
+# preregistration clarification C1.4: a ~121-session record is estimated at
+# ~23 MB and the contract's 11,700-decision-point maximum at ~29 MB, both
+# above the former 20,000,000-byte ceiling. Still a finite local-file bound.
+MAX_RECORD_BYTES = 67_108_864
 
 
 # --- Evaluation record (output) ----------------------------------------------------
