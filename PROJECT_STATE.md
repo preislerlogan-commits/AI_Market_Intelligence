@@ -5849,7 +5849,15 @@ This is the forward plan. It replaces the historical content now under
    Holm correction, and a fixed 1.0-bps smallest effect of interest (a
    research-relevance floor, not a cost or profitability threshold), and a
    fixed decision-label mapping. The discovery sample (item 52) is not
-   confirmation evidence. Its implementation sequence (§10) is the
+   confirmation evidence. **Dated clarification C1 (2026-09-25,
+   documentation only, recorded before any confirmation or holdout outcome
+   was built or inspected)** is appended to that document. It sets
+   holdout gates of ≥ 40 sessions overall, per primary cell, and for the
+   paired contrast (confirmation stays at 100/80/80); unrounded-`Decimal`
+   decisions with exact rational p-values; approval of a future reviewed
+   read-ceiling increase to 64 MiB; the provenance fields for the result;
+   and a separate confirmation-result contract, with the existing
+   evaluator unchanged. Its implementation sequence (§10) is the
    next planned work; each step needs its own review. Before any
    additional VWAP-reversion outcomes are inspected, write and review a
    preregistered plan that fixes, in advance: session-blocked uncertainty

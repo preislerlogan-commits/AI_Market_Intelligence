@@ -7,6 +7,10 @@ document is a result. It authorizes no ingestion, no evaluation run, and no
 code change on its own; each step in "Implementation sequence" below needs
 its own review.
 
+**Amended by dated clarification C1 (2026-09-25).** See "Deviations and
+clarifications" at the end of this document. The sections above are kept
+as originally merged. Where they differ from C1, C1 governs.
+
 Subordinate to [PROJECT_STATE.md](../PROJECT_STATE.md) (authoritative
 status), [DECISION_RULES.md](../DECISION_RULES.md) (binding boundaries), and
 [OPTIONS_DECISION_WORKFLOW.md](OPTIONS_DECISION_WORKFLOW.md) (Phase 1 step
@@ -543,3 +547,167 @@ the discovery study. Any later change is a deviation (§9).
    `vwap_mean_reversion` (§2).
 5. **P-value:** the exact finite-sample sign-based bootstrap p-value,
    with Holm correction for the primary family only (§5).
+
+## Deviations and clarifications
+
+Entries are dated, append-only records made through reviewed changes
+(§9). They are never rewritten after the fact.
+
+### C1 — 2026-09-25: sample gates, numeric precision, record ceiling, provenance, implementation defaults
+
+**Timing.** Recorded on 2026-09-25:
+
+- **Confirmation:** before any confirmation-window bar was ingested,
+  built, or evaluated.
+- **Holdout:** after the prospective holdout's calendar window began
+  (2026-09-23), but before the full window existed. No holdout bar has
+  been ingested, built into an input, inspected, or evaluated.
+
+C1 follows the prior read-only implementation audit. That audit read code
+and documentation only, and no outcomes. C1 clarifies how the
+preregistration is applied. It does not change any window, threshold,
+bucket boundary, effect floor, primary population, or decision mapping.
+
+**Superseded wording in the original text:**
+
+- §5, "Arithmetic: `Decimal`, quantized to `0.0001`". Replaced by C1.2.
+- §8, "Secondary (below-VWAP) label", rule 1. Now also requires the
+  paired-contrast gate (C1.3).
+- §4 and §9 statements that the holdout uses the "identical" pipeline.
+  This still holds, except for the holdout sample gates (C1.1).
+
+#### C1.1 Sample gates by sample
+
+| Gate | Confirmation | Prospective holdout |
+|---|---:|---:|
+| Complete sessions overall | ≥ 100 | ≥ 40 |
+| Contributing sessions in every required primary cell (above-VWAP × `intraday_30m` / `intraday_2h` / `to_session_close`) | ≥ 80 | ≥ 40 |
+| Paired sessions for the below-VWAP close-minus-30m contrast | ≥ 80 | ≥ 40 |
+| Secondary-outcome cells (C1.6) | ≥ 80 | ≥ 40 |
+| Subgroup cells (§7, unchanged) | ≥ 40 sessions and ≥ 50 observations | ≥ 40 sessions and ≥ 50 observations |
+
+- **Why the holdout gates differ.** The fixed holdout window
+  (2026-09-23 → 2026-12-04, about 51 expected sessions) cannot contain 80
+  sessions. Under the original text, every holdout cell would have been
+  `insufficient_sample` by construction. The gates are the only
+  difference between the two samples.
+- **Everything else is identical for the holdout:**
+  - the all-eligible primary population
+  - the three primary horizons
+  - the 1.0-bps research-relevance floor
+  - the session-blocked bootstrap: 10,000 replicates,
+    `random.Random(20260923)` reset per cell, interval
+    `[sorted_estimates[249], sorted_estimates[9749]]`
+  - the finite-sample p-value
+  - Holm correction
+  - the per-horizon status rules and the study-label mapping
+- **Failed holdout gates.** If any required holdout gate fails, the
+  holdout result is `insufficient_sample`. Sessions are never extended,
+  replaced, or borrowed after outcomes are inspected.
+
+#### C1.2 Numeric precision and rounding
+
+- **All calculations and decisions use unrounded `Decimal` values.** This
+  covers:
+  - per-session means and point estimates
+  - bootstrap replicate means and the sorted interval bounds
+  - p-values and Holm-adjusted p-values
+  - paired contrasts
+  - every effect-size comparison, including against ±1.0 bps and 0
+- **Replicates are never rounded** before sorting or tail counting.
+- **P-values are exact rationals:**
+  `p_raw = min(1, 2 · min(L + 1, U + 1) / 10001)`. Holm adjustments are
+  exact multiples of these, capped at 1.
+- **The result contract must serialize enough precision to reproduce
+  every decision.**
+  - If the implementation uses a fixed serialization scale, it must keep
+    at least 12 decimal places in bps.
+  - It must be tested with values immediately above and below every
+    decision boundary: ±1.0 bps, interval bound 0, and adjusted p 0.05.
+- **Display rounding cannot change a result.** Human-readable CLI or
+  documentation displays may round, but a status or label never changes
+  because of display rounding. A 4-decimal display value is never the
+  inferential value.
+
+#### C1.3 Paired-contrast gate
+
+- **Gate.** The below-VWAP close-minus-30m paired contrast is
+  `insufficient_sample` below 80 paired sessions in the confirmation
+  sample, and below 40 in the holdout.
+- **Effect on the label.** An `insufficient_sample` contrast cannot
+  trigger `below_horizon_dependent`. Rule 2 of the secondary label then
+  depends only on whether the three below-VWAP horizon statuses differ.
+
+#### C1.4 Evaluation-record read ceiling (approval only)
+
+- **What is approved.** A future, separately reviewed code change that
+  raises the local evaluation-record read ceiling
+  (`spy_vwap_reversion_serialization.MAX_RECORD_BYTES`) from 20,000,000
+  bytes to exactly 67,108,864 bytes (64 MiB).
+- **Why.** The audit estimated a ~121-session record at about 23 MB. The
+  contract's own maximum of 11,700 decision points is about 29 MB.
+- **Still bounded.** It remains a limit on reading a local file.
+- **Tests the change must include:**
+  - a valid record below the ceiling can be read
+  - a file above the ceiling is refused before it is parsed
+  - existing records remain byte-stable and readable
+  - no-overwrite, symlink refusal, atomic writes, and no directory
+    creation behave exactly as before
+- **No code changes in this entry.**
+
+#### C1.5 Confirmation-result provenance
+
+The separate confirmation-result record must contain:
+
+- the sample enum: `confirmation` or `holdout`
+- its fixed inclusive start and end session dates:
+  - confirmation: 2026-02-23 → 2026-08-14
+  - holdout: 2026-09-23 → 2026-12-04
+- the SHA-256 of the canonical evaluator input file
+- the SHA-256 of the canonical evaluation-record bytes that were analyzed
+- the code commit SHA
+- `base_preregistration_commit_sha =
+  f77d30f8e6e90a6b77eeca11fd11c3da9c9540c1` (the merged preregistration)
+- `clarification_commit_sha`: the GitHub merge commit that brings C1
+  into `main`
+- the complete configuration snapshot and the result schema version
+
+**How `clarification_commit_sha` is set.** C1 cannot contain it, because
+the merge commit does not exist yet. After this documentation PR is merged,
+and before the implementation is reviewed, the merge commit's full
+40-character SHA is added as a frozen implementation constant, alongside
+`base_preregistration_commit_sha`. Neither value is ever supplied at run
+time, inferred, or invented.
+
+**How the code commit is supplied.** The future CLI takes it as an
+explicit, required argument, validated as exactly 40 lowercase
+hexadecimal characters. It never infers or invents a commit value.
+
+**What stays out of the result.** Ingestion-run IDs, builder exclusion
+reports, and per-chunk ingestion counts are recorded in `PROJECT_STATE.md`
+and `DATA_CATALOG.md`, not in the statistical result. The input hash and
+evaluation-record hash give the result its exact data linkage.
+
+#### C1.6 Resolved implementation defaults
+
+- **Architecture: a separate confirmation-result contract.**
+  - It consumes a validated, existing `SpyVwapReversionEvaluationRecord`
+    and reuses its decision points, without recomputing features or
+    regimes.
+  - The existing evaluator, its contracts, and the
+    `spy-vwap-reversion-evaluation-1` schema version stay unchanged.
+- **P-values:** exact rational bootstrap p-values (C1.2).
+- **Secondary outcome gates:** secondary cells (touch rate, MFE/MAE,
+  floored percentage retraced, session quantiles, below-VWAP per-horizon
+  signed return) use the sample's primary cell gate: 80 for confirmation,
+  40 for holdout.
+- **Subgroup gate:** unchanged at 40 sessions and 50 observations.
+- **Subgroup inference covers signed return only.** Subgroup tables report
+  signed return toward VWAP with an unadjusted interval, and counts for
+  everything else.
+- **No canonical minutes-to-touch aggregate** is implemented or reported.
+- **Complete sessions** are derived from the evaluation record. A session
+  is complete when it has exactly 78 decision points, with bar indices
+  0–77, and its final point carries `session_bars_complete=True`.
+- **Out of scope:** options, P&L, recommendations, execution, and Options
+  Strategy Agent work. Step f remains unauthorized.
