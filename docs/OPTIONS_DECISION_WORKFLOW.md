@@ -815,7 +815,12 @@ before the previous one is complete and recorded.
   untouched holdout (2026-09-23 through 2026-12-04), the primary
   above-VWAP outcome over all eligible points, session-blocked bootstrap
   intervals with Holm correction, a 1.0-bps smallest effect of interest,
-  and the decision labels, all before any new data is ingested. Before inspecting
+  and the decision labels, all before any new data is ingested. Dated
+  clarification C1 (2026-09-25), appended to that document, adds
+  holdout-specific sample gates (≥ 40), unrounded-`Decimal` decision
+  arithmetic, provenance fields, and the separate result-contract
+  architecture. It changes no window, threshold, or decision mapping.
+  Nothing is implemented or run yet. Before inspecting
   any additional outcomes, write and review a preregistered
   evaluation-hardening and sample-expansion plan: session-blocked
   uncertainty estimates; robust distribution/quantile statistics; fixed,
