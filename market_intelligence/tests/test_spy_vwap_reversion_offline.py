@@ -2,7 +2,9 @@
 LLM, network, connector, brokerage, or database dependency -- statically
 (AST import scan) and dynamically (fresh-interpreter module import).
 Mirrors test_spy_regime_engine_offline.py, extended to the three new
-evaluation modules plus the CLI script.
+evaluation modules plus the CLI script -- and, since the preregistered
+confirmation analysis, to its three modules
+(``spy_vwap_reversion_confirmation*.py``) and its CLI script.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EVALUATION_DIR = REPO_ROOT / "market_intelligence" / "evaluation"
 CLI_SCRIPT = REPO_ROOT / "scripts" / "evaluate_spy_vwap_reversion.py"
+CONFIRMATION_CLI_SCRIPT = REPO_ROOT / "scripts" / "run_spy_vwap_confirmation.py"
 
 MODULE_FILES = sorted(EVALUATION_DIR.glob("spy_vwap_reversion_*.py"))
 
@@ -36,6 +39,10 @@ FORBIDDEN_IMPORT_PREFIXES = (
     "market_intelligence.config",
 )
 
+# Additionally forbidden for the confirmation analysis: no brokerage,
+# provider SDK, or subprocess surface of any kind.
+CONFIRMATION_EXTRA_FORBIDDEN = ("anthropic", "alpaca", "subprocess", "pandas", "pyarrow")
+
 
 def _imported_names(tree: ast.AST) -> set[str]:
     names: set[str] = set()
@@ -52,7 +59,13 @@ def _imported_names(tree: ast.AST) -> set[str]:
 
 def test_there_are_evaluation_module_files_to_scan():
     assert MODULE_FILES
-    assert len(MODULE_FILES) == 3
+    # Three evaluation modules plus the three confirmation-analysis modules.
+    assert len(MODULE_FILES) == 6
+    assert {path.name for path in MODULE_FILES} >= {
+        "spy_vwap_reversion_confirmation.py",
+        "spy_vwap_reversion_confirmation_contracts.py",
+        "spy_vwap_reversion_confirmation_serialization.py",
+    }
 
 
 @pytest.mark.parametrize("path", MODULE_FILES, ids=lambda p: p.name)
@@ -107,6 +120,60 @@ def test_importing_the_evaluation_modules_in_a_fresh_interpreter_pulls_in_nothin
         "assert not leaked, leaked\n"
         "prefixes = ('data_connectors', 'model_clients', 'storage', 'agents',\n"
         "            'orchestration', 'config')\n"
+        "boundary_violations = [\n"
+        "    m for m in sys.modules\n"
+        "    if m.startswith('market_intelligence.') and any(k in m for k in prefixes)\n"
+        "]\n"
+        "assert not boundary_violations, boundary_violations\n"
+        "print('ok')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ok"
+
+
+def test_confirmation_cli_script_imports_no_forbidden_dependency():
+    tree = ast.parse(
+        CONFIRMATION_CLI_SCRIPT.read_text(encoding="utf-8"), filename=str(CONFIRMATION_CLI_SCRIPT)
+    )
+    for name in _imported_names(tree):
+        for prefix in FORBIDDEN_IMPORT_PREFIXES + CONFIRMATION_EXTRA_FORBIDDEN:
+            assert not (name == prefix or name.startswith(prefix + ".")), (
+                f"{CONFIRMATION_CLI_SCRIPT.name} imports forbidden module {name!r}"
+            )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [p for p in MODULE_FILES if p.name.startswith("spy_vwap_reversion_confirmation")],
+    ids=lambda p: p.name,
+)
+def test_confirmation_modules_import_no_extra_forbidden_dependency(path):
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for name in _imported_names(tree):
+        for prefix in CONFIRMATION_EXTRA_FORBIDDEN:
+            assert not (name == prefix or name.startswith(prefix + ".")), (
+                f"{path.name} imports forbidden module {name!r}"
+            )
+
+
+def test_importing_the_confirmation_modules_in_a_fresh_interpreter_pulls_in_nothing_networked():
+    code = (
+        "import sys\n"
+        "import market_intelligence.evaluation.spy_vwap_reversion_confirmation\n"
+        "import market_intelligence.evaluation.spy_vwap_reversion_confirmation_contracts\n"
+        "import market_intelligence.evaluation.spy_vwap_reversion_confirmation_serialization\n"
+        "banned = {'openai', 'anthropic', 'duckdb', 'httpx', 'socket', 'requests',\n"
+        "          'subprocess', 'pandas', 'pyarrow'}\n"
+        "leaked = banned & set(sys.modules)\n"
+        "assert not leaked, leaked\n"
+        "prefixes = ('data_connectors', 'model_clients', 'storage', 'agents',\n"
+        "            'orchestration', 'config', 'contract_selection')\n"
         "boundary_violations = [\n"
         "    m for m in sys.modules\n"
         "    if m.startswith('market_intelligence.') and any(k in m for k in prefixes)\n"
