@@ -115,7 +115,12 @@ authorize step f; the next research step is a preregistered
 evaluation-hardening and sample-expansion plan (see step d below), now
 drafted as
 [SPY_VWAP_REVERSION_PREREGISTRATION.md](SPY_VWAP_REVERSION_PREREGISTRATION.md)
-and not yet implemented or run.
+and not yet implemented or run. (Superseding update, 2026-09-25: the plan
+was implemented and its single confirmation run completed and verified,
+with primary label `supported_for_further_shadow_research`. See
+[SPY_VWAP_REVERSION_CONFIRMATION_RESULT.md](SPY_VWAP_REVERSION_CONFIRMATION_RESULT.md).
+It is not validation and does not authorize step f; the holdout remains
+sealed.)
 **Step e — the deterministic Contract Selector — is now also done
 (2026-09-16), implemented and tested entirely offline with synthetic
 fixtures only.**
@@ -846,6 +851,30 @@ before the previous one is complete and recorded.
   never used to tune the existing five-week result. Implementing any of
   these additions requires its own separate review. **Step f (the Options
   Strategy Agent) is not authorized or begun by this result.**
+
+  **Confirmation result (2026-09-25, `PROJECT_STATE.md` Completed Work Log
+  item 54; report
+  [SPY_VWAP_REVERSION_CONFIRMATION_RESULT.md](SPY_VWAP_REVERSION_CONFIRMATION_RESULT.md)).**
+  - **Ingestion.** Seven bounded IEX ingestion runs added 10,543 bars.
+  - **Sample.** 121 complete confirmation sessions from 2026-02-23 through
+    2026-08-14; the 4 excluded weekdays are market holidays.
+  - **Primary (above-VWAP, all eligible points).** Positive at all three
+    horizons: 30m 4.0522 bps, 2h 12.8834, close 16.9561, each with Holm
+    p 6/10001. Label: **`supported_for_further_shadow_research`**.
+  - **Secondary (below-VWAP).** Positive at all three horizons. The
+    close-minus-30m contrast is materially different, so the label is
+    **`below_horizon_dependent`**: the magnitude changes with horizon, not
+    the direction.
+  - **Verification.** An independent recomputation was byte-identical.
+  - **What it permits.** Only proposing a separately reviewed
+    shadow-research stage for the underlying setup. It is not validation,
+    an options edge, a recommendation, or a trading signal.
+  - **Caveats.** IEX only. No relative-volume, catalyst, or breadth
+    context. p-values sit at the 10,000-replicate resolution floor. The code
+    SHA is operator-supplied. No options returns, costs, or P&L were
+    measured.
+  - **Holdout.** The prospective holdout (2026-09-23 → 2026-12-04) remains
+    sealed. **Step f remains unauthorized.**
 - **e.** *(fifth Phase 1 step — done offline, 2026-09-16, synthetic tests
   only; feed-safety-boundary fix applied the same day, Completed Work Log
   item 46)* Build the Deterministic Contract Selector (eligible-set

@@ -328,6 +328,24 @@ more bounded, controlled run — not a complete, gap-free, or
 research-validated bars dataset; see `PROJECT_STATE.md` (Completed Work Log
 item 52) and the bars entry in `DATA_CATALOG.md`.
 
+**Seven bounded runs with `--execute` for the SPY VWAP confirmation window
+(2026-09-25).**
+- **Setup.** The database was backed up before execution. The script was
+  then run seven times, one calendar-month chunk each, covering
+  2026-02-20T00:00:00Z through 2026-08-15T00:00:00Z: SPY, `5Min`,
+  `feed=iex`, `adjustment=raw`, `currency=USD`, `limit=1000`,
+  `max_pages=5`.
+- **Outcome.** 10,543 bars were received and inserted in total, with
+  0 existing/updated and 0 failed. All seven ingestion-run records were
+  `succeeded`; their run IDs are listed in `PROJECT_STATE.md` (Completed
+  Work Log item 54) and `DATA_CATALOG.md`.
+- **Health.** A post-run health check again reported schema version `0009`,
+  9 migrations, and `healthy=True`. The earlier discovery-window rows
+  (2026-08-17 → 2026-09-22) were unchanged, and nothing on or after
+  2026-09-23 was ingested.
+- **Scope.** These are bounded, controlled runs for a preregistered research
+  sample, not a complete, gap-free, or research-validated bars dataset.
+
 ## Macro-observation storage
 
 `macro_observations`
