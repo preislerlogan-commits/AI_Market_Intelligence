@@ -1,11 +1,15 @@
 # Evidence Consumer Rules
 
-**Status: DESIGN ONLY, drafted and revised before review; awaiting review
-(2026-09-28).** These
+**Status: REVIEWED DESIGN — accepted by the merge that introduced these
+documents (2026-09-28). DESIGN ONLY.** These
 rules govern every future consumer of the Evidence Envelope designed in
 [EVIDENCE_ENVELOPE_DESIGN.md](EVIDENCE_ENVELOPE_DESIGN.md), using the
 producers and grants in [EVIDENCE_REGISTRY.md](EVIDENCE_REGISTRY.md).
 
+- **Merge accepts the design only.** The merge accepts this design but
+  authorizes no implementation, migration, provider access, collection,
+  dashboard, assistant, ranking, notification, Options Strategy Agent, or
+  trading.
 - **Nothing is implemented or authorized.** No dashboard, assistant, setup
   ranker, contract-review UI or notification layer exists, and none is
   authorized by these rules.

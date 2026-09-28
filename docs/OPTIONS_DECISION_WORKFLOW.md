@@ -5,7 +5,8 @@ product described in [PRODUCT_VISION.md](PRODUCT_VISION.md) and
 [PRODUCT_ROADMAP.md](PRODUCT_ROADMAP.md). The SPY VWAP-reversion research
 below is one evidence module, not the whole product. Neither product
 document changes any boundary in this workflow. The product-level
-[Evidence Envelope design](EVIDENCE_ENVELOPE_DESIGN.md) (draft) only
+[Evidence Envelope design](EVIDENCE_ENVELOPE_DESIGN.md) (reviewed design;
+not implemented) only
 describes how this workflow's outputs could later be *referenced* as
 evidence; it is not part of the frozen VWAP protocol and changes none of its
 rules.

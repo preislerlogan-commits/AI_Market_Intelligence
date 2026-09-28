@@ -1,11 +1,16 @@
-# Evidence Registry — Initial Draft
+# Evidence Registry — Initial Content
 
-**Status: DESIGN ONLY, drafted and revised before review; awaiting review
-(2026-09-28). Registry
-version label: `registry-draft-0`.** This is the human-readable initial
+**Status: REVIEWED DESIGN — accepted by the merge that introduced these
+documents (2026-09-28). DESIGN ONLY. Registry version label:
+`registry-draft-0`** (a fixed identifier for this prose version, not a
+review status). This is the human-readable initial
 content of the evidence registry designed in
 [EVIDENCE_ENVELOPE_DESIGN.md](EVIDENCE_ENVELOPE_DESIGN.md).
 
+- **Merge accepts the design only.** The merge accepts this design but
+  authorizes no implementation, migration, provider access, collection,
+  dashboard, assistant, ranking, notification, Options Strategy Agent, or
+  trading.
 - **Nothing is implemented.** No registry file, registry code, envelope
   adapter, or evidence table exists. "Implemented" below describes only the
   **existing module** behind a producer, never an envelope emitter.
@@ -19,7 +24,7 @@ content of the evidence registry designed in
 
 ## 1. Registry versioning
 
-- **This draft has no hash.** `registry-draft-0` is prose. The first
+- **This prose version has no hash.** `registry-draft-0` is prose. The first
   machine-readable registry, once authorized, receives an
   `evr1_<sha256>` identity over its canonical content (design §L).
 - **Every change is a new version.** Adding, removing or editing any

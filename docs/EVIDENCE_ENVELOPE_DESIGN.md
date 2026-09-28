@@ -1,11 +1,14 @@
 # Shared Evidence Envelope — Contract Design
 
-**Status: DESIGN ONLY, drafted and revised before review, awaiting review
-(2026-09-28).** This
-document proposes the versioned contract family that every evidence
+**Status: REVIEWED DESIGN — accepted by the merge that introduced these
+documents (2026-09-28). DESIGN ONLY.** This document proposes the versioned contract family that every evidence
 producer would emit and every consumer would read. It is roadmap workstream B,
 priority 2 ([PRODUCT_ROADMAP.md](PRODUCT_ROADMAP.md)).
 
+- **Merge accepts the design only.** The merge accepts this design but
+  authorizes no implementation, migration, provider access, collection,
+  dashboard, assistant, ranking, notification, Options Strategy Agent, or
+  trading.
 - **Nothing is implemented or authorized.** No code, Pydantic model,
   migration, table, registry file, or adapter exists. Implementation needs a
   separate, explicit authorization (§Q.5).
@@ -1301,8 +1304,9 @@ satisfies a requirement; it records why the requirement is unmet.
 - **SOURCE_POLICY uncertainty gap.** There is still no stored uncertainty
   field for news. `uncertainty_codes` can carry fixed codes, but a news
   verification status needs its own design.
-- **Not reviewed.** This design, the registry and the consumer rules must be
-  reviewed before any implementation authorization.
+- **No implementation authorization.** This design, the registry and the
+  consumer rules are reviewed and accepted, but no implementation is
+  authorized; §Q.5 describes what a separate authorization would need.
 
 ### Q.5 Authorization required for offline implementation
 

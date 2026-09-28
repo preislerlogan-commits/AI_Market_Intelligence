@@ -5980,9 +5980,13 @@ entry describes something that has already been built, ingested, or attempted;
       authorized.
 
 58. **Shared Evidence Envelope and evidence registry designed (2026-09-28,
-    branch `design/shared-evidence-envelope`). DESIGN ONLY, drafted and
-    revised before review; awaiting review. No implementation or registry
-    code exists.**
+    branch `design/shared-evidence-envelope`). REVIEWED DESIGN — accepted by
+    the merge that introduced these documents; complete as a design
+    milestone. No implementation or registry code exists.**
+    - **What the merge does and does not do.** It accepts the design. It
+      authorizes no implementation, migration, provider access, collection,
+      dashboard, assistant, ranking, notification, Options Strategy Agent,
+      or trading.
     - **Documents.**
       [docs/EVIDENCE_ENVELOPE_DESIGN.md](docs/EVIDENCE_ENVELOPE_DESIGN.md)
       (the versioned contract family `evidence-envelope-1`),
@@ -6364,12 +6368,12 @@ This is the forward plan. It replaces the historical content now under
       evaluation, then the separately authorized latency test (no earlier
       than 2026-12-07). Stage 2 stays `design_complete_test_pending`, and
       Stage 3 stays unauthorized.
-   2. **Next independent step: review the Evidence Envelope design**
-      (item 58). The design is drafted, not reviewed. After review, offline
-      implementation would need the separate authorization described in
-      [design §Q.5](docs/EVIDENCE_ENVELOPE_DESIGN.md). Nothing is
-      implemented. This work must not touch holdout data, frozen research
-      documents, or the shadow sample.
+   2. **Next independent step: decide whether to separately authorize
+      the bounded offline implementation** described in
+      [design §Q.5](docs/EVIDENCE_ENVELOPE_DESIGN.md). The design review is
+      complete (item 58); nothing is implemented, and no implementation is
+      authorized until that decision is made. Any such work must not touch
+      holdout data, frozen research documents, or the shadow sample.
 
 Manual-only trading is preserved throughout. The three existing analysis
 agents (Market Evidence, News, Macro) remain non-directional; the Phase 1
