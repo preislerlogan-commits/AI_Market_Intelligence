@@ -1,15 +1,21 @@
-# SPY VWAP-Extension/Reversion — Shadow-Research Protocol (draft)
+# SPY VWAP-Extension/Reversion — Shadow-Research Protocol
 
-**Status: DRAFT — awaiting review. Not frozen. Documentation only.** Nothing in
-this document is implemented, scheduled, collected, or authorized.
+**Status: PREREGISTERED.** This exact version becomes frozen when merged
+into `main`. In `main`, the merge that introduced this document is its
+immutable protocol identity (§L). It is documentation and protocol design
+only.
 
-- **Nothing is authorized.** This document authorizes no recorder,
-  scheduler, unattended operation, dashboard, alert, migration, database
-  write, ingestion, collection, selector integration, or agent.
-- **Proposed values.** Every numerical value marked *proposed* becomes
-  binding only when this document is reviewed and merged.
-- **How it freezes.** The protocol is frozen **only by merge** (§L). Each
-  stage in §K needs its own explicit authorization.
+- **Values.** The numerical values (P1–P8, L, the 2-weekday P6 deadline,
+  and the 60 / 84-day / 182-day boundaries) are accepted, through that
+  merge, as the preregistered protocol values.
+- **Feasibility not shown.** Their technical feasibility has **not** been
+  demonstrated. Any change needs a reviewed protocol amendment and a new
+  collection period (§L).
+- **Nothing is authorized.** This document authorizes no implementation,
+  recorder, migration, database write, scheduling, unattended operation,
+  dashboard, alert, ingestion, collection, options work, selector
+  integration, or agent. Each stage in §K needs its own explicit
+  authorization.
 
 Subordinate to [PROJECT_STATE.md](../PROJECT_STATE.md),
 [DECISION_RULES.md](../DECISION_RULES.md),
@@ -313,7 +319,8 @@ overlapping five-minute observations. The protocol preserves this:
   `session_contract_rejected`
 - `EligibilityStatus`: `vwap_unavailable`, `zero_extension`
 
-Everything below marked *italic* is **proposed** and bounded to this list.
+Everything below marked *italic* is vocabulary introduced by this
+protocol, bounded to this list.
 
 | Condition | Reason | Effect |
 |---|---|---|
@@ -345,7 +352,7 @@ finds all 78 valid gapless slots.
   close or a data gap. Both are `structurally_incomplete_day` and are
   reported by count.
 
-### F.2 Recording latency (*proposed*, not shown feasible)
+### F.2 Recording latency (frozen value; feasibility not shown)
 
 - **Definition.** Latency = durable-write timestamp − scheduled bar close.
   It starts at the scheduled five-minute close, not at detector start, and
@@ -354,7 +361,7 @@ finds all 78 valid gapless slots.
   first-observed, and durable-write timestamps are all recorded.
 - **Negative latency** (durable write before the scheduled close) is a P5
   `timing_violation`.
-- **Proposed bound L ≤ 240 s.** An observation written after L is `late`.
+- **Bound L ≤ 240 s.** An observation written after L is `late`.
   It is retained for audit, never portrayed as timely, and always excluded
   from the behavioral population.
 - **Feasibility is not yet shown.** A separately authorized, bounded IEX
@@ -418,8 +425,9 @@ finds all 78 valid gapless slots.
 
 ## H. Gates, sample lock, stopping, and labels
 
-All values are **proposed**. They are justified by operational reliability,
-not by returns.
+All values are **preregistered and frozen by this protocol's merge**. They
+are justified by operational reliability, not by returns, and their
+feasibility has not been demonstrated.
 
 ### H.1 Denominators and process metrics
 
@@ -533,15 +541,24 @@ obligations carry no outcome value. Per-horizon observation and session counts d
   converted to UTC for storage:
   - `review_not_before` = S0 + 84 days (12 weeks)
   - `hard_stop` = S0 + 182 days (26 weeks)
-- **Locked sample.** Exactly the **first 60 complete covered sessions** in
-  date order. Once the 60th is reconciliation_complete, no later session
-  may enter.
-- **Stopping at the 60th.** Collection stops after the session close at
-  which the provisional count of complete covered sessions reaches 60.
-  - If reconciliation later demotes one of them, collection resumes at the
-    next full session, but only before `hard_stop`.
-  - Any observation collected beyond the 60th qualifying session is outside
-    the locked sample and is never inspected in the locked review.
+- **Locked sample.** Exactly the **first 60 complete covered sessions**, in
+  date order, that reconciliation admits.
+- **Provisional sessions and pausing.** A session is *provisional* from its
+  close until reconciliation decides whether it qualifies as a complete
+  covered session. Collection pauses when the provisional count (admitted
+  sessions plus sessions awaiting reconciliation) first reaches 60.
+  - **Qualifying.** Reconciliation decides whether each provisional session
+    qualifies. A provisional session that fails never enters the locked
+    sample.
+  - **Resuming.** If fewer than 60 reconciliation_complete qualifying
+    sessions remain, collection resumes at the next full session, but only
+    before `hard_stop`.
+  - **Admitted sessions are immutable.** Once a session is
+    reconciliation_complete and admitted to the locked sample, it can't be
+    demoted or replaced.
+  - **Closing the sample.** Once the 60th qualifying session is admitted,
+    no later session may enter. Any observation collected beyond it is
+    outside the locked sample and is never inspected in the locked review.
 - **When review may happen.** The locked behavioral review may occur only
   when both hold:
   1. all 60 locked-sample sessions are reconciliation_complete (§B.5); and
@@ -769,10 +786,12 @@ execution.
 
 ## Open questions for review
 
-1. **Latency feasibility.** Can IEX deliver closed bars within the proposed
+1. **Latency feasibility.** Can IEX deliver closed bars within the frozen
    L? This needs a bounded connectivity test at stage 2.
-2. **Values to freeze.** P1–P8, L, the 2-weekday P6 deadline, and
-   the 60 / 84-day / 182-day values need review and freezing.
+2. **Feasibility of frozen values.** The values are frozen by this
+   protocol's merge, but their technical feasibility has not been
+   demonstrated. Any change requires a reviewed amendment and a new
+   collection period.
 3. **Time source.** Which documented time source to use, and whether the
    ±1-second skew tolerance is practical on the target host.
 4. **Post-session data.** The exact post-session replay data acquisition
