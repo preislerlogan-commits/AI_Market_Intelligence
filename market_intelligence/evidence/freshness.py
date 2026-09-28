@@ -12,8 +12,14 @@ functions. Order of evaluation, for every kind:
 Clock semantics: ``clock_health_item_id`` names a clock fact only when a
 particular fact was evaluated (healthy, unhealthy, too old, or unreadable).
 Otherwise it is null, and the bounded ``clock_health_reason`` records why
-(no clock fact, clock policy unset, or clock not evaluated because the
-freshness policy is timeless or unset).
+(no clock fact, clock policy unset, ambiguous clock facts, or clock not
+evaluated because the freshness policy is timeless or unset).
+
+Clock facts are chosen by substantive effective time only. Identical retries
+share one content-addressed ID and count once. If several distinct facts
+share the latest effective time, no reading is accepted: the result is
+``ambiguous_clock_facts`` with the competing IDs sorted for audit (the ID
+never selects a reading), and freshness becomes ``unknown``.
 
 ``freeze_at_session_close`` needs an exchange calendar, which does not exist
 (design §Q.4); such policies fail closed to ``unknown``
@@ -24,8 +30,9 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from datetime import datetime, timedelta
+from typing import Annotated
 
-from pydantic import BaseModel, ValidationError, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from market_intelligence.evidence.canonical import canonical_json_bytes
 from market_intelligence.evidence.contracts import EvidenceFreshness, EvidenceItem
@@ -51,6 +58,9 @@ class ClockAssessment(BaseModel):
 
     reason: ClockHealthReason
     clock_item_id: ItemId | None
+    competing_clock_item_ids: Annotated[list[ItemId], Field(max_length=32)] = Field(
+        default_factory=list
+    )
 
     @model_validator(mode="after")
     def _check_assessment(self) -> ClockAssessment:
@@ -58,6 +68,12 @@ class ClockAssessment(BaseModel):
             raise ValueError("a clock assessment always evaluates the clock policy")
         if (self.reason in CLOCK_FACT_EVALUATED) != (self.clock_item_id is not None):
             raise ValueError("clock_item_id is present iff a clock fact was evaluated")
+        ambiguous = self.reason is ClockHealthReason.AMBIGUOUS_CLOCK_FACTS
+        ids = self.competing_clock_item_ids
+        if ambiguous != (len(ids) >= 2) or (not ambiguous and ids):
+            raise ValueError("competing clock IDs are listed iff clock facts are ambiguous")
+        if ids != sorted(set(ids)):
+            raise ValueError("competing clock IDs must be sorted and unique")
         return self
 
     @property
@@ -85,7 +101,16 @@ def assess_clock(
     ]
     if not candidates:
         return ClockAssessment(reason=ClockHealthReason.NO_CLOCK_FACT, clock_item_id=None)
-    latest = max(candidates, key=lambda i: (i.effective_at_utc, i.item_id))
+    latest_at = max(item.effective_at_utc for item in candidates)
+    # Identical retries share one content-addressed ID, so they count once.
+    tied = {item.item_id: item for item in candidates if item.effective_at_utc == latest_at}
+    if len(tied) > 1:
+        return ClockAssessment(
+            reason=ClockHealthReason.AMBIGUOUS_CLOCK_FACTS,
+            clock_item_id=None,
+            competing_clock_item_ids=sorted(tied),
+        )
+    (latest,) = tied.values()
     max_age = policy.max_measurement_age_seconds
     max_offset = policy.max_abs_offset_ms
     max_sync = policy.max_sync_age_seconds
@@ -141,6 +166,9 @@ def evaluate_freshness(
             clock_health_item_id=clock.clock_item_id if evaluated_clock else None,
             clock_health_reason=(
                 clock.reason if evaluated_clock else ClockHealthReason.NOT_EVALUATED
+            ),
+            competing_clock_item_ids=(
+                list(clock.competing_clock_item_ids) if evaluated_clock else []
             ),
         )
 

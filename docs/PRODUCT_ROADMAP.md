@@ -104,7 +104,7 @@ documents, or the shadow sample.
    merged (2026-09-28):** [EVIDENCE_ENVELOPE_DESIGN.md](EVIDENCE_ENVELOPE_DESIGN.md),
    [EVIDENCE_REGISTRY.md](EVIDENCE_REGISTRY.md),
    [EVIDENCE_CONSUMER_RULES.md](EVIDENCE_CONSUMER_RULES.md). **Offline
-   core implemented (2026-09-28, awaiting review):**
+   core reviewed and merged (2026-09-28):**
    `market_intelligence/evidence/`, under the §Q.5 authorization only.
    Storage, adapters, a registry file and every consumer remain
    unauthorized.

@@ -803,3 +803,30 @@ def test_ambiguity_links_a_matching_unresolved_conflict_but_stays_not_ready():
         conflict.conflict_id
     ]
     assert not with_conflict.machine_decision_ready
+
+
+# --- Ambiguous clock facts at bundle level -------------------------------------------------
+
+
+def test_ambiguous_clock_blocks_readiness_and_is_order_independent():
+    bar, calc, clock = _core()
+    other_clock = f.clock_item(f.T0, offset_ms=5000)
+    forward = f.bundle(f.recorded(bar, calc, clock, other_clock))
+    backward = f.bundle(f.recorded(other_clock, clock, calc, bar))
+    assert forward.bundle_id == backward.bundle_id
+    assert not forward.machine_decision_ready
+    expected = sorted([clock.item_id, other_clock.item_id])
+    for entry in forward.entries:
+        if entry.required:
+            assert entry.freshness.state is FreshnessState.UNKNOWN
+            assert entry.freshness.clock_health_item_id is None
+            assert entry.freshness.competing_clock_item_ids == expected
+
+
+def test_a_uniquely_newer_clock_fact_keeps_the_bundle_ready():
+    bar, calc, _ = _core()
+    older_a = f.clock_item(f.T0 - timedelta(minutes=2), offset_ms=7)
+    older_b = f.clock_item(f.T0 - timedelta(minutes=2), offset_ms=9)
+    newer = f.clock_item(f.T0)
+    manifest = f.bundle(f.recorded(bar, calc, older_a, older_b, newer))
+    assert manifest.machine_decision_ready

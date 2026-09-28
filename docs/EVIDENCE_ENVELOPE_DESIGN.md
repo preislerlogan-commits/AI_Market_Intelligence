@@ -5,12 +5,13 @@ documents (2026-09-28). DESIGN ONLY.** This document proposes the versioned cont
 producer would emit and every consumer would read. It is roadmap workstream B,
 priority 2 ([PRODUCT_ROADMAP.md](PRODUCT_ROADMAP.md)).
 
-- **Merge accepts the design only.** The merge accepts this design but
-  authorizes no implementation, migration, provider access, collection,
-  dashboard, assistant, ranking, notification, Options Strategy Agent, or
-  trading.
-- **Implementation status (2026-09-28).** The bounded §Q.5 offline core
-  is implemented in `market_intelligence/evidence/` (PROJECT_STATE item 59):
+- **Merge accepts the design only.** The merge that introduced these
+  documents accepted this design but authorized no implementation, migration,
+  provider access, collection, dashboard, assistant, ranking, notification,
+  Options Strategy Agent, or trading.
+- **Implementation status (2026-09-28).** The bounded §Q.5 offline core,
+  separately authorized, is reviewed and merged in
+  `market_intelligence/evidence/` (PROJECT_STATE item 59):
   contracts, canonical IDs, validators, freshness evaluation, bundles, the
   Contract Selector boundary and the holdout guard. No migration, table,
   store, registry file, populated registry, adapter, or consumer exists, and

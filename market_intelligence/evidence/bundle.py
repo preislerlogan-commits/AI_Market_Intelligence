@@ -53,6 +53,7 @@ from market_intelligence.evidence.contracts import (
 from market_intelligence.evidence.enums import (
     AmbiguityReason,
     BundlePurpose,
+    ClockHealthReason,
     ConflictSeverity,
     ConflictStatus,
     ConsumerId,
@@ -434,6 +435,7 @@ def build_bundle(
     ready = (
         not missing
         and not ambiguous
+        and clock.reason is not ClockHealthReason.AMBIGUOUS_CLOCK_FACTS
         and all(
             e.machine_decision_eligible and e.freshness.state in READY_STATES
             for e in entries

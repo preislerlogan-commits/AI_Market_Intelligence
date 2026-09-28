@@ -376,6 +376,7 @@ class ClockHealthReason(StrEnum):
     CLOCK_POLICY_UNSET = "clock_policy_unset"
     CLOCK_FACT_TOO_OLD = "clock_fact_too_old"
     CLOCK_FACT_UNREADABLE = "clock_fact_unreadable"
+    AMBIGUOUS_CLOCK_FACTS = "ambiguous_clock_facts"
 
 
 CLOCK_FACT_EVALUATED = frozenset(
@@ -392,6 +393,7 @@ CLOCK_UNHEALTHY_REASONS = frozenset(
 )
 CLOCK_UNKNOWN_REASONS = frozenset(
     {
+        ClockHealthReason.AMBIGUOUS_CLOCK_FACTS,
         ClockHealthReason.NO_CLOCK_FACT,
         ClockHealthReason.CLOCK_POLICY_UNSET,
         ClockHealthReason.CLOCK_FACT_TOO_OLD,

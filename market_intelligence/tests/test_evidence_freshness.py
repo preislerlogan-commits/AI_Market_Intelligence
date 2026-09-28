@@ -247,3 +247,82 @@ def test_status_items_are_evaluated_for_their_own_currency():
     result = _evaluate(status, f.T0 + timedelta(minutes=21))
     assert result.state is FreshnessState.CURRENT
     assert status.evidence_kind is EvidenceKind.STALE_EVIDENCE
+
+
+# --- Ambiguous clock facts --------------------------------------------------------------
+
+
+def test_identical_clock_retries_count_as_one_fact():
+    retry = f.clock_item(f.T0)
+    assert retry.item_id == CLOCK_ITEM.item_id
+    assessment = assess_clock([CLOCK_ITEM, retry], REGISTRY.clock_policy, f.T0)
+    assert assessment.reason is ClockHealthReason.HEALTHY
+    assert assessment.clock_item_id == CLOCK_ITEM.item_id
+    assert assessment.competing_clock_item_ids == []
+
+
+def test_one_unique_latest_clock_fact_is_evaluated_normally():
+    assessment = assess_clock([CLOCK_ITEM], REGISTRY.clock_policy, f.T0)
+    assert assessment.reason is ClockHealthReason.HEALTHY
+    assert assessment.competing_clock_item_ids == []
+
+
+def test_two_distinct_facts_at_the_latest_time_are_ambiguous():
+    other = f.clock_item(f.T0, offset_ms=7)
+    assessment = assess_clock([CLOCK_ITEM, other], REGISTRY.clock_policy, f.T0)
+    assert assessment.reason is ClockHealthReason.AMBIGUOUS_CLOCK_FACTS
+    assert assessment.clock_item_id is None
+    assert assessment.competing_clock_item_ids == sorted([CLOCK_ITEM.item_id, other.item_id])
+
+
+def test_conflicting_healthy_and_unhealthy_readings_are_ambiguous():
+    unhealthy = f.clock_item(f.T0, offset_ms=5000)
+    assessment = assess_clock([CLOCK_ITEM, unhealthy], REGISTRY.clock_policy, f.T0)
+    assert assessment.reason is ClockHealthReason.AMBIGUOUS_CLOCK_FACTS
+    assert assessment.clock_item_id is None
+
+
+def test_ambiguous_clock_makes_freshness_unknown_without_an_accepted_fact():
+    other = f.clock_item(f.T0, offset_ms=7)
+    assessment = assess_clock([CLOCK_ITEM, other], REGISTRY.clock_policy, f.T0)
+    result = _evaluate(f.bar_item(), f.T0, clock=assessment)
+    assert result.state is FreshnessState.UNKNOWN
+    assert result.reason is FreshnessReason.CLOCK_HEALTH_UNKNOWN
+    assert result.clock_health_item_id is None
+    assert result.clock_health_reason is ClockHealthReason.AMBIGUOUS_CLOCK_FACTS
+    assert result.competing_clock_item_ids == sorted([CLOCK_ITEM.item_id, other.item_id])
+
+
+def test_reversed_input_order_gives_identical_clock_results():
+    other = f.clock_item(f.T0, offset_ms=7)
+    forward = assess_clock([CLOCK_ITEM, other], REGISTRY.clock_policy, f.T0)
+    backward = assess_clock([other, CLOCK_ITEM], REGISTRY.clock_policy, f.T0)
+    assert forward == backward
+
+
+def test_older_facts_do_not_cause_ambiguity_when_one_is_uniquely_newer():
+    older_a = f.clock_item(f.T0 - timedelta(minutes=2), offset_ms=7)
+    older_b = f.clock_item(f.T0 - timedelta(minutes=2), offset_ms=9)
+    newer = f.clock_item(f.T0 - timedelta(minutes=1))
+    assessment = assess_clock([older_a, older_b, newer], REGISTRY.clock_policy, f.T0)
+    assert assessment.reason is ClockHealthReason.HEALTHY
+    assert assessment.clock_item_id == newer.item_id
+
+
+def test_clock_contracts_require_competing_ids_only_for_ambiguity():
+    with pytest.raises(ValidationError):
+        ClockAssessment(reason=ClockHealthReason.AMBIGUOUS_CLOCK_FACTS, clock_item_id=None)
+    with pytest.raises(ValidationError):
+        ClockAssessment(
+            reason=ClockHealthReason.AMBIGUOUS_CLOCK_FACTS,
+            clock_item_id=CLOCK_ITEM.item_id,
+            competing_clock_item_ids=sorted(
+                [CLOCK_ITEM.item_id, f.clock_item(f.T0, offset_ms=7).item_id]
+            ),
+        )
+    with pytest.raises(ValidationError):
+        ClockAssessment(
+            reason=ClockHealthReason.HEALTHY,
+            clock_item_id=CLOCK_ITEM.item_id,
+            competing_clock_item_ids=[CLOCK_ITEM.item_id],
+        )

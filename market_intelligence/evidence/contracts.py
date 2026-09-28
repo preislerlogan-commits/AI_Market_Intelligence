@@ -1084,12 +1084,24 @@ class EvidenceFreshness(BaseModel):
     reason: FreshnessReason
     clock_health_item_id: ItemId | None
     clock_health_reason: ClockHealthReason
+    # Audit only: the distinct clock facts tied at the latest effective time
+    # when no single reading could be accepted. Sorted by ID; never used to
+    # select a reading.
+    competing_clock_item_ids: Annotated[list[ItemId], Field(max_length=32)] = Field(
+        default_factory=list
+    )
 
     @model_validator(mode="after")
     def _check_freshness(self) -> EvidenceFreshness:
         if self.reason not in _STATE_REASONS[self.state]:
             raise ValueError("freshness reason does not match its state")
         clock = self.clock_health_reason
+        _require_sorted_unique(self.competing_clock_item_ids, "competing_clock_item_ids")
+        ambiguous = clock is ClockHealthReason.AMBIGUOUS_CLOCK_FACTS
+        if ambiguous != (len(self.competing_clock_item_ids) >= 2) or (
+            not ambiguous and self.competing_clock_item_ids
+        ):
+            raise ValueError("competing clock IDs are listed iff clock facts are ambiguous")
         # The ID names a clock fact only when a particular fact was evaluated;
         # every other clock outcome is carried by the bounded reason alone.
         if (clock in CLOCK_FACT_EVALUATED) != (self.clock_health_item_id is not None):
@@ -1288,6 +1300,10 @@ class EvidenceBundleManifestContent(BaseModel):
         if self.machine_decision_ready and (
             self.missing_required_producers
             or self.ambiguous_requirements
+            or any(
+                entry.freshness.clock_health_reason is ClockHealthReason.AMBIGUOUS_CLOCK_FACTS
+                for entry in self.entries
+            )
             or any(
                 entry.required
                 and entry.freshness.state
