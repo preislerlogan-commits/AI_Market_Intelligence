@@ -772,6 +772,29 @@ above) before any database write — so a caller cannot bypass the ceilings by
 hand-constructing an `OptionChainRequest` and calling the repository
 directly.
 
+## Proposed (not existing): SPY VWAP shadow-recorder storage
+
+**Proposed design only; nothing here exists.** Stage 2 of the frozen shadow
+protocol proposes a future migration `0010_create_spy_vwap_shadow_tables.sql`,
+specified in
+[SPY_VWAP_SHADOW_RECORDER_DESIGN.md](SPY_VWAP_SHADOW_RECORDER_DESIGN.md) §F.
+
+- **Proposed tables (ten, insert-only):**
+  - `shadow_collection_periods`, `shadow_session_authorizations`
+  - `shadow_slot_observations`
+  - `shadow_outcome_obligations`, `shadow_outcome_records`
+  - `shadow_replay_runs`, `shadow_reconciliation_units`
+  - `shadow_events`, `shadow_clock_checks`
+  - `shadow_locked_review_manifests`
+- **Conventions.** No DuckDB foreign keys, `CHECK`-enumerated values,
+  deterministic primary keys, and per-session digests.
+- **Not yet done.** The migration has **not** been created or applied. No
+  table exists, the health check is unchanged, and no database write has
+  occurred.
+- **Future requirements.** Creating or applying the migration needs a
+  separately authorized implementation review, a verified database backup
+  first, and migration tests on a temporary database.
+
 ## Components
 
 - `market_intelligence/storage/database.py` — `DuckDBManager`, the

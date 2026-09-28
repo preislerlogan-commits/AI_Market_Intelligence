@@ -891,6 +891,21 @@ before the previous one is complete and recorded.
     prerequisite is satisfied: implementation readiness, the recorded
     holdout result, and a separate collection authorization, all complete
     before the first slot of a session no earlier than 2026-12-07.
+
+  **Stage 2 design (drafted, awaiting review; `PROJECT_STATE.md` item
+  56).** [SPY_VWAP_SHADOW_RECORDER_DESIGN.md](SPY_VWAP_SHADOW_RECORDER_DESIGN.md)
+  and [SPY_VWAP_IEX_LATENCY_TEST_PLAN.md](SPY_VWAP_IEX_LATENCY_TEST_PLAN.md)
+  cover the recorder's contracts, components, proposed storage, and
+  reconciliation, plus the preregistered latency-test plan.
+  - **After merge.** Stage 2 becomes `design_complete_test_pending`, not
+    complete.
+  - **Nothing authorized.** No implementation, migration, database write,
+    provider request, latency test, scheduling, or collection has occurred,
+    and none is authorized. **Stage 3 is not authorized** while the latency
+    test is pending.
+  - **Latency-test timing.** The test can't run during the sealed holdout or
+    before 2026-12-07. It requires the holdout result recorded first and
+    its own authorization.
   It does not authorize step f or any options, selector, recommendation,
   or execution work.
 - **e.** *(fifth Phase 1 step — done offline, 2026-09-16, synthetic tests

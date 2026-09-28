@@ -5881,6 +5881,62 @@ entry describes something that has already been built, ingested, or attempted;
     - **Boundaries hold.** The holdout remains sealed. **The Options
       Strategy Agent (step f) remains unauthorized.**
 
+56. **SPY VWAP shadow recorder — Stage 2 design drafted, awaiting review
+    (2026-09-28, branch `design/spy-vwap-shadow-recorder`). After merge, Stage
+    2's status is `design_complete_test_pending`. It is NOT complete: the
+    Stage-2 latency test remains unexecuted.** The design documents
+    are
+    [docs/SPY_VWAP_SHADOW_RECORDER_DESIGN.md](docs/SPY_VWAP_SHADOW_RECORDER_DESIGN.md)
+    and
+    [docs/SPY_VWAP_IEX_LATENCY_TEST_PLAN.md](docs/SPY_VWAP_IEX_LATENCY_TEST_PLAN.md).
+    They are governed by the frozen protocol at
+    `f79d37e6c762e35da3d575c35276a0be5adbc66a`, and no definition changed.
+    They propose:
+    - 14 separated components (pure evaluation and classification;
+      side-effecting retrieval and persistence)
+    - versioned contracts that reuse the existing enums
+    - deterministic identities
+    - a UTC/monotonic clock design with idle-window clock checks
+    - ten insert-only DuckDB tables for a future migration `0010`, not
+      created
+    - insert-only repository interfaces, with outcome values readable only
+      after manifest sealing
+    - the slot, outcome, reconciliation, metric, and sample-lock algorithms
+    - a future test matrix
+    - a preregistered latency-test plan
+
+    Revised before review. The design now specifies:
+    - **Durable-write timestamp:** the post-commit wall and monotonic
+      timestamps captured after the observation COMMIT returns, stored in a
+      confirmation event. They are never invented on recovery.
+    - **Event identities:** content-based, with a schedule-derived
+      occurrence key and a single-writer lock.
+    - **Manifest:** a `manifest_payload` hashed separately from its ID and
+      sealing metadata. It is a reproducible snapshot, not an independent
+      source of facts.
+    - **Latency test:** one session-wide 5-second polling loop; 3,823
+      requests maximum per session; a hard cap of 38,230; a label
+      denominator of 390 with a minimum passing numerator of 387.
+
+    **Stage 3 decision (recorded at review):**
+    - Stage 2 cannot close, and Stage 3 cannot begin, until the latency test
+      is completed and recorded.
+    - The authorization ladder is not amended to start implementation
+      earlier.
+    - The test can't run during the sealed holdout or before 2026-12-07.
+      It runs only after the holdout is evaluated once and immutably
+      recorded, and under its own authorization.
+    - If the result is infeasible or insufficient, stop and review; L is
+      not changed automatically.
+
+    **Nothing else happened:**
+    - no implementation or migration was created or applied
+    - no database write, provider or network request, latency test,
+      scheduling, or collection
+    - no holdout access
+
+    **The Options Strategy Agent (step f) remains unauthorized.**
+
 ## Next Planned Work
 
 This is the forward plan. It replaces the historical content now under
@@ -6202,12 +6258,19 @@ This is the forward plan. It replaces the historical content now under
    2. **Shadow-research protocol review — DONE; preregistered and frozen by
       its merge** (item 55,
       [docs/SPY_VWAP_REVERSION_SHADOW_PROTOCOL.md](docs/SPY_VWAP_REVERSION_SHADOW_PROTOCOL.md)).
-      The only next step, if desired, is to **separately authorize** stage
-      2 (protocol §K): contract, recorder, and migration design, plus the
-      bounded IEX latency test. **Do not implement or collect** without
-      later, separate authorization for each subsequent stage. Collection
-      may not begin before every frozen prerequisite is satisfied,
-      including a recorded holdout result (protocol §G).
+      Stage 2 design has since been drafted (item 56). **The next possible
+      work is review and merge of that design only**, which sets Stage 2 to
+      `design_complete_test_pending`. **Stage 3 is not authorized** while
+      the latency test is pending.
+      - After the holdout is evaluated and recorded, the next permitted
+        action is the latency test's own separate authorization and
+        execution (sessions on or after 2026-12-07).
+      - Only a `latency_feasible` result closes Stage 2 and lets Stage 3 be
+        considered under a new authorization.
+      - **Do not implement or collect** without later, separate
+        authorization for each subsequent stage.
+      - Collection may not begin before every frozen prerequisite is
+        satisfied, including a recorded holdout result (protocol §G).
    3. **Do not begin the Options Strategy Agent (step f).** The
       confirmation result and the shadow protocol do not authorize it, nor
       any recommendation, options selection, selector run, alerting, or
