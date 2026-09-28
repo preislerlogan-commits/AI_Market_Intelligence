@@ -5817,6 +5817,61 @@ entry describes something that has already been built, ingested, or attempted;
       or C1 changed. **The Options Strategy Agent (step f) remains
       unauthorized and not begun.**
 
+55. **SPY VWAP shadow-research protocol — DRAFT, awaiting review, NOT
+    frozen (2026-09-25, branch `research/preregister-spy-vwap-shadow-protocol`;
+    revised the same day after methodological review). Documentation only.
+    No implementation, and no collection authorization.** The draft is
+    [docs/SPY_VWAP_REVERSION_SHADOW_PROTOCOL.md](docs/SPY_VWAP_REVERSION_SHADOW_PROTOCOL.md).
+    It is the "separately reviewed shadow-research stage" that the
+    confirmation's primary label (`supported_for_further_shadow_research`)
+    permits proposing. The draft proposes:
+    - **Three units.** Expected session slots (78 per session), immutable
+      slot observations, and eligible shadow candidates.
+    - **Eligibility.** The frozen evaluator eligibility rules, enumerated
+      (E1–E8). There is no magnitude or regime filter, and the $0.10 floor
+      affects only percentage retraced.
+    - **Records.** An immutable-observation plus append-only-event
+      lifecycle, and proposed slot-observation and event contracts.
+    - **Gates.** Fail-closed data, timing, and clock gates, with no exchange
+      calendar assumed.
+    - **Metrics.** P1–P8 with explicit numerators and denominators, and a
+      proposed latency bound L of 240 s that has not been shown feasible.
+      - P4 and P5 are absolute-count gates (= 0). P5 lists six
+        timing-integrity and look-ahead conditions.
+      - P6 is measured over candidate-horizon obligations H, i.e. only
+        horizons structurally available at each candidate's slot index: 30m
+        for *k* ≤ 71, 2h for *k* ≤ 53, close for *k* ≤ 76. It never requires
+        all three outcomes for every candidate.
+    - **Sample lock.** The first 60 complete covered sessions; review no
+      earlier than S0 + 84 days; hard stop at S0 + 182 days (ET dates).
+    - **Stopping and labels.** Outcome-blind early-stop classes and
+      first-match labels.
+    - **Reconciliation.** Exactly one class per reconciliation unit, by a
+      fixed precedence: timing violation, then exact match, then one of a
+      frozen, exhaustive vocabulary of explained codes that each require
+      contemporaneous bounded live evidence, then the unexplained class for
+      the unit's kind. Post-hoc explanations never qualify, and codes can't
+      change during a running sample.
+    - **Design selections.** Versioned DuckDB append-only storage and
+      intended unattended recording. Both are design selections only;
+      neither is authorized.
+    - **Freezing and authorization.** Frozen by merge only, and a staged
+      authorization ladder.
+
+    **Every threshold and duration is proposed and is not accepted until
+    this branch is reviewed and merged.** The earliest theoretical
+    collection session is 2026-12-07. That applies only if implementation
+    readiness, the recorded holdout result, and an explicit collection
+    authorization are all complete before 09:30 ET that day. No holdout
+    date ever becomes a shadow observation or outcome.
+    - **Nothing was done.** Nothing was implemented, scheduled, collected,
+      ingested, or evaluated.
+    - **Nothing changed.** No code, test, schema, migration, dependency,
+      configuration, database, artifact, preregistration, or confirmation
+      report changed.
+    - **Boundaries hold.** The holdout remains sealed. **The Options
+      Strategy Agent (step f) remains unauthorized.**
+
 ## Next Planned Work
 
 This is the forward plan. It replaces the historical content now under
@@ -6129,18 +6184,23 @@ This is the forward plan. It replaces the historical content now under
    change. **The Options Strategy Agent (step f) remains not authorized
    and not begun.**
 
-7. **Next planned work (after the confirmation result, item 54).**
+7. **Next planned work (after the confirmation result, item 54, and the
+   shadow-protocol draft, item 55).**
    1. **Preserve the sealed prospective holdout** (2026-09-23 →
       2026-12-04). Do not ingest, build, inspect, or evaluate it before
       the full window exists, and then only under its own authorization,
       through the identical frozen pipeline, exactly once (§4, C1.1).
-   2. **Draft a separately reviewed shadow-research protocol** for the
-      confirmed underlying behavior. This is design only. It needs its own
-      review before any implementation or live recording, and it must not
-      tune or re-explain the confirmation result.
+   2. **Review the drafted shadow-research protocol first** (item 55,
+      [docs/SPY_VWAP_REVERSION_SHADOW_PROTOCOL.md](docs/SPY_VWAP_REVERSION_SHADOW_PROTOCOL.md)).
+      Resolve its open questions and freeze or amend its proposed gates.
+      Review and merge authorize nothing further: contract/recorder design,
+      offline implementation, replay testing, and prospective collection
+      each need their own authorization (protocol §K). Collection may not
+      begin before the holdout is evaluated and recorded (protocol §G).
    3. **Do not begin the Options Strategy Agent (step f).** The
-      confirmation result does not authorize it, nor any recommendation,
-      options selection, selector run, or execution.
+      confirmation result and the shadow protocol do not authorize it, nor
+      any recommendation, options selection, selector run, alerting, or
+      execution.
 
 Manual-only trading is preserved throughout. The three existing analysis
 agents (Market Evidence, News, Macro) remain non-directional; the Phase 1
