@@ -14,6 +14,21 @@ Code guidance.
   staged, modified, or untracked before making changes, so existing
   in-progress work is not lost or overwritten.
 
+## Product Direction
+
+- **Read the product documents first.** Read
+  [docs/PRODUCT_VISION.md](docs/PRODUCT_VISION.md) and
+  [docs/PRODUCT_ROADMAP.md](docs/PRODUCT_ROADMAP.md) before proposing
+  product work.
+- **Don't reduce the project to VWAP.** VWAP reversion is one researched
+  evidence module of a broader SPY market-intelligence copilot, not the
+  whole product.
+- **Keep kinds of evidence separate.** Preserve the separation between
+  researched facts, deterministic calculations, and model inference.
+- **Roadmaps never override research.** A product or roadmap document never
+  overrides a frozen research protocol, DECISION_RULES.md, or a recorded
+  authorization boundary.
+
 ## Data and Credential Safety
 
 - **This is an independent project.** It does not depend on or access the

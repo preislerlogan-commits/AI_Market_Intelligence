@@ -1,5 +1,11 @@
 # Options Decision Workflow — Phase 1 Roadmap
 
+**Place in the broader product.** This workflow is one part of the broader
+product described in [PRODUCT_VISION.md](PRODUCT_VISION.md) and
+[PRODUCT_ROADMAP.md](PRODUCT_ROADMAP.md). The SPY VWAP-reversion research
+below is one evidence module, not the whole product. Neither product
+document changes any boundary in this workflow.
+
 **Status: design, plus implementation steps b, c, d, and e done. Step b
 includes a live run; step c is offline-only with synthetic tests; step d's
 tooling is offline-only with synthetic tests, plus one completed real,

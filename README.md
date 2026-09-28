@@ -9,6 +9,27 @@ evidence-backed views on market direction and options positioning. It does
 **not** generate guaranteed predictions, does not provide financial advice,
 and does not execute trades.
 
+## Product Vision
+
+The intended finished product is a real-time, SPY-focused
+market-intelligence copilot. It combines:
+- pre-market preparation and live intraday monitoring;
+- market-state classification;
+- macro, news, and price evidence;
+- separately researched reversion and trend-continuation setups;
+- ranked setups with supporting and contradicting evidence;
+- option contracts suggested for manual review;
+- conversational explanations;
+- selective SMS alerts;
+- a dashboard as the main interface.
+
+**Final trading decisions are always manual.** VWAP reversion is one
+researched module, not the whole product. See
+[docs/PRODUCT_VISION.md](docs/PRODUCT_VISION.md) and
+[docs/PRODUCT_ROADMAP.md](docs/PRODUCT_ROADMAP.md). Neither authorizes any
+implementation; [PROJECT_STATE.md](PROJECT_STATE.md) records what is built
+and authorized.
+
 ## Architecture
 
 **Implemented:**
