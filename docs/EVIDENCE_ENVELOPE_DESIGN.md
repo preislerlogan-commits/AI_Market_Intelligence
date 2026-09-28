@@ -9,9 +9,12 @@ priority 2 ([PRODUCT_ROADMAP.md](PRODUCT_ROADMAP.md)).
   authorizes no implementation, migration, provider access, collection,
   dashboard, assistant, ranking, notification, Options Strategy Agent, or
   trading.
-- **Nothing is implemented or authorized.** No code, Pydantic model,
-  migration, table, registry file, or adapter exists. Implementation needs a
-  separate, explicit authorization (§Q.5).
+- **Implementation status (2026-09-28).** The bounded §Q.5 offline core
+  is implemented in `market_intelligence/evidence/` (PROJECT_STATE item 59):
+  contracts, canonical IDs, validators, freshness evaluation, bundles, the
+  Contract Selector boundary and the holdout guard. No migration, table,
+  store, registry file, populated registry, adapter, or consumer exists, and
+  nothing beyond §Q.5 is authorized. The design text below is unchanged.
 - **Governing documents win.** [DECISION_RULES.md](../DECISION_RULES.md),
   [SOURCE_POLICY.md](../SOURCE_POLICY.md), frozen research protocols, and
   recorded authorization boundaries in [PROJECT_STATE.md](../PROJECT_STATE.md)
@@ -1304,9 +1307,9 @@ satisfies a requirement; it records why the requirement is unmet.
 - **SOURCE_POLICY uncertainty gap.** There is still no stored uncertainty
   field for news. `uncertainty_codes` can carry fixed codes, but a news
   verification status needs its own design.
-- **No implementation authorization.** This design, the registry and the
-  consumer rules are reviewed and accepted, but no implementation is
-  authorized; §Q.5 describes what a separate authorization would need.
+- **Offline core only.** Only the §Q.5 offline core is authorized and
+  implemented (PROJECT_STATE item 59). Storage, adapters, a registry file
+  and every consumer still need their own separate authorizations.
 
 ### Q.5 Authorization required for offline implementation
 

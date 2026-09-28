@@ -11,8 +11,11 @@ content of the evidence registry designed in
   authorizes no implementation, migration, provider access, collection,
   dashboard, assistant, ranking, notification, Options Strategy Agent, or
   trading.
-- **Nothing is implemented.** No registry file, registry code, envelope
-  adapter, or evidence table exists. "Implemented" below describes only the
+- **Only the in-memory registry contract exists.** The offline core
+  (`market_intelligence/evidence/registry.py`, PROJECT_STATE item 59)
+  defines the registry's shape. No registry file, populated registry,
+  envelope adapter, or evidence table exists, and this draft's entries are
+  not loaded anywhere. "Implemented" below describes only the
   **existing module** behind a producer, never an envelope emitter.
 - **Nothing is authorized.** An entry marked `future` or `unauthorized`
   describes a boundary, not a plan of record. Listing a producer does not
