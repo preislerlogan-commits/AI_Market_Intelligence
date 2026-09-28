@@ -4,7 +4,7 @@ This document is the **authoritative source of truth** for the current status
 of AI Market Intelligence. It must be read before beginning any work in this
 repository, and updated whenever the project's status materially changes.
 
-Last updated: 2026-09-25
+Last updated: 2026-09-28
 
 ## Current State at a Glance
 
@@ -5942,6 +5942,43 @@ entry describes something that has already been built, ingested, or attempted;
 
     **The Options Strategy Agent (step f) remains unauthorized.**
 
+57. **Product north star recorded (2026-09-28). Documentation only; it
+    authorizes no implementation.**
+    [docs/PRODUCT_VISION.md](docs/PRODUCT_VISION.md) and
+    [docs/PRODUCT_ROADMAP.md](docs/PRODUCT_ROADMAP.md) define the permanent
+    product direction.
+    - **The product.** A real-time, SPY-focused market-intelligence copilot.
+      It combines pre-market preparation, live intraday monitoring,
+      market-state classification, macro/news/price evidence, separately
+      researched reversion and trend-continuation lanes (plus an explicit
+      "no qualified setup" outcome), ranked setups with supporting and
+      contradicting evidence, contracts suggested for manual review,
+      conversational explanations, and selective SMS alerts, with the
+      dashboard as the main interface.
+    - **VWAP's place.** VWAP reversion is one researched evidence module,
+      not the entire product.
+    - **Recorded user preferences.**
+      - The highest-value times are pre-market and live intraday.
+      - Wanted outputs: evidence presentation, ranked setups with reasoning,
+        and contracts for manual review.
+      - Interfaces: a dashboard, a conversational assistant, and SMS.
+      - The assistant should answer questions about sentiment, directional
+        scenarios, macro evidence, and why a setup is or isn't supported.
+      - The scanner should recognize both researched VWAP-reversion setups
+        and separately supported strong trend days.
+    - **Decision boundary.** Manual final decisions. No autonomous trading,
+      order routing, position management, or guaranteed directional claims.
+      Every existing DECISION_RULES.md boundary still holds.
+    - **Independent workstreams.** The roadmap sets out workstreams that can
+      proceed as design work while the holdout stays sealed: the platform
+      (Evidence Envelope and registry), dashboard, assistant, macro and
+      news, trend-day discovery, contract review, and notifications.
+    - **AGENTS.md and CLAUDE.md** now point to both documents.
+    - **Nothing else changed.** No frozen research document, code, data,
+      or database changed. No Stage 3, shadow collection, Options Strategy
+      Agent, SMS integration, dashboard implementation, or trading is
+      authorized.
+
 ## Next Planned Work
 
 This is the forward plan. It replaces the historical content now under
@@ -6280,6 +6317,19 @@ This is the forward plan. It replaces the historical content now under
       confirmation result and the shadow protocol do not authorize it, nor
       any recommendation, options selection, selector run, alerting, or
       execution.
+
+8. **Two separate tracks (after the product north star, item 57).**
+   1. **Paused/frozen VWAP research dependency.** Item 7 governs it,
+      unchanged: preserve the sealed holdout, then the one-time holdout
+      evaluation, then the separately authorized latency test (no earlier
+      than 2026-12-07). Stage 2 stays `design_complete_test_pending`, and
+      Stage 3 stays unauthorized.
+   2. **Next independent product-infrastructure design step.** Design the
+      shared **Evidence Envelope** (one versioned contract every producer
+      emits) and the **evidence registry** ([roadmap](docs/PRODUCT_ROADMAP.md)
+      workstream B, priority 2). This is design only and needs its own
+      authorization. It must not touch holdout data, frozen research
+      documents, or the shadow sample.
 
 Manual-only trading is preserved throughout. The three existing analysis
 agents (Market Evidence, News, Macro) remain non-directional; the Phase 1
