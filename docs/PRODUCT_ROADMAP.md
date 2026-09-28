@@ -103,9 +103,11 @@ documents, or the shadow sample.
    together with the evidence registry. **Design phase reviewed and
    merged (2026-09-28):** [EVIDENCE_ENVELOPE_DESIGN.md](EVIDENCE_ENVELOPE_DESIGN.md),
    [EVIDENCE_REGISTRY.md](EVIDENCE_REGISTRY.md),
-   [EVIDENCE_CONSUMER_RULES.md](EVIDENCE_CONSUMER_RULES.md). Implementation
-   remains unauthorized: nothing is implemented, and implementation needs
-   its own authorization (design §Q.5).
+   [EVIDENCE_CONSUMER_RULES.md](EVIDENCE_CONSUMER_RULES.md). **Offline
+   core reviewed and merged (2026-09-28):**
+   `market_intelligence/evidence/`, under the §Q.5 authorization only.
+   Storage, adapters, a registry file and every consumer remain
+   unauthorized.
 3. Design the dashboard information architecture and the setup-card
    contract ([vision §7](PRODUCT_VISION.md)).
 4. Standardize the Macro, News, and Market Evidence outputs into the

@@ -30,13 +30,14 @@ researched module, not the whole product. See
 implementation; [PROJECT_STATE.md](PROJECT_STATE.md) records what is built
 and authorized.
 
-**Evidence Envelope (reviewed design; not implemented).** The shared evidence
-contract every producer would emit is designed in
+**Evidence Envelope (reviewed design; offline core implemented).** The
+shared evidence contract every producer would emit is designed in
 [docs/EVIDENCE_ENVELOPE_DESIGN.md](docs/EVIDENCE_ENVELOPE_DESIGN.md), with
 its producer registry in [docs/EVIDENCE_REGISTRY.md](docs/EVIDENCE_REGISTRY.md)
 and consumer rules in
-[docs/EVIDENCE_CONSUMER_RULES.md](docs/EVIDENCE_CONSUMER_RULES.md). No
-envelope or registry code exists.
+[docs/EVIDENCE_CONSUMER_RULES.md](docs/EVIDENCE_CONSUMER_RULES.md). Its
+offline core lives in `market_intelligence/evidence/`. No producer adapter,
+evidence store, populated registry, or consumer exists yet.
 
 ## Architecture
 
@@ -68,6 +69,13 @@ envelope or registry code exists.
   manual, dry-run-first CLI that runs the reviewed ingestion jobs through
   explicit, strictly validated contracts, with per-job failure isolation and a
   persistent audit trail. Not a scheduler.
+
+- **Evidence Envelope core** (`market_intelligence/evidence/`) — pure,
+  offline contracts, canonical IDs, validators, freshness evaluation,
+  point-in-time bundle construction, the permanent Contract Selector
+  boundary, and the SPY holdout guard. It opens no database and makes no
+  request. Nothing emits or consumes it yet: producer adapters, storage, a
+  registry file, and every consumer remain unbuilt and unauthorized.
 
 **Planned — directory placeholder only, no code yet:**
 
