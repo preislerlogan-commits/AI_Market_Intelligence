@@ -1,8 +1,8 @@
 # SPY VWAP Shadow Recorder — Stage 2 Design
 
-**Status: Stage 2 DESIGN ONLY. After merge, Stage 2 status is
-`design_complete_test_pending`, not complete (§O).** This document proposes
-the contracts,
+**Status: REVIEWED STAGE 2 DESIGN. Current Stage 2 status is
+`design_complete_test_pending`, not complete (§O). DESIGN ONLY.** This
+document proposes the contracts,
 components, storage, and procedures a future implementation would follow. It
 contains no production code.
 
@@ -1109,7 +1109,7 @@ needed):**
    can't use holdout-window dates.
 
 **Stage status and Stage 3 decision (recorded).**
-- **Stage 2 design** may be reviewed and merged now. After merge, Stage 2 is
+- **Stage 2 design** has been reviewed and merged. Stage 2 is
   **`design_complete_test_pending`, not complete.**
 - **Stage 3 is not authorized** while the frozen Stage-2 latency test is
   pending. The frozen authorization ladder will **not** be amended merely to

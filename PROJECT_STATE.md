@@ -5881,11 +5881,16 @@ entry describes something that has already been built, ingested, or attempted;
     - **Boundaries hold.** The holdout remains sealed. **The Options
       Strategy Agent (step f) remains unauthorized.**
 
-56. **SPY VWAP shadow recorder — Stage 2 design drafted, awaiting review
-    (2026-09-28, branch `design/spy-vwap-shadow-recorder`). After merge, Stage
-    2's status is `design_complete_test_pending`. It is NOT complete: the
-    Stage-2 latency test remains unexecuted.** The design documents
-    are
+56. **SPY VWAP shadow recorder — Stage 2 design REVIEWED AND MERGED.
+    Current Stage 2 status: `design_complete_test_pending`, not complete. The
+    Stage-2 latency test remains unexecuted.** (2026-09-28.)
+    - **Blueprint.** The design is now the reviewed Stage 2 blueprint.
+    - **Nothing built.** No implementation or migration exists.
+    - **Test pending.** The latency test remains pending, so Stage 2 is not
+      complete.
+    - **Stage 3.** Stage 3 is unauthorized.
+
+    The design documents are
     [docs/SPY_VWAP_SHADOW_RECORDER_DESIGN.md](docs/SPY_VWAP_SHADOW_RECORDER_DESIGN.md)
     and
     [docs/SPY_VWAP_IEX_LATENCY_TEST_PLAN.md](docs/SPY_VWAP_IEX_LATENCY_TEST_PLAN.md).
@@ -6258,15 +6263,15 @@ This is the forward plan. It replaces the historical content now under
    2. **Shadow-research protocol review — DONE; preregistered and frozen by
       its merge** (item 55,
       [docs/SPY_VWAP_REVERSION_SHADOW_PROTOCOL.md](docs/SPY_VWAP_REVERSION_SHADOW_PROTOCOL.md)).
-      Stage 2 design has since been drafted (item 56). **The next possible
-      work is review and merge of that design only**, which sets Stage 2 to
-      `design_complete_test_pending`. **Stage 3 is not authorized** while
-      the latency test is pending.
-      - After the holdout is evaluated and recorded, the next permitted
-        action is the latency test's own separate authorization and
-        execution (sessions on or after 2026-12-07).
-      - Only a `latency_feasible` result closes Stage 2 and lets Stage 3 be
-        considered under a new authorization.
+      **Stage 2 design review is complete** (item 56). Stage 2 remains
+      `design_complete_test_pending`.
+      - **Nothing is available yet.** No next action is permitted until the
+        holdout has been evaluated and immutably recorded under separate
+        authorization.
+      - **Then the latency test.** After that, the latency test may be
+        separately authorized, for sessions no earlier than 2026-12-07.
+      - **Stage 3** remains unauthorized unless a `latency_feasible` result
+        closes Stage 2.
       - **Do not implement or collect** without later, separate
         authorization for each subsequent stage.
       - Collection may not begin before every frozen prerequisite is
