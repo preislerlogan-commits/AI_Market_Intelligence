@@ -100,7 +100,12 @@ documents, or the shadow sample.
 
 1. Freeze this product vision.
 2. Design the shared **Evidence Envelope** used by every agent and engine,
-   together with the evidence registry.
+   together with the evidence registry. **Design phase reviewed and
+   merged (2026-09-28):** [EVIDENCE_ENVELOPE_DESIGN.md](EVIDENCE_ENVELOPE_DESIGN.md),
+   [EVIDENCE_REGISTRY.md](EVIDENCE_REGISTRY.md),
+   [EVIDENCE_CONSUMER_RULES.md](EVIDENCE_CONSUMER_RULES.md). Implementation
+   remains unauthorized: nothing is implemented, and implementation needs
+   its own authorization (design §Q.5).
 3. Design the dashboard information architecture and the setup-card
    contract ([vision §7](PRODUCT_VISION.md)).
 4. Standardize the Macro, News, and Market Evidence outputs into the

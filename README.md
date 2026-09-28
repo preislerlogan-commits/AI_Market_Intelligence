@@ -30,6 +30,14 @@ researched module, not the whole product. See
 implementation; [PROJECT_STATE.md](PROJECT_STATE.md) records what is built
 and authorized.
 
+**Evidence Envelope (reviewed design; not implemented).** The shared evidence
+contract every producer would emit is designed in
+[docs/EVIDENCE_ENVELOPE_DESIGN.md](docs/EVIDENCE_ENVELOPE_DESIGN.md), with
+its producer registry in [docs/EVIDENCE_REGISTRY.md](docs/EVIDENCE_REGISTRY.md)
+and consumer rules in
+[docs/EVIDENCE_CONSUMER_RULES.md](docs/EVIDENCE_CONSUMER_RULES.md). No
+envelope or registry code exists.
+
 ## Architecture
 
 **Implemented:**

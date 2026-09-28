@@ -5979,6 +5979,50 @@ entry describes something that has already been built, ingested, or attempted;
       Agent, SMS integration, dashboard implementation, or trading is
       authorized.
 
+58. **Shared Evidence Envelope and evidence registry designed (2026-09-28,
+    branch `design/shared-evidence-envelope`). REVIEWED DESIGN — accepted by
+    the merge that introduced these documents; complete as a design
+    milestone. No implementation or registry code exists.**
+    - **What the merge does and does not do.** It accepts the design. It
+      authorizes no implementation, migration, provider access, collection,
+      dashboard, assistant, ranking, notification, Options Strategy Agent,
+      or trading.
+    - **Documents.**
+      [docs/EVIDENCE_ENVELOPE_DESIGN.md](docs/EVIDENCE_ENVELOPE_DESIGN.md)
+      (the versioned contract family `evidence-envelope-1`),
+      [docs/EVIDENCE_REGISTRY.md](docs/EVIDENCE_REGISTRY.md) (initial
+      producer registry `registry-draft-0`, freshness policies, payload
+      schema names), and
+      [docs/EVIDENCE_CONSUMER_RULES.md](docs/EVIDENCE_CONSUMER_RULES.md).
+    - **Key decisions.**
+      - Six evidence kinds, exactly one per item. An item keeps its kind
+        as it ages; freshness is evaluated only at bundle time and never
+        raised.
+      - Identities include every substantive temporal field; only
+        operational metadata is excluded.
+      - Model inference is default-deny for machine decisions: not eligible
+        today, with a separately authorized future path. No fact,
+        calculation or research result may descend from inference.
+      - Content-addressed IDs; conflicts have no winner, and resolving one
+        supersedes only the conflict-status record; evidence revisions
+        supersede and never delete.
+      - No scenario definitions, rubrics, or directional,
+        calibrated-probability, or notification authorizations are
+        registered.
+      - Live intraday freshness thresholds are deliberately unset.
+    - **Holdout guard.** A product-side guard blocks ingestion,
+      construction, display, bundling and inference over SPY price evidence
+      dated 2026-09-23 → 2026-12-04 until the holdout is evaluated and
+      recorded. It does not block synthetic or already-authorized
+      non-holdout fixtures, authorizes nothing after the boundary, and can
+      be removed only after the recorded holdout milestone and a separate
+      authorization. It implements the preregistration's rule and does not
+      change it.
+    - **Nothing else changed.** No code, Pydantic model, migration, DuckDB
+      change, provider request, holdout access, or frozen-document change.
+      No directional agent, SMS, dashboard, Options Strategy Agent, Stage 3,
+      or trading is authorized.
+
 ## Next Planned Work
 
 This is the forward plan. It replaces the historical content now under
@@ -6324,12 +6368,12 @@ This is the forward plan. It replaces the historical content now under
       evaluation, then the separately authorized latency test (no earlier
       than 2026-12-07). Stage 2 stays `design_complete_test_pending`, and
       Stage 3 stays unauthorized.
-   2. **Next independent product-infrastructure design step.** Design the
-      shared **Evidence Envelope** (one versioned contract every producer
-      emits) and the **evidence registry** ([roadmap](docs/PRODUCT_ROADMAP.md)
-      workstream B, priority 2). This is design only and needs its own
-      authorization. It must not touch holdout data, frozen research
-      documents, or the shadow sample.
+   2. **Next independent step: decide whether to separately authorize
+      the bounded offline implementation** described in
+      [design §Q.5](docs/EVIDENCE_ENVELOPE_DESIGN.md). The design review is
+      complete (item 58); nothing is implemented, and no implementation is
+      authorized until that decision is made. Any such work must not touch
+      holdout data, frozen research documents, or the shadow sample.
 
 Manual-only trading is preserved throughout. The three existing analysis
 agents (Market Evidence, News, Macro) remain non-directional; the Phase 1
