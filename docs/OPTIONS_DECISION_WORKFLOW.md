@@ -875,6 +875,24 @@ before the previous one is complete and recorded.
     measured.
   - **Holdout.** The prospective holdout (2026-09-23 → 2026-12-04) remains
     sealed. **Step f remains unauthorized.**
+
+  **Shadow-research protocol (preregistered and frozen by its merge;
+  `PROJECT_STATE.md` Completed Work Log item 55).**
+  [SPY_VWAP_REVERSION_SHADOW_PROTOCOL.md](SPY_VWAP_REVERSION_SHADOW_PROTOCOL.md)
+  defines prospective, paper-only process validation of the frozen
+  underlying decision points. Its values are frozen by that merge, though
+  their feasibility is untested.
+  - **Every later stage needs its own authorization.** That covers stage-2
+    design, implementation, migrations, scheduling, unattended operation,
+    alerts, and data collection.
+  - **Nothing has been done.** Nothing has been implemented or collected.
+  - **Holdout.** The holdout remains sealed.
+  - **Start conditions.** Collection can't start before every frozen
+    prerequisite is satisfied: implementation readiness, the recorded
+    holdout result, and a separate collection authorization, all complete
+    before the first slot of a session no earlier than 2026-12-07.
+  It does not authorize step f or any options, selector, recommendation,
+  or execution work.
 - **e.** *(fifth Phase 1 step — done offline, 2026-09-16, synthetic tests
   only; feed-safety-boundary fix applied the same day, Completed Work Log
   item 46)* Build the Deterministic Contract Selector (eligible-set
