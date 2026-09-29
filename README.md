@@ -43,8 +43,11 @@ evidence store, populated registry, or consumer exists yet.
 information architecture is a reviewed design in
 [docs/DASHBOARD_INFORMATION_ARCHITECTURE.md](docs/DASHBOARD_INFORMATION_ARCHITECTURE.md),
 and the setup-card contract a reviewed design in
-[docs/SETUP_CARD_CONTRACT.md](docs/SETUP_CARD_CONTRACT.md). No dashboard or
-card code exists, and none is authorized.
+[docs/SETUP_CARD_CONTRACT.md](docs/SETUP_CARD_CONTRACT.md). An offline
+setup-card core is implemented in `market_intelligence/setup_cards/`, but
+the production setup-definition registry is empty, so no live card can be
+produced. No dashboard code exists, and no dashboard or card consumer is
+authorized.
 
 ## Architecture
 
@@ -83,6 +86,11 @@ card code exists, and none is authorized.
   boundary, and the SPY holdout guard. It opens no database and makes no
   request. Nothing emits or consumes it yet: producer adapters, storage, a
   registry file, and every consumer remain unbuilt and unauthorized.
+- **Setup-card core** (`market_intelligence/setup_cards/`) — pure, offline
+  `setup-card-1` contracts, identity, bundle-bound validation, supersession
+  and a builder over in-memory evidence. The production setup-definition
+  registry is empty, so no live card of either kind can be produced; no
+  dashboard renders cards.
 
 **Planned — directory placeholder only, no code yet:**
 

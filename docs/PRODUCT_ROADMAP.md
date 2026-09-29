@@ -112,8 +112,12 @@ documents, or the shadow sample.
    contract ([vision §7](PRODUCT_VISION.md)). **Design phase reviewed and
    merged (2026-09-29):**
    [DASHBOARD_INFORMATION_ARCHITECTURE.md](DASHBOARD_INFORMATION_ARCHITECTURE.md),
-   [SETUP_CARD_CONTRACT.md](SETUP_CARD_CONTRACT.md). Implementation remains
-   unauthorized: no dashboard or card implementation is authorized.
+   [SETUP_CARD_CONTRACT.md](SETUP_CARD_CONTRACT.md). **Setup-card offline
+   core reviewed and merged (2026-09-29):**
+   `market_intelligence/setup_cards/`, under its own authorization. The
+   production setup-definition registry is empty, so no production card
+   can be created. Dashboard implementation remains unauthorized, as do
+   card storage and every consumer.
 4. Standardize the Macro, News, and Market Evidence outputs into the
    envelope.
 5. Design the context handoff between the dashboard and chat.

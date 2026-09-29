@@ -14,6 +14,14 @@ pages, hierarchy, states and trust vocabulary. The card itself is specified in
   hosting, authentication, storage, refresh loop, or consumer exists or is
   authorized by this document. `market_intelligence/dashboard/` remains an
   empty placeholder.
+- **`no_qualified_setup` correction (2026-09-29).** §4.3 and §6.2 were
+  revised with the [setup-card contract](SETUP_CARD_CONTRACT.md) §4.8:
+  `no_qualified_setup` appears only after an authorized deterministic lane
+  evaluation concluded `not_qualified`; unauthorized, unavailable and
+  evidence-blocked lanes are availability states. The correction keeps this
+  document's reviewed-design status and is accepted through the
+  setup-card implementation merge (PROJECT_STATE item 61). It authorizes no
+  dashboard.
 - **Governing documents win.** [DECISION_RULES.md](../DECISION_RULES.md),
   [SOURCE_POLICY.md](../SOURCE_POLICY.md), the reviewed
   [Evidence Envelope design](EVIDENCE_ENVELOPE_DESIGN.md),
@@ -181,20 +189,24 @@ fills an empty scenario slot with free text.
      `shadow_pending`). **Live qualification is not authorized**: no live
      setup definition is registered and shadow collection (Stage 3) is not
      authorized. The tab shows "Live qualification not authorized — research
-     context only" until that changes.
+     context only" until that changes. No setup card of either kind is
+     shown.
    - **Trend continuation.** **Unavailable**: no trend-day research,
      definition or detector exists. The tab shows "Not researched — no trend
-     signal exists". It never borrows reversion evidence.
+     signal exists", with no setup card. It never borrows reversion evidence.
 2. Within an authorized lane (future): setup cards grouped by lifecycle
    (`observed`, `developing`, `evaluation_complete`, `invalidated`,
    `expired`), with qualification (`qualified`, `not_qualified`,
    `indeterminate`, `not_evaluated`) shown as its own separate label. Today
-   every card would be `not_evaluated`.
+   no lane is authorized, so no card of either kind is shown.
 3. Ranking (future, separately authorized): only a deterministic ranking
    under a registered rubric, and only within one lane. None exists; cards
    are ordered by lifecycle group, then decision time.
 4. `no_qualified_setup`: a normal, first-class result card per lane (never
-   an error or an empty table).
+   an error or an empty table), rendered only after an authorized
+   deterministic lane evaluation concluded `not_qualified`. A lane that is
+   not authorized, unavailable or evidence-blocked shows that availability
+   state instead (§6.2), never this card.
 
 **Consumes.** `live_market_state` for context; one `setup_detail` bundle per
 card.
@@ -367,11 +379,23 @@ to one `assistant_question_context` bundle, shown in the pane header.
 | Holdout restricted | Evidence falls in the holdout window | "Restricted until the holdout is recorded" |
 | Error | A bundle or card failed validation | The sanitized reason token only; no stack traces, paths or raw text |
 
-### 6.2 `no_qualified_setup`
+### 6.2 `no_qualified_setup` and lane availability
 
-Rendered as a normal card with the lane, the evaluation time, and the reason
-(for example `criteria_not_met`, `evidence_not_ready`, `lane_not_authorized`).
-It uses neutral styling, never error styling.
+Only the last row is a card. The other three are dashboard availability
+states outside the [setup-card contract](SETUP_CARD_CONTRACT.md) (§4.8),
+with no `scd1_` identity.
+
+| Lane state | Meaning | Card |
+|---|---|---|
+| `not_authorized` | No authorized setup definition or producer for the lane | none |
+| `unavailable` | The required evaluation is absent or unusable | none |
+| `evidence_blocked` | Required evidence is stale, missing, ambiguous or critically conflicted | no new conclusion card |
+| `no_qualified_setup` | An authorized deterministic evaluation completed and concluded `not_qualified` | allowed |
+
+A `no_qualified_setup` card shows the lane, the evaluation time, and the
+cited evaluation's reason (`criteria_not_met` or `no_candidate_evaluated`).
+It uses neutral styling, never error styling. Blocked or unavailable
+evidence is never shown as "no qualified setup".
 
 ### 6.3 Newer evidence
 
