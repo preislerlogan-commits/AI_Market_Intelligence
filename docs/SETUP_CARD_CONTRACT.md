@@ -11,8 +11,24 @@ implementing the card content of [vision §7](PRODUCT_VISION.md).
   accepted the design and authorizes no dashboard, setup-card implementation,
   assistant registry grant, storage, adapter, ranking, scenario,
   notification, contract-selector change or trading capability.
-- **Nothing is implemented or authorized.** No card model, card builder,
-  storage, or dashboard exists or is authorized by this document.
+- **Implementation status (2026-09-29).** An offline core of this contract
+  is reviewed and merged in `market_intelligence/setup_cards/` under a
+  separate authorization (PROJECT_STATE item 61): contracts, identity,
+  validation, supersession and a pure builder over in-memory Evidence
+  Envelope objects.
+  No setup definition is registered, so the production builder produces
+  **no card of either kind**. No card storage, dashboard, assistant grant or
+  other consumer exists or is authorized.
+- **`no_qualified_setup` correction (2026-09-29).** The `no_qualified_setup`
+  rules (§1, §3, §4.8, §5.2, §9.2, §9.5, §10) were revised to match the
+  implementation: the card presents only a cited, authorized deterministic
+  `not_qualified` lane conclusion, and the former `lane_not_authorized`,
+  `lane_not_researched` and `evidence_not_ready` card reasons are dashboard
+  availability states outside this contract. The correction keeps this
+  document's reviewed-design status and is accepted through the merge of
+  the implementation (PROJECT_STATE item 61), which enforces every §4.8
+  condition: blocked evidence yields the `evidence_blocked` availability
+  state and no card.
 - **Governing documents win.** [DECISION_RULES.md](../DECISION_RULES.md),
   the reviewed [Evidence Envelope design](EVIDENCE_ENVELOPE_DESIGN.md),
   [registry](EVIDENCE_REGISTRY.md),
@@ -32,8 +48,14 @@ added under this version.
   Evidence Bundle (usually purpose `setup_detail`) and cites only entries of
   that bundle.
 - **Two kinds.** A `setup` card describes one setup candidate in one lane. A
-  `no_qualified_setup` card truthfully records that nothing qualified in a
-  lane at an evaluation time, and why.
+  `no_qualified_setup` card presents a cited, authorized deterministic
+  lane-level evaluation that concluded `not_qualified` at an evaluation
+  time, and its reason (§4.8).
+- **No card without a conclusion.** `no_qualified_setup` never means "the
+  system could not evaluate the lane". A lane with no registered setup
+  definition, no authorized evaluation, or evidence that is not ready
+  produces **no card**; the dashboard shows an availability state instead
+  ([dashboard §6.2](DASHBOARD_INFORMATION_ARCHITECTURE.md#62-no_qualified_setup-and-lane-availability)).
 - **Presentation, not evidence.** A card is not an `EvidenceItem`, is not
   emitted into the evidence store, and is never a machine-decision input.
   Whether cards are ever persisted is an open decision (§11).
@@ -79,7 +101,7 @@ The same conventions as the Evidence Envelope family (design §B.0):
 | `qualification` | `SetupQualification` enum (§5.2) | no | derived; see rules | yes |
 | `qualification_item_id` | `ItemId` | yes | the cited `deterministic_calculation` that decided qualification; required iff `qualification` is `qualified` or `not_qualified` | yes |
 | `lifecycle_state` | `SetupLifecycle` enum (§5.3) | yes | required iff `card_kind = setup`; temporal progression only, never qualification | yes |
-| `no_setup_reason` | `NoSetupReason` enum | yes | required iff `card_kind = no_qualified_setup` | yes |
+| `no_setup_reason` | `NoSetupReason` enum | yes | required iff `card_kind = no_qualified_setup`; `criteria_not_met` or `no_candidate_evaluated`, exactly the cited lane evaluation's reason (§4.8) | yes |
 | `deterministic_rank` | `DeterministicRank` | yes | **must be null**: no ranking rubric is registered | yes |
 | `interpretation` | `CardInterpretation` | yes | **must be null**: no inference-input authorization exists | yes |
 | `supporting_citations` | `list[EvidenceCitation]` | no | 0–32; role `supports_claim` | yes |
@@ -91,7 +113,7 @@ The same conventions as the Evidence Envelope family (design §B.0):
 | `conflicts` | `list[CardConflictNote]` | no | every recorded conflict in the bundle touching a cited or required item | yes |
 | `research_references` | `list[CardResearchNote]` | no | one per cited `historical_research_result` item | yes |
 | `scenario_relations` | `list[...]` | no | **must be empty**: no scenario definition or authorization exists | yes |
-| `selector_availability` | `SelectorAvailability` enum (§5.6): `not_requested`, `available`, `unavailable` | no | `not_requested` for a `no_qualified_setup` card; see §4.6 | yes |
+| `selector_availability` | `SelectorAvailability` enum (§5.6): `not_requested`, `available`, `unavailable` | no | always `not_requested` for a `no_qualified_setup` card; see §4.6 | yes |
 | `contracts` | `CardContractSection` | yes | present iff `selector_availability = available`; see §4.6 | yes |
 | `manual_decision_statement` | `Literal[...]` | no | exactly: "Decision support only. You make every trading decision manually. No order is placed." | yes |
 | `expires_at_utc` | `UtcTimestamp` | yes | set only by a registered setup-definition rule; null otherwise | yes |
@@ -105,8 +127,10 @@ The same conventions as the Evidence Envelope family (design §B.0):
   `stale_required_evidence`, `unknown_freshness`, `ambiguous_requirement`,
   `ambiguous_clock_facts`, `unresolved_critical_conflict`,
   `holdout_restricted`, `ineligible_required_input`.
-- **`NoSetupReason`** (enum): `criteria_not_met`, `evidence_not_ready`,
-  `lane_not_authorized`, `lane_not_researched`, `no_candidate_evaluated`.
+- **`NoSetupReason`** (enum, as carried by a card): `criteria_not_met`,
+  `no_candidate_evaluated`. Both are deterministic lane conclusions. A lane
+  that is not authorized, not researched, or whose evidence is not ready has
+  no conclusion, so it has no card and no reason (§4.8).
 - **`CardFreshnessNote`**: `item_id`, `state` (`aging`, `stale`, `unknown`),
   `reason` (the bundle's `FreshnessReason`), `required` (bool).
 - **`CardConflictNote`**: `conflict_id`, `conflict_type`, `severity`,
@@ -175,8 +199,9 @@ The same conventions as the Evidence Envelope family (design §B.0):
 - **It never means** that the setup should be traded, that the setup is
   qualified, that a contract is eligible, that the system recommends action,
   or that the evidence is predictively validated. Qualification (§5.2) and the
-  selector outcome (§5.5) are separate fields, and a `not_qualified` or
-  `no_qualified_setup` card can be `manual_review_ready`.
+  selector outcome (§5.5) are separate fields, and a `not_qualified` setup
+  card can be `manual_review_ready`. A `no_qualified_setup` card is presented
+  only when evidence readiness is `ready` (§4.8).
 - **Derivation.** `evidence_readiness` is derived from the card's bundle
   state: missing and ambiguous requirements, the freshness of every cited or
   required entry, clock health (including `ambiguous_clock_facts`),
@@ -235,6 +260,37 @@ The contract has no field for orders, quantities, position size, stops,
 targets, prices to enter, brokerage identifiers or execution. A validator
 refuses any such field name, and `extra="forbid"` refuses unknown fields.
 
+### 4.8 `no_qualified_setup` requires an authorized lane conclusion
+
+A `no_qualified_setup` card is allowed only when **all** of these hold:
+
+1. the lane has a registered setup definition;
+2. that definition's authorized deterministic producer evaluated the lane;
+3. the bundle contains, and the card cites, **exactly one** current
+   lane-level evaluation (no setup subject) concluding `not_qualified`,
+   as the card's `qualification_item_id`;
+4. that evaluation's lifecycle is `evaluation_complete`, `invalidated` or
+   `expired`;
+5. the card's `no_setup_reason` (`criteria_not_met` or
+   `no_candidate_evaluated`) and `expires_at_utc` exactly match the cited
+   evaluation;
+6. `selector_availability` is `not_requested`, with no contract section;
+7. evidence readiness is `ready`.
+
+Otherwise no card is produced:
+
+| Situation | Result |
+|---|---|
+| No registered setup definition for the lane | no card; dashboard shows `not_authorized` |
+| Evaluation missing, unauthorized, or from an unregistered producer | no card; dashboard shows `unavailable` |
+| Evaluation concluded `not_evaluated`, `indeterminate` or `qualified` | no `no_qualified_setup` card |
+| Stale, missing, ambiguous or critically conflicted required evidence | no new conclusion card; dashboard shows `evidence_blocked` |
+| More than one lane-level conclusion | no card; dashboard shows `unavailable`; never resolved by picking one |
+
+The availability states are dashboard states outside this contract; they
+have no `scd1_` identity
+([dashboard §6.2](DASHBOARD_INFORMATION_ARCHITECTURE.md#62-no_qualified_setup-and-lane-availability)).
+
 ---
 
 ## 5. State models (accepted design; not implemented or authorized)
@@ -274,6 +330,7 @@ conclude?"**
 | any → `qualified` without a cited deterministic calculation | qualification is deterministic |
 | any → `qualified` because of inference | inference cannot qualify a setup (§4.5) |
 | `trend_continuation` → anything but `not_evaluated` | no trend research or definition exists |
+| a `no_qualified_setup` card with anything but a cited `not_qualified` | the card presents a completed lane conclusion only (§4.8) |
 
 ### 5.3 Setup lifecycle
 
@@ -303,6 +360,9 @@ qualified.
   had; reaching a terminal state never changes it.
 - Today, with no registered live setup definition, qualification stays
   `not_evaluated`, so no card can reach `evaluation_complete`.
+- A `no_qualified_setup` card has no `lifecycle_state` of its own; the lane
+  evaluation it cites must be at `evaluation_complete`, `invalidated` or
+  `expired` (§4.8).
 
 | From | To | Allowed? | Condition |
 |---|---|---|---|
@@ -484,21 +544,21 @@ manual_decision_statement: "Decision support only. You make every trading decisi
 manual_review_ready: true           # evidence complete enough to present; not a recommendation
 ```
 
-### 9.2 Trend lane, unavailable
+### 9.2 Trend lane, unavailable (a dashboard state, not a card)
+
+**This is not a setup card.** It is a dashboard availability state outside
+the card contract, with no `scd1_` identity and no card fields. No card of
+either kind is produced, because no trend setup definition is registered
+and no authorized evaluation exists (§4.8).
 
 ```yaml
-card_kind: no_qualified_setup
+# dashboard lane state, not a setup-card-1 object
 lane: trend_continuation
-no_setup_reason: lane_not_researched
-qualification: not_evaluated
-evidence_readiness: blocked
-readiness_blockers: [missing_required_evidence]
-selector_availability: not_requested
-contracts: null
-manual_review_ready: false
+lane_state: not_authorized
 ```
 
-Displayed as "Trend continuation: not researched — no trend signal exists".
+Displayed as "Trend lane unavailable — no researched or registered setup
+definition exists".
 
 ### 9.3 Blocked by stale evidence
 
@@ -538,14 +598,21 @@ manual_review_ready: false
 
 Both sides of the conflict are shown; no winner is chosen.
 
-### 9.5 `no_qualified_setup`
+### 9.5 `no_qualified_setup` (future, illustrative)
+
+Illustrative only: no setup definition is registered today, so this card
+cannot be produced. It is allowed because the bundle contains exactly one
+lane-level evaluation from the registered producer, cited below, with
+lifecycle `evaluation_complete`, qualification `not_qualified` and reason
+`criteria_not_met`, and evidence is ready (§4.8).
 
 ```yaml
 card_kind: no_qualified_setup
 lane: vwap_reversion
-no_setup_reason: criteria_not_met
+no_setup_reason: criteria_not_met   # exactly the cited evaluation's reason
 qualification: not_qualified
-qualification_item_id: evi1_<syn-qualification-calc>
+qualification_item_id: evi1_<syn-qualification-calc>  # the lane evaluation
+expires_at_utc: null                # exactly the cited evaluation's expiry
 evidence_readiness: ready
 readiness_blockers: []
 selector_availability: not_requested
@@ -634,6 +701,14 @@ selector's returned sets.
   listed; research-only never shown as eligible;
 - `no_qualified_setup` cards have `selector_availability = not_requested`,
   no contract section, and render neutrally;
+- a `no_qualified_setup` card requires exactly one cited lane-level
+  `not_qualified` evaluation from the registered producer, at
+  `evaluation_complete`, `invalidated` or `expired`, whose reason and expiry
+  the card repeats; only `criteria_not_met` and `no_candidate_evaluated`
+  are accepted;
+- no card of either kind for: no registered definition, a missing or
+  unauthorized evaluation, `not_evaluated`, or stale, missing, ambiguous or
+  critically conflicted required evidence; these are availability states;
 - selector availability and outcome stay separate: `unavailable` and
   `not_requested` carry no outcome, reference or contract list, and are
   never shown as `no_eligible_contracts`;
@@ -665,6 +740,9 @@ selector's returned sets.
 - The seven state vocabularies and their transition tables (§5), including
   the separate selector-availability vocabulary.
 - The `manual_review_ready` field and its strict definition (§4.4).
+- The `no_qualified_setup` conclusion rules (§4.8), with lane availability
+  kept outside the card contract (corrected 2026-09-29; accepted through the
+  implementation merge).
 - Card identity, supersession and retry rules (§6).
 - The `scd1_` identity prefix.
 - The fixed manual-decision statement text.
@@ -682,7 +760,7 @@ selector's returned sets.
 ### 11.4 Blockers
 
 - No setup definition is registered, so no real `setup` card can reach
-  `qualified`.
+  `qualified` and no `no_qualified_setup` card can be produced.
 - VWAP live qualification waits on the shadow-research stages (Stage 3 not
   authorized) and the sealed holdout.
 - No producer adapters or evidence store exist to build real bundles.
