@@ -39,6 +39,13 @@ and consumer rules in
 offline core lives in `market_intelligence/evidence/`. No producer adapter,
 evidence store, populated registry, or consumer exists yet.
 
+**Dashboard (reviewed design; not implemented).** The dashboard's
+information architecture is a reviewed design in
+[docs/DASHBOARD_INFORMATION_ARCHITECTURE.md](docs/DASHBOARD_INFORMATION_ARCHITECTURE.md),
+and the setup-card contract a reviewed design in
+[docs/SETUP_CARD_CONTRACT.md](docs/SETUP_CARD_CONTRACT.md). No dashboard or
+card code exists, and none is authorized.
+
 ## Architecture
 
 **Implemented:**
