@@ -109,7 +109,11 @@ documents, or the shadow sample.
    Storage, adapters, a registry file and every consumer remain
    unauthorized.
 3. Design the dashboard information architecture and the setup-card
-   contract ([vision §7](PRODUCT_VISION.md)).
+   contract ([vision §7](PRODUCT_VISION.md)). **Design phase reviewed and
+   merged (2026-09-29):**
+   [DASHBOARD_INFORMATION_ARCHITECTURE.md](DASHBOARD_INFORMATION_ARCHITECTURE.md),
+   [SETUP_CARD_CONTRACT.md](SETUP_CARD_CONTRACT.md). Implementation remains
+   unauthorized: no dashboard or card implementation is authorized.
 4. Standardize the Macro, News, and Market Evidence outputs into the
    envelope.
 5. Design the context handoff between the dashboard and chat.

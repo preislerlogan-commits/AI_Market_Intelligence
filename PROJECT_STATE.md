@@ -6112,6 +6112,50 @@ entry describes something that has already been built, ingested, or attempted;
       network request, model call, holdout data, or frozen research
       document change.
 
+60. **Dashboard information architecture and setup-card contract —
+    REVIEWED DESIGN, accepted by its merge; complete as a design milestone
+    (2026-09-29). DESIGN ONLY. No dashboard, card builder or consumer code
+    exists.**
+    - **What the merge does and does not do.** It accepts the design. It
+      authorizes no dashboard, setup-card implementation, assistant registry
+      grant, storage, adapter, ranking, scenario, notification,
+      contract-selector change or trading capability.
+    - **Documents.**
+      [docs/DASHBOARD_INFORMATION_ARCHITECTURE.md](docs/DASHBOARD_INFORMATION_ARCHITECTURE.md)
+      (seven pages, navigation and drill path, global status strip, page
+      states, never-combine rules, trust vocabulary, accessibility, and the
+      page-to-bundle mapping) and
+      [docs/SETUP_CARD_CONTRACT.md](docs/SETUP_CARD_CONTRACT.md) (the
+      `setup-card-1` contract, seven separate state vocabularies
+      with transition tables, identity and supersession, and synthetic
+      examples).
+    - **Key card rules.** `manual_review_ready` means only that the card has
+      enough current, non-conflicting evidence to be presented for manual
+      review (never qualified, eligible, recommended or validated). Setup
+      lifecycle (`observed`, `developing`, `evaluation_complete`,
+      `invalidated`, `expired`) is separate from qualification. Selector
+      availability (`not_requested`, `available`, `unavailable`) is separate
+      from the selector's four outcomes.
+    - **Honest current state.** The VWAP lane shows "live qualification not
+      authorized — research context only"; the trend lane shows "not
+      researched"; no setup definition, scenario definition or ranking
+      rubric exists, so qualification stays `not_evaluated` and no real
+      card can reach `evaluation_complete`.
+    - **Accepted as design.** The page structure, card contract and state
+      vocabularies. **Not accepted:** the read-only assistant grant for the
+      card's bundle remains an unapproved future registry change (roadmap
+      priority 5).
+    - **Left open.** Frontend framework (README's "future Streamlit
+      application" is a placeholder, not a decision), storage,
+      authentication, hosting, refresh cadence, live freshness thresholds,
+      notification taxonomy, scenario definitions, trend-day rules, ranking
+      rubrics, model choice and any SMS provider.
+    - **Nothing else changed.** No code, Evidence Envelope change,
+      migration, database access, provider or model request, holdout access,
+      or frozen-document change. No dashboard, assistant, ranking,
+      notification, trend detection, Options Strategy Agent or trading is
+      authorized.
+
 ## Next Planned Work
 
 This is the forward plan. It replaces the historical content now under
@@ -6462,6 +6506,10 @@ This is the forward plan. It replaces the historical content now under
       file, producer adapter or consumer requires its own separate, reviewed
       authorization, and none is authorized. Any such work must not touch
       holdout data, frozen research documents, or the shadow sample.
+   3. **Dashboard and setup-card designs (item 60) are reviewed and
+      merged.** Every subsequent implementation or registry change,
+      including any dashboard, card builder or assistant grant, requires
+      separate authorization.
 
 Manual-only trading is preserved throughout. The three existing analysis
 agents (Market Evidence, News, Macro) remain non-directional; the Phase 1
