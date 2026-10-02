@@ -118,12 +118,19 @@ documents, or the shadow sample.
    production setup-definition registry is empty, so no production card
    can be created. Dashboard implementation remains unauthorized, as do
    card storage and every consumer.
-4. Standardize the Macro, News, and Market Evidence outputs into the
+4. Design persistent evidence and setup-card storage, and versioned
+   registry loading. **Design phase reviewed and merged (design only;
+   not implemented; implementation not authorized):**
+   [EVIDENCE_CARD_STORAGE_DESIGN.md](EVIDENCE_CARD_STORAGE_DESIGN.md),
+   [REGISTRY_LOADING_DESIGN.md](REGISTRY_LOADING_DESIGN.md). No migration,
+   table, registry file or activation exists, and the production
+   setup-definition registry stays empty.
+5. Standardize the Macro, News, and Market Evidence outputs into the
    envelope.
-5. Design the context handoff between the dashboard and chat.
-6. Design the notification taxonomy and throttling.
-7. Draft a separate trend-day **discovery** plan.
-8. Implement these components only through separately reviewed stages.
+6. Design the context handoff between the dashboard and chat.
+7. Design the notification taxonomy and throttling.
+8. Draft a separate trend-day **discovery** plan.
+9. Implement these components only through separately reviewed stages.
 
 ## Standing boundaries
 

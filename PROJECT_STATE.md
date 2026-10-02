@@ -6249,6 +6249,158 @@ entry describes something that has already been built, ingested, or attempted;
       database access, provider or model call, holdout data, or change to
       frozen research documents, DECISION_RULES.md or SOURCE_POLICY.md.
 
+62. **Evidence and setup-card storage, and versioned registry loading —
+    REVIEWED DESIGN, accepted through its merge; complete as a design
+    milestone (from branch `design/evidence-card-storage-registry`). DESIGN
+    ONLY. Not implemented. No implementation, migration, registry activation
+    or consumer access is authorized; any implementation requires a new,
+    separate authorization.**
+    - **Documents.**
+      [docs/EVIDENCE_CARD_STORAGE_DESIGN.md](docs/EVIDENCE_CARD_STORAGE_DESIGN.md)
+      (persistent evidence and setup-card storage) and
+      [docs/REGISTRY_LOADING_DESIGN.md](docs/REGISTRY_LOADING_DESIGN.md)
+      (registry files, strict loading, identity, registration and
+      activation).
+    - **Proposed storage.** Insert-only tables in the existing DuckDB
+      database as the single authority. Each row holds a sealed record's
+      full canonical JSON with content and row hashes. Lookup projections
+      are derived and rebuildable. An integer commit sequence is the
+      authoritative total order. The observed UTC commit time never
+      regresses but may repeat, and no time is ever invented. "Known at T"
+      is every commit timed at or before T, which is always a sequence
+      prefix. Bundles are stored only for a past `as_of_utc`, after the
+      store rebuilds them to the same `evb1_` ID. The builder's identity is
+      kept in a storage wrapper; `evidence-envelope-1` is unchanged.
+    - **Integrity and recovery.** Integrity rests on a hash-chained commit
+      log and verification scans, because DuckDB has no triggers.
+      Corruption, a persisted holdout violation or an invalid activation
+      is an integrity stop: the store enters read-refused mode. Ordinary
+      refusals, including holdout write and read refusals, never disable
+      unrelated reads. Restoration puts a verified backup back exactly,
+      with nothing re-appended or re-timed, and records a separate
+      recovery event. Commits lost after the backup are never recreated
+      as if they had existed.
+    - **Anti-rollback checkpoint.** The internal chain cannot detect an
+      older, internally valid database file swapped in whole. A minimal
+      external checkpoint therefore records only the store identity, the
+      highest durably committed `commit_seq`, its digest, a creation time,
+      and its authentication algorithm and key ID. It contains no evidence
+      and is no authority.
+      - It is advanced after every durable commit. It lives in a separately
+        configured, path-safe state directory outside the database
+        directory.
+      - Production requires HMAC-SHA-256, with the key from an approved
+        credential source and never stored anywhere else.
+      - An unauthenticated checkpoint is allowed only in an explicitly
+        selected development or test mode, with no silent fallback.
+      - A missing key, an unknown key ID, a failed HMAC or an unsupported
+        algorithm fails closed.
+      - If the checkpoint write fails after a commit, the commit stands and
+        the store enters `checkpoint_reconciliation_required`. Writes are
+        refused, and reads are served only once the existing checkpoint is
+        confirmed as a verified prefix.
+      - Reconciliation has a fixed order:
+        1. verify the chain to the tip;
+        2. advance the checkpoint;
+        3. commit one `checkpoint_reconciled` event, never duplicated on
+           retry;
+        4. advance the checkpoint again;
+        5. confirm it equals the tip, and only then resume.
+      - Every workflow (recovery, key rotation, registration, activation,
+        shutdown) is complete only once the checkpoint covers its final
+        commit.
+      - Key rotation verifies the full chain first, records only key IDs,
+        the algorithm and the authorization, and refuses writes until it
+        finishes.
+      - Startup stops on any of these: a missing checkpoint for an
+        established store; a database behind the checkpoint; a digest
+        mismatch.
+      - Restoring behind the checkpoint needs explicit recovery
+        authorization. The old checkpoint is preserved in the recovery
+        record before a new one is issued.
+      - The recovery commit records `checkpoint_reissue_required`, never a
+        claim that the checkpoint exists. The authenticated checkpoint,
+        verified equal to the database tip, is the only proof that
+        reissuance completed.
+      - A restart completes a missing recovery checkpoint without
+        re-appending anything. A checkpoint that matches neither the
+        superseded one nor the recovery commit is an integrity stop.
+      - An actor controlling the database, the checkpoint and the
+        credential source can still defeat it.
+    - **Proposed card storage.** Cards are accepted only after
+      re-validation against their stored bundle. Each card row records the
+      exact `sdr1_` setup-definition registry version used, and
+      verification loads that version, not the active one. Display status
+      is never stored. Because the setup-definition format stays
+      structurally empty, every card of either kind would be refused.
+    - **Stricter than the merged code.** These remain proposed
+      implementation requirements and need explicit acceptance when an
+      implementation is reviewed:
+      - Linear conflict-status chains.
+      - A frozen conflict-severity derivation. `involves_required_item` is
+        true only when an involved item satisfies a requirement of an
+        authorized machine-decision bundle purpose, under the Evidence
+        Registry in force at `evaluated_as_of_utc`. The stored wrapper
+        records and row-hashes that registry version, the matched
+        requirement IDs, the boolean, the severity and the severity-rule
+        version. All of them are reproducible, and none is bundle-specific.
+        With today's grants the boolean is always false.
+      - Exactly one root per card chain, with no branches or cycles.
+    - **Proposed registry loading.** Registry versions are strict,
+      canonical JSON files in the repository. Evidence registries keep the
+      existing `evr1_` identity; setup-definition registries get a new
+      `sdr1_` identity. Registration and activation are separate,
+      append-only acts, and no activation may be backdated. Rollback is a
+      new activation. Startup fails closed on a missing, invalid or
+      ambiguous active registry. Once a payload schema ID has been
+      activated, its `spy_price_content` declaration can never change,
+      checked against the complete activation history; a new meaning needs
+      a new schema ID. The setup-definition file format cannot hold a
+      definition, and no registry content can move the Contract Selector's
+      eligibility authority.
+    - **Stale-severity guard.** Some activations touch machine-decision
+      mode: authorizing a machine-decision purpose, changing its
+      requirements, or changing which consumers may use that mode. Such an
+      activation takes effect immediately, and is refused
+      (`unresolved_conflict_requires_contract_amendment`) if it would
+      change any unresolved conflict's matched requirements,
+      `involves_required_item` or severity.
+      - This authorizes no machine decision; none is authorized today.
+      - No historical conflict record is rewritten.
+      - Lifting the block needs a future Evidence Envelope amendment for
+        append-only unresolved re-evaluation, recorded as a blocker.
+    - **Migration number.** No migration is created. Checked against the
+      current runner: it would accept `0011` while `0010` is absent, but a
+      `0010` added afterwards would make the database permanently
+      unhealthy. So `0011` is not assumed. Storage will use the next valid
+      number fixed by the implementing authorization, once the shadow
+      recorder's reserved `0010` is resolved.
+    - **Open decisions.** These include:
+      - whether the three stricter invariants are accepted;
+      - the concrete checkpoint state-directory path and credential entry
+        names;
+      - how re-detected open conflicts are handled;
+      - how consumers read alongside DuckDB's single writer;
+      - exports and retention;
+      - how the shadow recorder's reserved `0010` is resolved;
+      - the registry file location;
+      - the new `sdr1_` and `rga1_` prefixes;
+      - the form of `authorization_ref`.
+    - **Still true after the merge.** The production setup-definition
+      registry remains empty. No machine-decision purpose is authorized.
+      The migration number remains unfixed. Every open question and
+      blocker above remains open.
+    - **What the merge does not authorize.** It accepts the designs only.
+      It authorizes no migration, database change, registry file or
+      activation, storage writer or reader, checkpoint creation,
+      credential or HMAC key, producer adapter, setup definition, evidence
+      or card collection, dashboard or assistant access, machine-decision
+      mode, notification, Options Strategy Agent, or trading or execution.
+    - **Nothing else changed.** No code, migration, table, registry file,
+      activation, database access, provider or model request, holdout
+      access, setup definition, consumer grant, or change to frozen
+      research documents, DECISION_RULES.md or SOURCE_POLICY.md.
+
 ## Next Planned Work
 
 This is the forward plan. It replaces the historical content now under
@@ -6610,6 +6762,15 @@ This is the forward plan. It replaces the historical content now under
       assistant access (including the proposed `setup_detail` grant) and
       every other subsequent layer each require their own separate
       authorization; none is authorized.
+   5. **The storage and registry-loading designs (item 62) are reviewed
+      and merged.** A possible next step is a separately authorized
+      **offline** implementation of the storage and registry-loading core,
+      on synthetic data and temporary databases. Nothing authorizes it
+      automatically. It would need its own explicit authorization:
+      - naming the reviewed designs;
+      - accepting or rejecting each stricter-than-code rule;
+      - fixing the migration number;
+      - stating whether anything may touch the real database.
 
 Manual-only trading is preserved throughout. The three existing analysis
 agents (Market Evidence, News, Macro) remain non-directional; the Phase 1
