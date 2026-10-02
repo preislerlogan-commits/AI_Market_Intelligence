@@ -795,6 +795,35 @@ specified in
   separately authorized implementation review, a verified database backup
   first, and migration tests on a temporary database.
 
+## Proposed (not existing): evidence, setup-card and registry storage
+
+**Proposed only; nothing here exists.** The reviewed designs
+[EVIDENCE_CARD_STORAGE_DESIGN.md](EVIDENCE_CARD_STORAGE_DESIGN.md) and
+[REGISTRY_LOADING_DESIGN.md](REGISTRY_LOADING_DESIGN.md) describe one
+future migration. No table, migration, checkpoint, registry file, store
+writer or reader exists, and none is authorized. Its number is **not** fixed. The runner accepts a numeric gap,
+but a reserved `0010` added after a later migration was applied would break
+the applied-history prefix check. So the storage migration will take the
+next valid number set by its implementing authorization, after the shadow
+recorder's reserved `0010` is resolved.
+
+- **Proposed tables (insert-only).** `store_commits`, `registry_versions`,
+  `registry_activations`, `evidence_items`, `evidence_envelopes`,
+  `evidence_conflicts`, `evidence_bundles`, `setup_cards`,
+  `setup_card_chains`, `store_instance`, `store_recovery_events` and
+  `store_audit_events`, plus `store_checkpoint_key_rotations` and
+  rebuildable lookup projections. A minimal external anti-rollback
+  checkpoint witnesses the highest durable commit. It is never an
+  authority, is advanced after every commit, lives in a separately
+  configured state directory outside the database directory, and is
+  HMAC-authenticated in production.
+- **Not yet done.** No migration has been created or applied, no table
+  or checkpoint exists, no registry has been registered or activated, and
+  the health check is unchanged.
+- **Future requirements.** The same as above: a separately authorized
+  implementation, the final migration number, a verified backup before any
+  application, and tests on temporary databases.
+
 ## Components
 
 - `market_intelligence/storage/database.py` — `DuckDBManager`, the
