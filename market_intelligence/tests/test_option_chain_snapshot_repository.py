@@ -238,7 +238,7 @@ def test_store_transactional_run_metadata(tmp_path, isolated_env_file):
     assert run[2] == "succeeded"
     assert run[3] == 1
     assert run[4] is None
-    assert run[6] == "0009"
+    assert run[6] == "0010"
     assert result.batch_outcome == "succeeded"
 
 

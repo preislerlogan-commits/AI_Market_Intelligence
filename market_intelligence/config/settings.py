@@ -49,6 +49,16 @@ class Settings(BaseSettings):
     openai_api_key: SecretStr | None = None
     anthropic_api_key: SecretStr | None = None
 
+    # Evidence-store anti-rollback checkpoint keys (offline core only; no real
+    # store or checkpoint exists). Key IDs are non-secret labels. Keys are
+    # SecretStr and are never printed, logged, stored in the database, a
+    # checkpoint or a registry, or committed. The previous key is set only
+    # while a key rotation is in progress.
+    evidence_store_checkpoint_key_id: str | None = None
+    evidence_store_checkpoint_hmac_key: SecretStr | None = None
+    evidence_store_checkpoint_previous_key_id: str | None = None
+    evidence_store_checkpoint_previous_hmac_key: SecretStr | None = None
+
     # Non-secret OpenAI request configuration. The API key is configured
     # exclusively via ``openai_api_key`` above (SecretStr) — never via these
     # fields, and never accepted per-request from a caller.

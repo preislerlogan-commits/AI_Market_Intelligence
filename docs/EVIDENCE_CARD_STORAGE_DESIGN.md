@@ -1,27 +1,56 @@
 # Evidence and Setup-Card Storage — Design
 
-**Status: REVIEWED DESIGN — accepted by the merge that introduces this
-document. DESIGN ONLY. Not implemented. Not authorized.** This document
+**Status: REVIEWED DESIGN, accepted by the design merge (#71). Offline core
+implemented through its own reviewed merge (PROJECT_STATE item 63). Migration
+`0010` is not applied to the real database. No operational use is
+authorized.** This document
 specifies how the reviewed Evidence Envelope records and `setup-card-1`
 cards would be persisted. Its companion,
 [REGISTRY_LOADING_DESIGN.md](REGISTRY_LOADING_DESIGN.md), proposes how
 registry versions are loaded and activated.
 
-- **The merge accepts the design only.** Nothing it describes has been
-  implemented. The merge does **not** authorize migrations, database
-  changes, registry files or activation, storage writers or readers,
-  checkpoint creation, credentials or HMAC keys, producer adapters, setup
-  definitions, evidence or card collection, dashboard or assistant access,
-  machine-decision mode, notifications, or trading or execution. Any
-  implementation needs a new, separate authorization (§16.4).
-- **Nothing exists.** No migration, table, repository, store, loader,
-  checkpoint, registry file or consumer has been created. The real
-  database, its migrations, providers, models and holdout data were not
-  touched by this design.
-- **Open items stay open.** The open questions and blockers in §16.2 and
-  §16.3 are unresolved. The **[STRICTER]** invariants remain proposed
-  implementation requirements that need explicit acceptance when an
-  implementation is reviewed.
+- **The design merge (#71) accepted the design only.** Implementation was
+  then separately authorized, offline only (item 63). Neither merge
+  authorizes applying `0010` to the real database, real registry files or
+  activation, real checkpoints, credentials or HMAC keys, producer adapters,
+  setup definitions, evidence or card collection, consumer, dashboard or
+  assistant access, machine-decision mode, notifications, or trading or
+  execution. Each needs a new, separate authorization (§16.4).
+- **Implementation status (2026-10-06).** An offline core of this design
+  is reviewed and implemented through its merge (PROJECT_STATE item 63), in
+  `market_intelligence/evidence_store/` with migration
+  `0010_create_evidence_card_store.sql`. It is exercised only on temporary
+  databases and temporary checkpoint directories, refuses the real database
+  path, and is **not** authorized for real-database use. The real database
+  stays at `0009`, and so intentionally fails the current-schema health
+  check, until applying `0010` is separately authorized with a verified
+  backup. No real registry file, registration, activation, checkpoint or
+  credential exists, and the production setup-definition registry stays
+  empty. As a final
+  pre-commit integrity correction, every startup, reconciliation and recovery
+  completion runs the complete authoritative verification scan (§10.2,
+  §10.3) before the store serves; readers rely on that in-process result and
+  still validate each record they return. By implementation-review decision
+  `key_column_mismatch` and `bundle_reproduction_mismatch` are integrity
+  stops, and a `projection_mismatch` is rebuilt and reverified before the
+  store serves (§10.3).
+- **Accepted by the implementing authorization.** The three **[STRICTER]**
+  invariants (§16.1) are accepted and implemented as storage-layer
+  requirements: linear conflict-status chains, the frozen conflict-severity
+  derivation, and one-root card chains. No Evidence Envelope or setup-card
+  identity rule changed.
+- **Decisions taken for the offline core.** Complete envelope headers are
+  stored (O-1). An identical re-detected unresolved conflict is idempotent;
+  a materially different one is refused until the §16.3 blocker is resolved
+  (O-3). Readers use short-lived read-only connections and serve only after
+  checkpoint verification; the single writer is serialized by the existing
+  lock pattern (O-4). No export is implemented (O-5). Retention is
+  indefinite, with no deletion or pruning (O-6). No producer adapter is
+  implemented (O-7). The migration number is `0010` (O-8, §14). The
+  concrete checkpoint state directory and credential entries remain an
+  implementation-time configuration decision for any real use (O-9).
+- **Blockers stay open.** The §16.3 blockers, including the future-contract
+  blocker on unresolved conflict re-evaluation, are unchanged.
 - **The production setup-definition registry stays empty.** Storage never
   makes a card possible. With no registered setup definition, the store
   refuses every card of either kind (§6.6).
@@ -193,7 +222,7 @@ Storage-layer contracts, outside the `evidence-envelope-1` and
 | `SeverityRuleVersion` | `conflict-severity-rules-1` (the fixed table of design §I.2, implemented today by `expected_severity`) |
 | `RecoveryKind` | `backup_restoration` |
 | `StoreAuditEventType` | the design §O events plus `conflict_refused`, `card_recorded`, `card_refused`, `registry_version_registered`, `registry_activated`, `registry_activation_refused`, `holdout_write_refused`, `holdout_read_refused`, `integrity_stop`, `store_restored`, `store_open_refused`, `checkpoint_reissue_required`, `checkpoint_reconciliation_entered`, `checkpoint_reconciled`, `checkpoint_key_rotated`. **`checkpoint_reissue_required`** is an authoritative recovery event stating that an external checkpoint must be issued for the named recovery commit; it never claims the checkpoint exists. Reissuance is proven complete only by an authenticated checkpoint equal to the database tip; there is no `checkpoint_reissued` event |
-| `IntegrityFinding` (**stop** unless marked) | `identity_mismatch`, `record_hash_mismatch`, `row_hash_mismatch`, `commit_chain_mismatch`, `commit_sequence_gap`, `commit_time_regression`, `impossible_duplicate_identity`, `persisted_holdout_violation`, `invalid_registry_activation`, `unknown_record_schema`, `authoritative_chain_ambiguity` (a branch, second root, cycle or missing predecessor in a conflict, card or activation chain), `missing_parent`, `card_bundle_missing`, `card_registry_version_missing`, `checkpoint_missing`, `checkpoint_invalid`, `checkpoint_authentication_failed`, `checkpoint_algorithm_unsupported`, `checkpoint_store_mismatch`, `database_behind_checkpoint`, `checkpoint_commit_mismatch`, `checkpoint_recovery_mismatch`, `conflict_severity_irreproducible`; **not a stop:** `key_column_mismatch`, `projection_mismatch`, `bundle_reproduction_mismatch` |
+| `IntegrityFinding` (**stop** unless marked) | `identity_mismatch`, `record_hash_mismatch`, `row_hash_mismatch`, `commit_chain_mismatch`, `commit_sequence_gap`, `commit_time_regression`, `impossible_duplicate_identity`, `persisted_holdout_violation`, `invalid_registry_activation`, `unknown_record_schema`, `authoritative_chain_ambiguity` (a branch, second root, cycle or missing predecessor in a conflict, card or activation chain), `missing_parent`, `card_bundle_missing`, `card_registry_version_missing`, `checkpoint_missing`, `checkpoint_invalid`, `checkpoint_authentication_failed`, `checkpoint_algorithm_unsupported`, `checkpoint_store_mismatch`, `database_behind_checkpoint`, `checkpoint_commit_mismatch`, `checkpoint_recovery_mismatch`, `conflict_severity_irreproducible`, `key_column_mismatch`, `bundle_reproduction_mismatch` (both stops by implementation-review decision, §10.3); **not a stop:** `projection_mismatch`, only through the startup rebuild-and-reverify sequence (§10.3) |
 | `StoreRefusalReason` | the existing validator tokens (for example `unknown_producer`, `unknown_payload_schema`, `holdout_restricted`, `missing_parent`, `card_bundle_mismatch`, `setup_definition_not_registered`) plus `writer_not_permitted`, `store_clock_regressed`, `bundle_as_of_not_past`, `bundle_not_reproducible`, `bundle_registry_not_in_force`, `conflict_chain_already_started`, `conflict_status_not_tip`, `card_chain_already_started`, `card_predecessor_not_tip`, `card_bundle_not_stored`, `record_too_large`, `store_read_refused`, `active_registry_missing`, `active_registry_ambiguous`, `active_registry_invalid`, `conflict_as_of_not_past`, `conflict_registry_version_missing`, `conflict_registry_activation_ambiguous`, `conflict_requirements_not_reproducible`, `conflict_severity_mismatch`, `severity_rule_version_unknown`, `checkpoint_reconciliation_required`, `checkpoint_key_rotation_in_progress`, `checkpoint_key_missing`, `checkpoint_key_id_unknown`, `conflict_evaluation_stale`, `workflow_incomplete` |
 
 ---
@@ -405,7 +434,7 @@ selector returned them; rejected contracts exist only as aggregate counts
 | `superseded_checkpoint_commit_digest` | `VARCHAR NOT NULL` | its `commit_digest` |
 | `superseded_checkpoint_created_at_utc` | `TIMESTAMP NOT NULL` | its creation time |
 | `superseded_checkpoint_sha256` | `VARCHAR NOT NULL` | SHA-256 of the superseded checkpoint file's exact bytes |
-| `recovery_authorization_ref` | `VARCHAR NOT NULL` | a bounded token naming the explicit recovery authorization; `^[a-z][a-z0-9_]{0,63}$` |
+| `recovery_authorization_ref` | `VARCHAR NOT NULL` | a bounded reference to the explicit recovery authorization; `^project-state:[1-9][0-9]{0,4}@[0-9a-f]{40}$` (syntax adopted at implementation) |
 | common columns | | written in the first commit after restoration |
 
 The recovery commit holds exactly this row and two audit events,
@@ -792,8 +821,11 @@ reproduce(bundle_id):
   support verification and reconstruction. They are **not** part of
   `evb1_`, and `evidence-envelope-1` is unchanged.
 - **A mismatch under a different builder** is reported as
-  `bundle_reproduction_mismatch` (not an integrity stop), investigated as a
-  builder change, and never "fixed" by rewriting the stored bundle.
+  `bundle_reproduction_mismatch`. By implementation-review decision it is an
+  **integrity stop** (§10.3): a later builder change must not silently make
+  an old bundle serviceable. The store stays read-refused until the
+  historical builder is available or a separately authorized recovery
+  resolves it, and the stored bundle is never "fixed" by rewriting it.
 - **Changing bundle identity** to include the builder would be a future
   `evidence-envelope-2` design question; it is not proposed here.
 
@@ -893,11 +925,32 @@ key ID are **not** integrity stops. Nothing stored is known to be wrong, so
 the store refuses writes (or does not open) until the condition is
 cleared (§10.6).
 
-**Not a stop** (the store keeps serving; the finding is reported):
+**Implementation-review decision (2026-10-06): two further stops.** This
+clarifies integrity behavior; it is not an operational authorization.
 
-- `key_column_mismatch` and `projection_mismatch`: projections and key
-  copies are rebuilt from authoritative rows, recorded as an audit event;
-- `bundle_reproduction_mismatch`: investigated as a builder change.
+- `key_column_mismatch` is a stop. Copied key columns are used for indexing,
+  lookup and reconstruction, so a mismatch can omit records or return them
+  under the wrong key. An insert-only authoritative row cannot be repaired
+  by a projection rebuild.
+- `bundle_reproduction_mismatch` is a stop. The store cannot prove that a
+  stored bundle matches the facts, registry and recorded builder identity
+  that produced it.
+- Neither is ever auto-repaired.
+
+**Not a stop, but never served while known: `projection_mismatch`.** At
+startup the sequence is:
+
+1. detect the mismatch in the full verification scan;
+2. keep normal service blocked;
+3. rebuild only the affected projection tables from verified authoritative
+   rows, writing no authoritative row;
+4. scan the whole store again;
+5. serve only once nothing is found.
+
+A failed rebuild or reverification is a stop (read-refused). The startup
+proof records the repaired finding and the rebuilt tables. The offline core
+records this on that in-process proof only; it has no audit event type for a
+projection rebuild.
 
 **Ordinary refusals never stop the store.** Invalid input, an unauthorized
 operation or writer, a clock regression, a chain-rule refusal at write,
@@ -1245,8 +1298,15 @@ result.
 
 ## 14. Migration number
 
-- **No migration is created by this design.** The real database is at
-  `0009`, and the shadow-recorder design proposes
+- **Allocated at implementation (2026-10-02): `0010`.** The implementing
+  authorization assigned `0010` to this storage, the next real migration
+  implemented. The shadow recorder's earlier `0010` was only a proposed
+  reservation for a migration that was never created; its design now uses
+  the next available number at its own implementation. The analysis below,
+  written before that decision, is kept as the record of why the number
+  could not be fixed by this design alone.
+- **At design time no migration was created.** The real database is at
+  `0009`, and the shadow-recorder design then proposed
   `0010_create_spy_vwap_shadow_tables.sql` (not created).
 - **What the runner permits (verified 2026-09-29 against
   `storage/database.py`, using its pure functions on synthetic temporary

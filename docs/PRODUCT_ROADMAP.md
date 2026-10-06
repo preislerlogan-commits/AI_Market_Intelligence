@@ -119,11 +119,16 @@ documents, or the shadow sample.
    can be created. Dashboard implementation remains unauthorized, as do
    card storage and every consumer.
 4. Design persistent evidence and setup-card storage, and versioned
-   registry loading. **Design phase reviewed and merged (design only;
-   not implemented; implementation not authorized):**
+   registry loading. **Design phase reviewed and merged** (the design merge
+   itself authorized no implementation):
    [EVIDENCE_CARD_STORAGE_DESIGN.md](EVIDENCE_CARD_STORAGE_DESIGN.md),
-   [REGISTRY_LOADING_DESIGN.md](REGISTRY_LOADING_DESIGN.md). No migration,
-   table, registry file or activation exists, and the production
+   [REGISTRY_LOADING_DESIGN.md](REGISTRY_LOADING_DESIGN.md). **Offline core
+   reviewed and implemented through its merge (2026-10-06):**
+   `market_intelligence/evidence_store/` with migration `0010`, tested only on
+   temporary databases. `0010` is not applied to the real database, which
+   stays at `0009` (and so fails the current-schema health check) until
+   separately authorized with a verified backup. No real table, registry
+   file, activation or checkpoint exists, and the production
    setup-definition registry stays empty.
 5. Standardize the Macro, News, and Market Evidence outputs into the
    envelope.

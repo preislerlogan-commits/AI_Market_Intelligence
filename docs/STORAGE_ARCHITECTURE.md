@@ -775,8 +775,10 @@ directly.
 ## Proposed (not existing): SPY VWAP shadow-recorder storage
 
 **Proposed design only; nothing here exists.** Stage 2 of the frozen shadow
-protocol proposes a future migration `0010_create_spy_vwap_shadow_tables.sql`,
-specified in
+protocol proposes a future migration (`NNNN_create_spy_vwap_shadow_tables.sql`,
+using the next available migration number at implementation; its earlier
+`0010` reservation was released on 2026-10-02 as migration-number
+housekeeping only), specified in
 [SPY_VWAP_SHADOW_RECORDER_DESIGN.md](SPY_VWAP_SHADOW_RECORDER_DESIGN.md) §F.
 
 - **Proposed tables (ten, insert-only):**
@@ -795,19 +797,28 @@ specified in
   separately authorized implementation review, a verified database backup
   first, and migration tests on a temporary database.
 
-## Proposed (not existing): evidence, setup-card and registry storage
+## Evidence, setup-card and registry storage — offline core (migration `0010`)
 
-**Proposed only; nothing here exists.** The reviewed designs
+**Reviewed and implemented offline through its merge (PROJECT_STATE item
+63). Not applied to the real database and not authorized for real-database
+use; applying `0010` needs separate authorization and a verified backup.** The reviewed designs
 [EVIDENCE_CARD_STORAGE_DESIGN.md](EVIDENCE_CARD_STORAGE_DESIGN.md) and
-[REGISTRY_LOADING_DESIGN.md](REGISTRY_LOADING_DESIGN.md) describe one
-future migration. No table, migration, checkpoint, registry file, store
-writer or reader exists, and none is authorized. Its number is **not** fixed. The runner accepts a numeric gap,
-but a reserved `0010` added after a later migration was applied would break
-the applied-history prefix check. So the storage migration will take the
-next valid number set by its implementing authorization, after the shadow
-recorder's reserved `0010` is resolved.
+[REGISTRY_LOADING_DESIGN.md](REGISTRY_LOADING_DESIGN.md) are implemented in
+`market_intelligence/evidence_store/` with migration
+`0010_create_evidence_card_store.sql`, applied only to temporary test
+databases. The package refuses the real database path and anything in the
+real `data/` directory.
 
-- **Proposed tables (insert-only).** `store_commits`, `registry_versions`,
+- **Real-database consequence.** Because `0010` now exists in the migration
+  directory while the real database is still at `0009`,
+  `scripts/check_database.py` reports the real database as not at the latest
+  migration (`healthy=False`). `scripts/ingest_core_macro_basket.py`, whose
+  required schema version tracks the latest migration by its own documented
+  convention, now requires `0010` and so refuses to run against the real
+  database. Both persist until applying `0010` to the real database is
+  separately authorized (with a verified backup first). Nothing was applied,
+  and no real data changed.
+- **Tables (insert-only).** `store_commits`, `registry_versions`,
   `registry_activations`, `evidence_items`, `evidence_envelopes`,
   `evidence_conflicts`, `evidence_bundles`, `setup_cards`,
   `setup_card_chains`, `store_instance`, `store_recovery_events` and
@@ -817,12 +828,12 @@ recorder's reserved `0010` is resolved.
   authority, is advanced after every commit, lives in a separately
   configured state directory outside the database directory, and is
   HMAC-authenticated in production.
-- **Not yet done.** No migration has been created or applied, no table
-  or checkpoint exists, no registry has been registered or activated, and
-  the health check is unchanged.
-- **Future requirements.** The same as above: a separately authorized
-  implementation, the final migration number, a verified backup before any
-  application, and tests on temporary databases.
+- **Not done.** The migration has not been applied to the real database.
+  No real table, checkpoint, registry file, registration or activation
+  exists. `REQUIRED_TABLES` in the health check is unchanged.
+- **Future requirements.** Applying `0010` to the real database, creating a
+  real checkpoint or credential, or registering or activating a real registry
+  each needs its own separate authorization.
 
 ## Components
 

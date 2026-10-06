@@ -640,10 +640,16 @@ exclusive.
 10. **Retention.** Clock checks are rows in `shadow_clock_checks`, kept for
     the life of the period and included in the manifest counts.
 
-## F. Proposed DuckDB storage — migration `0010` (NOT created)
+## F. Proposed DuckDB storage — a future migration (NOT created)
 
-The repository's latest migration is `0009`, so the next would be
-`0010_create_spy_vwap_shadow_tables.sql`. It follows existing conventions:
+**Migration-number housekeeping (2026-10-02).** This design earlier
+reserved `0010`. That was only a proposed future number: no such migration
+or schema exists, and `0010` has since been assigned to the offline evidence
+and setup-card store (PROJECT_STATE item 63). This migration will use **the
+next available migration number at implementation**, written `NNNN` below
+(`NNNN_create_spy_vwap_shadow_tables.sql`). Nothing else in this design, and
+nothing in the frozen shadow protocol, changes. It follows existing
+conventions:
 - a header comment block
 - `CHECK`-enumerated values
 - no DuckDB foreign keys (the rationale from migrations `0004` and `0007`:
@@ -715,18 +721,18 @@ stored as authoritative rows. A stored metrics snapshot, if any, carries
 
 - **Preconditions.**
   - The migration's own separately authorized implementation review.
-  - The database is healthy at `0009`.
+  - The database is healthy at the migration immediately before `NNNN`.
   - No running orchestration or recorder process.
-  - A verified backup copy (`data/market_intelligence-before-0010-<UTC>.duckdb`,
+  - A verified backup copy (`data/market_intelligence-before-NNNN-<UTC>.duckdb`,
     compared with `cmp`).
 - **Recovery.** DuckDB migrations run transactionally. If one fails,
   nothing is applied; restore from the backup if any doubt remains. No
   down-migration is planned; rollback means restoring the backup.
 - **Health check.** Add the ten tables and their key columns to
   `REQUIRED_TABLES` / `REQUIRED_COLUMNS`, but only in the implementation
-  change that adds `0010`.
+  change that adds `NNNN`.
 - **Migration tests (future):**
-  - applies on a temporary database from `0009`
+  - applies on a temporary database from the preceding migration
   - checksum and ordering
   - every `CHECK` rejects invalid rows
   - every PK or UNIQUE rejects duplicates
@@ -1032,7 +1038,7 @@ i.e. candidates that are:
 - the manifest's canonical hash
 
 **Repository integration tests (temporary DuckDB):**
-- the migration applies from `0009`
+- the migration applies from the preceding migration
 - CHECK, PK, and UNIQUE refusals
 - insert-only static scan
 - transaction rollback on injected failures (observation plus obligations
@@ -1135,5 +1141,6 @@ the Stage-2 latency test, which is blocked by the holdout until on or after
 offline implementation, with synthetic tests only, of the §C contracts, the
 §B pure components, and the §G repositories against a **temporary** DuckDB.
 That includes writing (but not applying to the project database) migration
-`0010`, with no provider or network requests, no project-database writes, no
+`NNNN` (the next available migration number), with no provider or network
+requests, no project-database writes, no
 scheduling, and no collection.

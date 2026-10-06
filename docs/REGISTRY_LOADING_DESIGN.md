@@ -1,26 +1,50 @@
 # Versioned Registry Loading and Activation — Design
 
-**Status: REVIEWED DESIGN — accepted by the merge that introduces this
-document. DESIGN ONLY. Not implemented. Not authorized.** This document
+**Status: REVIEWED DESIGN, accepted by the design merge (#71). Offline core
+implemented through its own reviewed merge (PROJECT_STATE item 63). Migration
+`0010` is not applied to the real database. No operational use is
+authorized.** This document
 specifies how reviewed Evidence Registry versions, and future
 setup-definition registries, would be written as files, parsed, identified,
 registered and activated. Its companion,
 [EVIDENCE_CARD_STORAGE_DESIGN.md](EVIDENCE_CARD_STORAGE_DESIGN.md), proposes
 the tables they are registered into.
 
-- **Nothing exists.** No registry file, loader, operator command, table or
-  activation has been created. `registry-draft-0`
+- **Implementation status (2026-10-06).** An offline core of this design
+  is reviewed and implemented through its merge (PROJECT_STATE item 63), in
+  `market_intelligence/evidence_store/` with migration
+  `0010_create_evidence_card_store.sql`. It is exercised only on temporary
+  databases and temporary checkpoint directories, refuses the real database
+  path, and is **not** authorized for real-database use. The real database
+  stays at `0009`, and so intentionally fails the current-schema health
+  check, until applying `0010` is separately authorized with a verified
+  backup. No real registry file, registration, activation, checkpoint or
+  credential exists, and the production setup-definition registry stays
+  empty.
+- **No real registry exists.** `registry-draft-0`
   ([EVIDENCE_REGISTRY.md](EVIDENCE_REGISTRY.md)) remains prose and is loaded
-  nowhere.
-- **The merge accepts the design only.** Nothing it describes has been
-  implemented. The merge does **not** authorize migrations, database
-  changes, registry files or activation, storage writers or readers,
-  checkpoint creation, credentials or HMAC keys, producer adapters, setup
-  definitions, evidence or card collection, dashboard or assistant access,
-  machine-decision mode, notifications, or trading or execution. Any
-  implementation needs a new, separate authorization (§14.4).
-- **Open items stay open.** The open questions and blockers in §14.2 and
-  §14.3 are unresolved.
+  nowhere; the loader and the registration and activation services are
+  tested only with synthetic files in temporary directories.
+- **The design merge (#71) accepted the design only.** Implementation was
+  then separately authorized, offline only (item 63). Neither merge
+  authorizes applying `0010` to the real database, real registry files or
+  activation, real checkpoints, credentials or HMAC keys, producer adapters,
+  setup definitions, evidence or card collection, consumer, dashboard or
+  assistant access, machine-decision mode, notifications, or trading or
+  execution. Each needs a new, separate authorization (§14.4).
+- **Decisions taken for the offline core.** The repository-root
+  `registries/` directory is the future location (R-1); none is created.
+  `authorization_ref` has the bounded syntax
+  `project-state:<item-number>@<40-character-commit-sha>` (R-3); no real
+  authorization record is created. Execution needs a second confirmation
+  token derived from the operation's canonical digest, after a dry run
+  (R-4). Registry retirement is not implemented (R-5). The `sdr1_` and
+  `rga1_` prefixes are accepted (R-6). R-2 remains open, and the §14.3
+  blockers stay open. As a stricter implementation choice, at most one
+  future-dated activation per registry kind may be pending: a new activation
+  is refused (`activation_pending`) until the pending one takes effect, so
+  no activation is evaluated against a registry that a pending one would
+  later replace.
 - **The setup-definition registry stays empty.** This design makes a
   non-empty setup-definition registry **unrepresentable** in its file format
   (§10). Adding a definition needs separate research, review, authorization
@@ -230,7 +254,7 @@ Registration rules:
 | `effective_from_utc` | `TIMESTAMP NOT NULL` | unique together with `registry_kind`; `CHECK (effective_from_utc >= activated_at_utc)` |
 | `activation_reason` | `VARCHAR NOT NULL` | `CHECK` in `initial_activation`, `version_upgrade`, `rollback` |
 | `supersedes_activation_id` | `VARCHAR UNIQUE` | null only for the first activation of a kind; otherwise the current tip of that kind |
-| `authorization_ref` | `VARCHAR NOT NULL` | a bounded token naming the recorded authorization for this activation (for example a PROJECT_STATE item token); `^[a-z][a-z0-9_]{0,63}$` |
+| `authorization_ref` | `VARCHAR NOT NULL` | a bounded reference to the recorded authorization for this activation; `^project-state:[1-9][0-9]{0,4}@[0-9a-f]{40}$` (syntax adopted at implementation) |
 | `activated_at_utc` | `TIMESTAMP NOT NULL` | the commit instant (equals `recorded_at_utc`) |
 | `commit_seq` | `BIGINT NOT NULL` | |
 
