@@ -18,7 +18,7 @@ Last updated: 2026-09-29
 | Model boundary | One OpenAI structured-output client (no tools, no retry, `store=False`); live-connectivity-verified. |
 | Agents | Market Evidence Agent, News Analyst, seven-series Macro Analyst. Each has exactly one accepted live run. Non-directional guarantee is structurally enforced. |
 | Trust layer | **P0-7 met (2026-08-28) — the methodology exists and the first real, human-reviewed Macro characterization is recorded; the other agents are not yet characterized.** `market_intelligence/evaluation/` provides the safe, offline foundation for the methodology: strict Pydantic v2 contracts (agent/severity/citation-classification/citation-reason/finding-category enums, one finding, one human citation adjudication, one evaluation-run record), a deterministic rubric-completeness validator, a symlink-refusing / no-overwrite / atomic / bounded local JSON round trip, and synthetic fixtures. It **also** provides the **first deterministic factual-transcription check — Macro Analyst only, over synthetic inputs** (`macro_factual_transcription.py`): it recognizes only the two exact controlled Macro Analyst statement forms (single stored observation; increase/decrease/unchanged two-observation comparison), verifies series ID / observation date / `Decimal` value / frequency wording / units-when-stated / previous observation / comparison direction, and emits one `info` (exact match — *not* a validation) / `failure` (mismatch, broad category only, no text reproduced) / `warning` (unrecognized wording → human review) finding. It **also** provides the **offline Macro characterization workflow** (`macro_characterization_input.py`, `macro_characterization_workflow.py`, `scripts/characterize_macro_report.py`): a strict local input contract (sanitized label; Macro claim IDs; claim series IDs and summaries; the sanitized evaluation evidence facts the transcription evaluator needs; expected claim/citation pairs — and nothing else), a pure builder that runs the transcription check for every claim, creates an `EvaluationRunRecord` carrying those findings, and emits one pending human-adjudication template per expected pair (never pre-classifying citation support, never treating a transcription match as citation support), a pure completion step that attaches completed human adjudications only when every expected pair has exactly one (refusing missing/duplicate/unexpected pairs; completion is not validation), a dry-run-first, offline, explicit-path **build CLI** (`scripts/characterize_macro_report.py`: `--write` required, no overwrite, no directory creation; with `--write` the resolved output path must be strictly inside gitignored `data/evaluations/local/`, and repository-root, tracked-directory, outside-repository, `..`-traversal, and symlink-escape targets are refused; dry-run behavior is unchanged), and a dry-run-first, offline **completion CLI** (`scripts/complete_macro_characterization.py`: a strict `MacroAdjudicationInput` contract — only the scaffold `run_id` plus a bounded human `CitationAdjudication` list, `extra="forbid"`, no credential/URL/response-ID/path/raw-evidence/model-reasoning/metadata field; `--record`/`--adjudications`/`--output` all confined strictly inside `data/evaluations/local/`; requires the adjudication `run_id` to match the scaffold; records human decisions only, no LLM judge, all four classifications preserved; sanitized counts/classification-tally output only — never a reviewer note, claim ID, citation ID, path, or record text; `--write` required to serialize, no overwrite, no directory creation). Committed fixtures and tests remain synthetic-only; real sanitized evidence facts may be used only through the explicit local characterization workflow under gitignored `data/evaluations/local/`, and real characterization inputs and outputs must never be committed. On 2026-08-28 the **first real, human-reviewed offline Macro Analyst characterization** was completed and recorded with the completion CLI, covering every claim: agent `macro_analyst`, 14 expected claim/citation pairs, 14 human adjudications (one per pair — none missing, duplicated, or unexpected), `rubric_complete: true`, classification tally `supported: 0` / `partially_supported: 14` / `unsupported: 0` / `unable_to_determine: 0`, all 14 reasons `claim_scope_exceeds_single_observation`, finding tally `info: 8` / `warning: 0` / `failure: 0` (seven factual-transcription findings were exact matches; the one scope-boundary information finding was preserved). All 14 pairs are `partially_supported` because each Macro claim is a two-observation comparison depending on two cited observations while each individual claim/citation pair carries only one of those observations. Every adjudication was the human reviewer's; no LLM judge generated, recommended, or changed any classification; no live request or Macro Analyst rerun occurred; the real artifacts remain gitignored under `data/evaluations/local/` and are not committed. This **closes P0-7 and Phase 0** (see [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md) and [docs/AGENT_EVALUATION_HARNESS.md](docs/AGENT_EVALUATION_HARNESS.md)) — it is **not** a claim that the Macro Analyst is validated, accurate, repeatable, or profitable. It still performs **no** lexical-overlap scoring, and the same transcription check and citation-support adjudication for the Market Evidence Agent and News Analyst, the abstention matrix, cross-agent consistency, and repeatability studies all remain future work that does **not** reopen Phase 0. |
-| Test baseline | `python -m pytest`: **4,014 passed, 20 skipped** (4,034 collected; 2026-09-29, merged from branch `infrastructure/setup-card-core`, item 61). The merged `main` baseline immediately before that branch was **3,869 passed, 20 skipped**; item 61's 145 synthetic setup-card tests account for the difference, with no new skips and zero regressions. Item 59 recorded **3,869 passed, 20 skipped** (3,889 collected; 2026-09-28, merged from branch `infrastructure/evidence-envelope-core`). The merged `main` baseline immediately before that branch was **3,499 passed, 20 skipped**; item 59's 370 synthetic Evidence Envelope core tests account for the difference, with no new skips and zero regressions. Item 53 recorded **3,499 passed, 20 skipped** (3,519 collected; 2026-09-25, branch `feature/spy-vwap-confirmation-analysis`). The merged `main` baseline immediately before this branch was **3,238 passed, 17 skipped** (items 52 and the preregistration/C1 changes were documentation-only). Item 53's synthetic confirmation-analysis contract, engine, serialization, CLI, ceiling, and offline-boundary, and recomputation-verifier tests add 261 passing tests and 3 symlink-environment skips, with zero regressions. Item 51 recorded **3,238 passed, 17 skipped** (3,255 collected; 2026-09-23, branch `fix/alpaca-bars-dry-run`). The merged `main` baseline immediately before this branch was **3,214 passed, 17 skipped** (item 50); item 51's 24 new `test_ingest_alpaca_bars.py` tests account for the difference, with no new skips and zero regressions. Item 50 recorded **3,214 passed, 17 skipped** (3,231 collected; branch `evaluation/spy-vwap-input-builder`). The merged `main` baseline immediately before that branch was **3,161 passed, 14 skipped** (after the capture price-failure fix, #56); item 50's builder, CLI, `write_input`, and offline-boundary tests account for the difference. The 3 new skips are item 50's OS-level symlink-refusal tests, which skip where the OS disallows creating a symlink; a platform-independent simulated-symlink refusal test runs everywhere. Historical record: item 48 recorded **3,155 passed, 14 skipped** (3,169 collected — up from 3,087 passed, 12 skipped: item 48's synchronized selector-capture coordinator added new passing tests plus two new conditional symlink-refusal skips (`write_input`'s symlinked-parent and symlinked-target-file tests), zero regressions; before that, 3,087 passed, 12 skipped came from item 47's 7 new passing tests over item 46's 3,080 passed, 12 skipped, itself from item 46's 20 new tests over item 45's 3,060 passed, 12 skipped baseline, itself up from 2,921 passed, 8 skipped). The 14 skipped are symlink-refusal / symlink-escape tests (the evaluation-foundation serialization tests, the characterization build-CLI and completion-CLI symlink-escape tests, the step-d evaluation-serialization symlink tests, the step-d evaluation CLI's symlink-escape test, the step-e selector-serialization symlink tests, the step-e selector CLI's symlink-escape test, and item 48's two `write_input` symlink tests), which skip where the OS disallows creating a symlink; they are not passing tests. |
+| Test baseline | `python -m pytest`: **4,235 passed, 22 skipped** (4,257 collected; 2026-10-06, item 63: the offline evidence and setup-card storage core, reviewed and implemented through its merge). The merged `main` baseline immediately before this branch was **4,014 passed, 20 skipped**; item 63's 223 synthetic evidence-store tests (221 passing, 2 symlink-environment skips) account for the difference, with zero regressions. Ten existing storage tests, and the Core Macro Basket script's schema pin, were updated only because the latest migration is now `0010` instead of `0009`. Item 61 recorded **4,014 passed, 20 skipped** (4,034 collected; 2026-09-29, merged from branch `infrastructure/setup-card-core`). The merged `main` baseline immediately before that branch was **3,869 passed, 20 skipped**; item 61's 145 synthetic setup-card tests account for the difference, with no new skips and zero regressions. Item 59 recorded **3,869 passed, 20 skipped** (3,889 collected; 2026-09-28, merged from branch `infrastructure/evidence-envelope-core`). The merged `main` baseline immediately before that branch was **3,499 passed, 20 skipped**; item 59's 370 synthetic Evidence Envelope core tests account for the difference, with no new skips and zero regressions. Item 53 recorded **3,499 passed, 20 skipped** (3,519 collected; 2026-09-25, branch `feature/spy-vwap-confirmation-analysis`). The merged `main` baseline immediately before this branch was **3,238 passed, 17 skipped** (items 52 and the preregistration/C1 changes were documentation-only). Item 53's synthetic confirmation-analysis contract, engine, serialization, CLI, ceiling, and offline-boundary, and recomputation-verifier tests add 261 passing tests and 3 symlink-environment skips, with zero regressions. Item 51 recorded **3,238 passed, 17 skipped** (3,255 collected; 2026-09-23, branch `fix/alpaca-bars-dry-run`). The merged `main` baseline immediately before this branch was **3,214 passed, 17 skipped** (item 50); item 51's 24 new `test_ingest_alpaca_bars.py` tests account for the difference, with no new skips and zero regressions. Item 50 recorded **3,214 passed, 17 skipped** (3,231 collected; branch `evaluation/spy-vwap-input-builder`). The merged `main` baseline immediately before that branch was **3,161 passed, 14 skipped** (after the capture price-failure fix, #56); item 50's builder, CLI, `write_input`, and offline-boundary tests account for the difference. The 3 new skips are item 50's OS-level symlink-refusal tests, which skip where the OS disallows creating a symlink; a platform-independent simulated-symlink refusal test runs everywhere. Historical record: item 48 recorded **3,155 passed, 14 skipped** (3,169 collected — up from 3,087 passed, 12 skipped: item 48's synchronized selector-capture coordinator added new passing tests plus two new conditional symlink-refusal skips (`write_input`'s symlinked-parent and symlinked-target-file tests), zero regressions; before that, 3,087 passed, 12 skipped came from item 47's 7 new passing tests over item 46's 3,080 passed, 12 skipped, itself from item 46's 20 new tests over item 45's 3,060 passed, 12 skipped baseline, itself up from 2,921 passed, 8 skipped). The 14 skipped are symlink-refusal / symlink-escape tests (the evaluation-foundation serialization tests, the characterization build-CLI and completion-CLI symlink-escape tests, the step-d evaluation-serialization symlink tests, the step-d evaluation CLI's symlink-escape test, the step-e selector-serialization symlink tests, the step-e selector CLI's symlink-escape test, and item 48's two `write_input` symlink tests), which skip where the OS disallows creating a symlink; they are not passing tests. |
 | Not built | Predictive/forecast model, forecast records, agent orchestrator / combined brief, dashboard, trade journal, Options Strategy Agent, scheduler, brokerage execution. (The SPY option-chain connector and storage are now applied and have one stored live batch — see "Storage" above — but no agent, recommendation, or execution consumes it. The deterministic SPY intraday feature/regime engine now exists offline with synthetic tests only — see "Phase 1" below. **Superseding update (2026-09-15): the offline VWAP-extension/reversion evaluator has now also been run once against the stored SPY bars (Completed Work Log item 44) — 5 sessions, 390 candidate decision points — but nothing downstream (agent, recommendation) consumes either module's output yet, and this one small-sample run establishes no edge, accuracy, usefulness, strategy validity, or profitability.** **Superseding update (2026-09-16): the deterministic Contract Selector now also exists offline with synthetic tests only (Completed Work Log item 45) — it has not been run against the real local database or the one stored SPY option-chain batch, and produces no recommendation, ranking, score, or trade action; the Options Strategy Agent still does not exist and does not consume the selector's output.** **Same-day feed-safety-boundary fix (Completed Work Log item 46): operational eligibility now defaults to OPRA only, an indicative-feed batch can never reach `ELIGIBLE`, explicit research opt-in instead yields a schema-separated `RESEARCH_ONLY` status, and the CLI requires its own explicit `--allow-indicative-research` flag that always overrides the input file.** **Superseding update (2026-09-23): the VWAP-reversion evaluator has also been run over an expanded 26-session sample (Completed Work Log item 52); nothing downstream consumes that output either, and it establishes no edge, accuracy, strategy validity, or profitability.** **Update (2026-09-28): the Evidence Envelope core now exists offline (Completed Work Log item 59), but no producer adapter, evidence store, populated registry, dashboard, assistant, ranker, or notification layer emits or consumes it.** **Update (2026-09-29): the setup-card core now exists offline (item 61); no setup definition is registered, so the production builder produces no card of either kind, and no dashboard renders cards.**) |
 | Phase 1 (design recorded, ready to begin) | An automated, evidence-based SPY options decision-support workflow: deterministic evidence + intraday regime classification (the deterministic regime engine also fixes one bounded scenario-horizon bucket, or `indeterminate`), a deterministic contract-eligibility selector that consumes that validated upstream horizon, then a bounded directional Options Strategy Agent (consumes only the upstream validated structured outputs plus the selector's eligible contract set, never a raw option chain; may reference but cannot invent, extend, or override the supplied horizon; `no_trade` is first-class), and a recorded evaluation before any usefulness claim. The three existing agents stay non-directional; the Options Strategy Agent is a separately bounded directional decision-support agent. **Step b is implemented and has been live-exercised once; step c is implemented and verified offline with synthetic tests; step d is now complete, including its first real historical evaluation run (2026-09-15, Completed Work Log item 44); step e (the deterministic Contract Selector) is now also implemented and verified offline with synthetic tests only, with no real selector run performed (2026-09-16, Completed Work Log item 45), hardened the same day with a feed-safety-boundary fix defaulting operational eligibility to OPRA only and adding a schema-separated `RESEARCH_ONLY` status for explicit indicative research (Completed Work Log item 46), and further hardened the same day, pre-merge, with a freshness-boundary fix distinguishing a future-dated snapshot (`SNAPSHOT_FROM_FUTURE`) from a merely stale one (`SNAPSHOT_STALE`) (Completed Work Log item 47); steps f–h remain design-only and unimplemented, and step f has not begun.** Phase 0 is now closed (2026-08-28), so Phase 1 has begun. Its **first implementation step — read-only SPY option-chain snapshot ingestion and local storage** (own reviewed connector, sanitized, no execution surface) — is **built in code and tests only** (2026-08-28; ceilings tightened and provenance normalized to two tables 2026-09-01; revised again 2026-09-14 to a three-table design after a batch-membership provenance fix): `AlpacaOptionsChainClient` (`data.alpaca.markets` `/v1beta1/options/snapshots/SPY` only, SPY-only, explicit `opra`/`indicative` feed, bounded expiration/strike/type/page/contract inputs — expiration ≤ 60 days, strike width ≤ $500, ≤ 10 pages, ≤ 5,000 contracts, ≤ 1,000/page — deterministic pagination, OCC-symbol parsing/cross-check, sanitized errors, no retry), migration `0009` (`option_chain_snapshot_batches`: one run-level provenance row per stored retrieval, including a zero-contract retrieval; `option_chain_snapshots`: one row per **immutable** contract observation; `option_chain_snapshot_batch_items`: one truthful membership row per contract per batch, so `contract_count` and membership can never drift apart), `OptionChainSnapshotRepository` (also re-validates every request field against its own canonical `normalize_option_chain_request` form before any write), and the dry-run-first `scripts/ingest_alpaca_options_chain.py`. **Superseding update (2026-09-14): migration `0009` has been applied to the real database, and one authorized live, `--execute` ingestion has succeeded** — provider `alpaca`, underlying `SPY`, requested feed `indicative` (explicitly not OPRA), one expiration (2026-09-18), strikes 740–790, 102 contracts received and inserted (51 calls, 51 puts), one successful batch and one successful ingestion run, no retry. **A subsequent read-only structural audit (2026-09-14, same day)** confirmed: 102 batch-membership rows and 102 snapshot rows, zero duplicate or orphan memberships, zero malformed OCC symbols or out-of-range contracts, quote and trade data present for all 102, implied volatility and each Greek present for 78 and unavailable for 24, zero negative/nonfinite values, zero crossed quotes, zero feed mismatches, and exactly one retrieval timestamp. **No recommendation, selector, agent, alert, dashboard, or execution action occurred as part of this ingestion or audit.** `indicative`-feed data may be delayed or modified and must not be described as live OPRA; the audit establishes internal structural consistency only — not pricing accuracy, timeliness, usefulness, predictive edge, strategy validity, or profitability; a future selector that requires IV/Greeks must reject or omit the 24 contracts with missing values, never substitute zero; open interest remains unavailable from this endpoint; and only one batch exists, so recurring reliability is not established. **Step c (2026-09-15): the deterministic SPY intraday feature/regime engine now also exists** — `market_intelligence/market_features/spy_regime_contracts.py` / `spy_regime_features.py` / `spy_regime_classifier.py` — strict Pydantic v2 contracts (`extra="forbid"`, bounded collections, and enforcement of a single canonical 5-minute bar cadence matching the stored `alpaca_bars_spy_5min` dataset — a bar off that 5-minute grid is rejected, though grid alignment alone does not prove continuity: a 10-minute-spaced feed is just as grid-aligned as true continuous data), pure feature computation (cumulative session VWAP, close-to-VWAP distance in bps, a bps-over-bps volatility-normalized extension, a VWAP slope requiring exactly 30 elapsed minutes, an opening range requiring exactly the three completed 09:30/09:35/09:40 bars, `session_bars_complete`/`missing_interval_count` comparing supplied timestamps against every expected 5-minute slot from 09:30 through the latest bar, opening gap, session return, realized volatility, signed trend strength, relative volume when a baseline is supplied, prior-day levels, time-of-day bucket), and a deterministic classifier that forces both `regime` and `scenario_horizon` to `indeterminate` whenever `session_bars_complete` is `False` — before every other rule, including event-driven — and otherwise producing exactly one `Regime` (`trend_continuation` / `vwap_mean_reversion` / `range` / `event_driven` / `indeterminate`) and one `ScenarioHorizon` (`intraday_30m` / `intraday_2h` / `to_session_close` / `next_session` / `indeterminate`) by a fixed, published, centralized-threshold decision order, plus a pure `classify_batch` for offline historical evaluation. **Implemented and tested entirely offline with synthetic fixtures — no real SPY session has been classified, every threshold is a provisional hypothesis, and no predictive accuracy or mean-reversion edge has been established.** The Options Strategy Agent still does not exist, and nothing downstream consumes the regime engine's output yet beyond the step-e contract selector described below. **Step d (2026-09-15, tooling): the offline SPY VWAP-extension/reversion evaluation tooling was implemented and verified with synthetic fixtures** — `market_intelligence/evaluation/spy_vwap_reversion_contracts.py` / `spy_vwap_reversion_evaluator.py` / `spy_vwap_reversion_serialization.py`, and the dry-run-first `scripts/evaluate_spy_vwap_reversion.py`. The evaluator is a pure function that, for every candidate bar in every supplied session, builds a no-lookahead bar-prefix signal via the step-c engine's own `compute_features`/`classify` (the signal-time regime, horizon, and session VWAP are frozen and never recomputed later), and scores four fixed forward horizons (`intraday_30m` / `intraday_2h` / `to_session_close` / `next_session`) only when each horizon exists gaplessly in the supplied data — touch/cross of the frozen VWAP, time to touch, percentage of the original extension retraced, signed return toward/away from VWAP, and maximum favorable/adverse excursion — reporting every summary at both an `observation_level` (pooled, overlapping five-minute observations) and a `session_level` (one number per session first, to avoid a long session dominating), each gated by a fixed, untuned minimum-sample-size threshold (`insufficient_sample` otherwise). **The evaluation always uses step c's existing, unmodified `RegimeThresholds` — this step tunes, optimizes, or grid-searches nothing.** No P&L, options return, win rate, profitability, or trade recommendation exists anywhere in it. **Step d (2026-09-15, first real run): this tooling has now been run once, read-only, against the stored SPY bars (Completed Work Log item 44)** — 5 gapless regular sessions (2026-08-17 through 2026-08-21), 390 candidate decision points, all eligible. Observation-level sample-size thresholds (≥ 50) were met for both extension sides on three of the four horizons (`intraday_30m`, `intraday_2h`, `to_session_close`); `next_session` remains unavailable for every decision point by fixed design. Session-level thresholds (≥ 20 sessions) were met for **no** horizon or side, since only 5 sessions are stored. **This one small, non-independent-sample run establishes no edge, accuracy, usefulness, strategy validity, or profitability for the underlying setup or any options overlay, and must not be read as evidence for or against the VWAP-reversion hypothesis.** No threshold was tuned. The Options Strategy Agent still does not exist. **Step d (2026-09-23, expanded run — Completed Work Log item 52): the input builder and evaluator were run read-only over 26 complete sessions (2026-08-17 through 2026-09-22) after a bounded bars ingestion; all six available session-level horizon/side cells passed the fixed 20-session threshold (`next_session` unavailable by fixed design). The result is a recorded above-/below-VWAP asymmetry worth further research, not a validated strategy; the next research step is a preregistered evaluation-hardening and sample-expansion plan (see "Next Planned Work"), and the Options Strategy Agent is not authorized by it.** **Step e (2026-09-16): the deterministic SPY options-contract eligibility selector now also exists** — `market_intelligence/contract_selection/contracts.py` / `selector.py` / `serialization.py`, and the dry-run-first `scripts/select_spy_option_contracts.py`. It runs **without any AI model** and before any future strategy agent: a pure function (`select_eligible_contracts`) that consumes SPY, one already-validated `ScenarioHorizon` from the step-c regime engine (or `indeterminate`, which always yields an empty eligible set before any other filter runs), one bounded `OptionChainBatch` with one retrieval instant (deliberately independent of the `data_connectors.alpaca_options_chain.OptionChainSnapshot` shape — this package imports no data connector, storage, model client, agent, or orchestration module), the underlying price/as-of time, an optional explicit directional side, and bounded, centralized `SelectorConfig` thresholds. Before any per-contract filter, three **batch-level gates** run once each, in order: feed governance (see the feed-safety-boundary paragraph below), then two freshness checks (hardened 2026-09-16, pre-merge, Completed Work Log item 47), computed **without** `abs()`: if `retrieved_at > as_of_timestamp`, every candidate is counted under `RejectionReason.SNAPSHOT_FROM_FUTURE`; otherwise `age = as_of_timestamp - retrieved_at`, and if `age` exceeds `max_snapshot_age_seconds` (default `300` seconds), every candidate is counted under `RejectionReason.SNAPSHOT_STALE`; either gate firing means no per-contract filter is evaluated, so a future-dated or stale batch is never diluted by unrelated per-contract reasons. Only then does it apply nine per-contract filters, in this fixed order — expiration/DTE (a fixed per-horizon DTE window, provisional defaults `intraday_30m=(0,2)`, `intraday_2h=(0,3)`, `to_session_close=(0,1)`, `next_session=(1,5)` days), option type (only when a directional side is explicitly supplied), strike/moneyness (default band `[0.85, 1.15]`), delta range (default `[0.15, 0.65]` absolute delta), required implied volatility and Greeks (missing is rejected, never zero-filled), positive bid/ask, non-crossed quote, maximum absolute (`$0.50` default) and percentage (`15%` default) spread, and minimum quote size where available (a missing size does not itself trigger rejection) — and produces eligible/research-only contracts in deterministic order (`expiration_date`, `option_type`, `strike_price`, `contract_symbol`), bounded rejection counts by a fixed `RejectionReason` enum, and one of four statuses (`eligible` / `no_eligible_contracts` / `research_only` / `indeterminate`). **No recommendation, ranking, score, prediction, or trade action exists anywhere in this step** — see `DECISION_RULES.md`, "AI does not choose an unrestricted options contract."
 
@@ -6401,6 +6401,180 @@ entry describes something that has already been built, ingested, or attempted;
       access, setup definition, consumer grant, or change to frozen
       research documents, DECISION_RULES.md or SOURCE_POLICY.md.
 
+63. **Evidence and setup-card storage and registry-loading core —
+    IMPLEMENTED OFFLINE (2026-10-02 to 2026-10-06; reviewed and implemented
+    through its merge from branch `infrastructure/evidence-card-storage-core`).
+    Offline only: synthetic fixtures, temporary DuckDB databases and temporary
+    checkpoint directories. Migration `0010` exists but is not applied to the
+    real database, which remains at `0009`. Applying it needs separate
+    authorization and a verified backup.**
+    - **What exists.** `market_intelligence/evidence_store/`, implementing
+      the reviewed designs (item 62):
+      - strict, frozen store contracts and bounded vocabularies: store
+        instance, commits, row and commit hashes, registry versions, `rga1_`
+        activations, recovery records, audit events, key rotations and the
+        checkpoint;
+      - migration `0010_create_evidence_card_store.sql`: 13 insert-only
+        authoritative tables and 7 rebuildable projections;
+      - insert-and-select repositories with single-writer locking,
+        idempotent identical duplicates, integrity stops for same-identity
+        different content, and static tests forbidding any `UPDATE`,
+        `DELETE`, replace or upsert of authoritative facts;
+      - point-in-time reads by commit sequence and non-regressing commit
+        time, and stored bundles rebuilt to the same `evb1_` or refused;
+      - strict registry-file loading (`evr1_`, structurally empty `sdr1_`),
+        plus registration and activation services with dry runs and
+        confirmation tokens;
+      - the HMAC-authenticated anti-rollback checkpoint, reconciliation,
+        recovery with `checkpoint_reissue_required`, key rotation and full
+        integrity verification.
+    - **Accepted stricter-than-code requirements.** All three reviewed
+      rules are accepted and implemented as storage-layer requirements:
+      - linear conflict-status chains;
+      - the frozen registry-based conflict-severity derivation, with its
+        recorded wrapper;
+      - one-root, non-branching card chains, refusing lifecycle regression
+        and reopened terminal states.
+
+      No Evidence Envelope or setup-card identity rule changed.
+
+      Further implementation choices, also stricter than the contracts:
+      - at most one future-dated activation per registry kind may be
+        pending (`activation_pending`);
+      - a duplicate whose stored identity payload or registry content
+        differs from the retry is an integrity stop, not a no-op;
+      - checkpoint state directories may not be the repository, the
+        repository's `data/` directory or the configured
+        `PROJECT_DATA_PATH`.
+    - **Final source-review fixes (2026-10-05).**
+      - Reconciliation now refuses in read-refused and recovery states, so
+        it can never lift an integrity stop, and it checks the checkpoint's
+        store identity against the database.
+      - Opening or reconciling requires exactly one hash-verified
+        `store_instance` row.
+      - Duplicate bundle, card and registry-version writes now compare the
+        stored identity payload or content.
+      - Commit SHAs and source paths are validated before any git verifier
+        runs.
+      - Real-data refusal now also covers the configured `PROJECT_DATA_PATH`,
+        checkpoint state directories and backup verification, which refuses
+        before reading.
+      - 11 focused synthetic regression tests in
+        `test_evidence_store_review_fixes.py` cover these fixes.
+    - **Final pre-commit integrity correction (2026-10-06).** This is a
+      correction to the implementation, not a new authorization.
+      - Every startup now runs the complete authoritative verification scan
+        (the operator verification command's checks) before the store
+        serves. Previously startup checked only the store identity, the
+        checkpoint and the commit chain.
+      - Any stop finding enters read-refused mode; nothing is repaired.
+      - Reconciliation scans before it writes and again before it resumes
+        service. Recovery scans the restored store, recovery commit
+        included, before reissuing the checkpoint, including on restart.
+      - The in-process `EvidenceStore` holds the proof (`verified`).
+        Short-lived readers rely on it rather than rescanning, and the
+        store refuses to serve without it. Every record a reader returns
+        is still validated at read time.
+      - 19 focused synthetic tests in
+        `test_evidence_store_startup_verification.py` cover this.
+    - **Startup finding classification (implementation-review decision,
+      2026-10-06).** This clarifies integrity behavior and is not an
+      operational authorization. The storage design (§10.3) records it.
+      - `key_column_mismatch` is now an integrity stop: copied key columns
+        drive lookup and reconstruction, and an insert-only row cannot be
+        repaired by a projection rebuild.
+      - `bundle_reproduction_mismatch` is now an integrity stop: a later
+        builder change must not make an old bundle serviceable. The store
+        stays read-refused until the historical builder is available or a
+        separately authorized recovery resolves it.
+      - Neither is ever auto-repaired. The reclassification applies
+        everywhere: startup, the verification command, backup
+        verification and key rotation.
+      - `projection_mismatch` is the only non-stop. Startup keeps service
+        blocked, rebuilds only the affected projection tables from
+        verified authoritative rows, and scans again. It serves only if
+        nothing is found; otherwise it stops.
+      - The proof (`VerifiedStartup`) may carry only a repaired
+        `projection_mismatch`, together with the rebuilt tables. Its
+        constructor refuses anything else.
+      - The writer lock is re-entrant only for the thread that acquired
+        it, so the repair can run inside reconciliation and
+        initialization. Any other thread, even on the same store instance,
+        is refused while the lock file exists. The file is removed only
+        when the outermost holder exits, including on an exception.
+      - The proof keeps every projection repaired during the current
+        startup or restore, including a repair made by the scan before
+        reconciliation writes.
+      - 14 focused synthetic tests in
+        `test_evidence_store_finding_classification.py` cover this. The
+        finding-partition contract test was revised, and the old
+        "non-stop findings are kept" startup test was replaced.
+    - **Decisions taken for the offline core.**
+      - Complete envelope headers are stored.
+      - Identical re-detected unresolved conflicts are idempotent; a
+        materially different one is refused until the recorded
+        Evidence Envelope blocker is resolved.
+      - Retention is indefinite, with no deletion, pruning, exports or
+        producer adapters.
+      - Readers use short-lived read-only connections after checkpoint
+        verification.
+      - `authorization_ref` has the syntax
+        `project-state:<item-number>@<40-character-commit-sha>`; no real
+        authorization record is created.
+      - Repository-root `registries/` is the future location; none exists.
+    - **Migration-number housekeeping.** `0010` is assigned to this storage
+      because it is the next real migration implemented.
+      - The shadow recorder's earlier `0010` was only a proposed reservation
+        for a migration that was never created. Its design
+        ([docs/SPY_VWAP_SHADOW_RECORDER_DESIGN.md](docs/SPY_VWAP_SHADOW_RECORDER_DESIGN.md))
+        now says "the next available migration number at implementation".
+      - This is number housekeeping only. It does not authorize or implement
+        the shadow recorder, and it changes no frozen protocol, research
+        definition, threshold, collection date, evaluator behavior or
+        authorization boundary.
+    - **Real-database consequence (intentional; needs attention).** `0010`
+      exists in the migration directory while the real database remains at
+      `0009`.
+      - `scripts/check_database.py` therefore reports the real database as
+        not at the latest migration (`healthy=False`). This failure of the
+        current-schema health check is intentional and must not be
+        weakened.
+      - `scripts/ingest_core_macro_basket.py` pins the latest migration by
+        its own documented convention ("bump it whenever a migration is
+        added"). The pin was bumped from `0009` to `0010`, so the script
+        refuses to run against the real database. Its behavior against the
+        real database is unchanged, since it would refuse anyway while the
+        database is not current.
+      - Both last until applying `0010` to the real database is separately
+        authorized, with a verified backup first.
+      - Nothing was applied, and the real database was not opened.
+    - **Other code touched.** Ten existing storage tests had their
+      latest-migration assertions moved from `0009` to `0010`. The Core Macro
+      Basket script's schema pin was also bumped, as above.
+    - **Settings.** New `SecretStr` settings for the checkpoint HMAC keys,
+      with blank `.env.example` placeholders. No key value exists anywhere.
+    - **Tests.** 223 synthetic evidence-store tests (221 passed, 2 symlink
+      tests skipped on this platform). Full suite: **4,235 passed,
+      22 skipped** (2026-10-06).
+    - **Not done or authorized.** None of the following:
+      - applying `0010` to the real database (separate authorization and a
+        verified backup first);
+      - any real registry file, registration, activation, checkpoint or HMAC
+        key;
+      - producer adapters, setup definitions, or evidence or card
+        collection;
+      - consumer access, dashboard, assistant access, ranker, notification
+        or SMS work;
+      - machine-decision mode;
+      - any trading, brokerage or execution capability.
+
+      The production setup-definition registry remains empty. Every existing
+      research and holdout boundary (SPY 2026-09-23 through 2026-12-04) is
+      preserved.
+    - **Untouched.** The real database, providers, models, holdout data,
+      frozen research documents, DECISION_RULES.md, SOURCE_POLICY.md, the
+      Evidence Envelope code and the setup-card code.
+
 ## Next Planned Work
 
 This is the forward plan. It replaces the historical content now under
@@ -6763,14 +6937,13 @@ This is the forward plan. It replaces the historical content now under
       every other subsequent layer each require their own separate
       authorization; none is authorized.
    5. **The storage and registry-loading designs (item 62) are reviewed
-      and merged.** A possible next step is a separately authorized
-      **offline** implementation of the storage and registry-loading core,
-      on synthetic data and temporary databases. Nothing authorizes it
-      automatically. It would need its own explicit authorization:
-      - naming the reviewed designs;
-      - accepting or rejecting each stricter-than-code rule;
-      - fixing the migration number;
-      - stating whether anything may touch the real database.
+      and merged, and their offline core is implemented (item 63), awaiting
+      review.** Next: review item 63.
+      - Applying migration `0010` to the real database, creating a real
+        checkpoint or HMAC key, and registering or activating a real
+        registry each need their own separate authorization.
+      - Until `0010` is applied, the real database reports not current and
+        the Core Macro Basket ingestion script refuses to run (item 63).
 
 Manual-only trading is preserved throughout. The three existing analysis
 agents (Market Evidence, News, Macro) remain non-directional; the Phase 1

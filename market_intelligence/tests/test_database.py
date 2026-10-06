@@ -105,8 +105,8 @@ def test_initialize_creates_database_file(tmp_path, isolated_env_file):
 
     assert result.database_path.exists()
     assert result.database_path.name == DATABASE_FILENAME
-    assert result.applied_migration_count == 9
-    assert result.schema_version == "0009"
+    assert result.applied_migration_count == 10
+    assert result.schema_version == "0010"
 
 
 def test_initialize_creates_required_tables_and_columns(tmp_path, isolated_env_file):
@@ -272,7 +272,7 @@ def test_repeated_initialize_applies_zero_new_migrations(tmp_path, isolated_env_
     first = manager.initialize()
     second = manager.initialize()
 
-    assert first.applied_migration_count == 9
+    assert first.applied_migration_count == 10
     assert second.applied_migration_count == 0
     assert second.schema_version == first.schema_version
 
@@ -287,7 +287,7 @@ def test_repeated_initialize_does_not_duplicate_rows(tmp_path, isolated_env_file
         count = connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0]
     finally:
         connection.close()
-    assert count == 9
+    assert count == 10
 
 
 # --- migration order ---------------------------------------------------------
@@ -512,8 +512,8 @@ def test_check_health_after_initialization_reports_healthy(tmp_path, isolated_en
     assert health.migration_history_valid is True
     assert health.checksums_valid is True
     assert health.is_current is True
-    assert health.schema_version == "0009"
-    assert health.applied_migration_count == 9
+    assert health.schema_version == "0010"
+    assert health.applied_migration_count == 10
 
 
 def test_check_health_is_read_only(tmp_path, isolated_env_file):
@@ -991,8 +991,8 @@ def test_migration_0007_creates_orchestration_runs_and_job_runs_tables(
 
     assert "orchestration_runs" in tables
     assert "orchestration_job_runs" in tables
-    assert result.applied_migration_count == 9
-    assert result.schema_version == "0009"
+    assert result.applied_migration_count == 10
+    assert result.schema_version == "0010"
 
 
 def test_migration_0007_orchestration_runs_primary_key_rejects_duplicate(
@@ -1548,8 +1548,8 @@ def test_migration_0009_creates_option_chain_snapshot_batch_items_with_expected_
     assert pk_columns == [
         "ingestion_run_id", "provider", "underlying", "feed", "contract_symbol", "retrieved_at",
     ]
-    assert result.applied_migration_count == 9
-    assert result.schema_version == "0009"
+    assert result.applied_migration_count == 10
+    assert result.schema_version == "0010"
 
 
 _BATCH_ITEM_INSERT_COLUMNS = (

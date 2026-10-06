@@ -36,8 +36,12 @@ shared evidence contract every producer would emit is designed in
 its producer registry in [docs/EVIDENCE_REGISTRY.md](docs/EVIDENCE_REGISTRY.md)
 and consumer rules in
 [docs/EVIDENCE_CONSUMER_RULES.md](docs/EVIDENCE_CONSUMER_RULES.md). Its
-offline core lives in `market_intelligence/evidence/`. No producer adapter,
-evidence store, populated registry, or consumer exists yet.
+offline core lives in `market_intelligence/evidence/`. An offline storage
+and registry-loading core (`market_intelligence/evidence_store/`, migration
+`0010`) is reviewed and implemented. It is tested only on temporary databases,
+and `0010` is not applied to the real database, which stays at `0009` until
+separately authorized with a verified backup. No producer adapter, real
+evidence store, registry activation, setup definition, or consumer exists yet.
 
 **Dashboard (reviewed design; not implemented).** The dashboard's
 information architecture is a reviewed design in
@@ -91,6 +95,16 @@ authorized.
   and a builder over in-memory evidence. The production setup-definition
   registry is empty, so no live card of either kind can be produced; no
   dashboard renders cards.
+- **Evidence store core** (`market_intelligence/evidence_store/`, migration
+  `0010`; reviewed and implemented offline) — insert-only storage of
+  evidence, conflicts, bundles and setup cards with a hash-chained commit
+  log, point-in-time reconstruction, strict registry-file loading,
+  registration and activation services, an HMAC-authenticated anti-rollback
+  checkpoint, recovery and integrity verification. It refuses the real
+  database path and is exercised only on temporary databases. Because `0010`
+  exists while the real database is at `0009`, the real database
+  intentionally fails the current-schema health check until applying `0010`
+  is separately authorized, with a verified backup first.
 
 **Planned — directory placeholder only, no code yet:**
 
