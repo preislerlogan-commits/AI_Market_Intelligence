@@ -32,6 +32,20 @@ pages, hierarchy, states and trust vocabulary. The card itself is specified in
 - **Frontend framework is not chosen.** README lists the dashboard directory
   as "a future Streamlit application", but that is a placeholder note, not a
   reviewed decision. This design is framework-neutral (§12).
+- **Offline synthetic prototype (2026-10-06; PROJECT_STATE item 64).** It is
+  reviewed and implemented through its merge, and uses deterministic
+  synthetic fixtures only.
+  - A local, read-only Streamlit prototype of §2-§8 now exists in
+    `market_intelligence/dashboard/`, so that directory is no longer an empty
+    placeholder.
+  - It renders committed synthetic bundles and cards only, through a
+    fail-closed presentation adapter.
+  - No real evidence, database, provider, registry activation or model is
+    connected. It persists nothing and has no execution control. The
+    assistant remains a disabled placeholder.
+  - Streamlit was chosen for this prototype only. Production framework,
+    hosting and authentication remain open (§12.3).
+  - Everything else in §12.5 remains unauthorized.
 
 **The dashboard presents evidence; it never trades.** It has no order entry,
 no position sizing, no brokerage link, and no recommendation framing. Every

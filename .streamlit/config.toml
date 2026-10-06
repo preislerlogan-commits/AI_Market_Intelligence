@@ -1,0 +1,10 @@
+# Streamlit settings for the offline, synthetic dashboard prototype.
+# Local only: bind to the loopback address, open no browser automatically,
+# and send no usage statistics anywhere.
+
+[browser]
+gatherUsageStats = false
+
+[server]
+address = "127.0.0.1"
+headless = true
