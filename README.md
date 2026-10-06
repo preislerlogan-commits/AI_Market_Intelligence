@@ -43,15 +43,37 @@ and `0010` is not applied to the real database, which stays at `0009` until
 separately authorized with a verified backup. No producer adapter, real
 evidence store, registry activation, setup definition, or consumer exists yet.
 
-**Dashboard (reviewed design; not implemented).** The dashboard's
-information architecture is a reviewed design in
+**Dashboard (reviewed design; offline synthetic prototype only).** The
+dashboard's information architecture is a reviewed design in
 [docs/DASHBOARD_INFORMATION_ARCHITECTURE.md](docs/DASHBOARD_INFORMATION_ARCHITECTURE.md),
 and the setup-card contract a reviewed design in
 [docs/SETUP_CARD_CONTRACT.md](docs/SETUP_CARD_CONTRACT.md). An offline
 setup-card core is implemented in `market_intelligence/setup_cards/`, but
 the production setup-definition registry is empty, so no live card can be
-produced. No dashboard code exists, and no dashboard or card consumer is
-authorized.
+produced.
+
+A local, read-only **synthetic prototype** of the dashboard exists in
+`market_intelligence/dashboard/` (reviewed and implemented through its
+merge). It renders deterministic synthetic fixtures only and is connected to
+no data:
+
+- no real evidence, database, provider, registry activation, model or
+  network;
+- no persistence;
+- the assistant is a disabled placeholder;
+- no order, quantity, sizing, brokerage or execution control.
+
+A dashboard connected to real evidence, every other card consumer, live
+setup qualification, ranking, scenarios, notifications, SMS,
+machine-decision mode and trading remain unauthorized. To view the prototype locally:
+
+```bash
+pip install -e ".[dashboard]"   # or ".[dev]", which also includes Streamlit
+streamlit run market_intelligence/dashboard/app.py
+```
+
+`.streamlit/config.toml` binds the app to `127.0.0.1` and turns off
+Streamlit's usage statistics.
 
 ## Architecture
 
@@ -93,8 +115,15 @@ authorized.
 - **Setup-card core** (`market_intelligence/setup_cards/`) — pure, offline
   `setup-card-1` contracts, identity, bundle-bound validation, supersession
   and a builder over in-memory evidence. The production setup-definition
-  registry is empty, so no live card of either kind can be produced; no
-  dashboard renders cards.
+  registry is empty, so no live card of either kind can be produced. Only
+  the synthetic dashboard prototype renders cards, from synthetic fixtures.
+- **Dashboard prototype** (`market_intelligence/dashboard/`; offline,
+  synthetic; reviewed and implemented) — a Streamlit shell for the six reviewed
+  pages, plus a disabled assistant placeholder. It is built from committed
+  synthetic fixtures. A fail-closed presentation adapter validates every
+  Evidence Bundle and setup card before anything renders. Rendering is
+  kept separate from fixtures, view derivation, trust labels, navigation
+  and validation.
 - **Evidence store core** (`market_intelligence/evidence_store/`, migration
   `0010`; reviewed and implemented offline) — insert-only storage of
   evidence, conflicts, bundles and setup cards with a hash-chained commit
@@ -116,8 +145,6 @@ authorized.
   per [DECISION_RULES.md](DECISION_RULES.md).
 - **Trade journal** (`market_intelligence/trade_journal/`) — future record of
   manually executed trades and their outcomes.
-- **Dashboard** (`market_intelligence/dashboard/`) — a future Streamlit
-  application.
 
 Data is stored locally in DuckDB. No cloud database or hosted service is part
 of the current design.

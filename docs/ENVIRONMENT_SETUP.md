@@ -35,7 +35,8 @@ deactivate
 
 With the virtual environment activated, install the project in editable
 mode along with the development dependency group (pytest, pytest-cov,
-ruff):
+ruff, and Streamlit for the dashboard prototype's render tests). This is the
+installation the complete test suite expects:
 
 ```powershell
 python -m pip install -e ".[dev]"

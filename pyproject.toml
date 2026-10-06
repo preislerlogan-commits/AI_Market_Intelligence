@@ -16,10 +16,20 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Development and test installation. It includes the dashboard dependency so
+# the complete test suite (including the Streamlit AppTest render tests) runs
+# from a fresh `pip install -e ".[dev]"`. Keep the Streamlit range identical
+# to the `dashboard` extra (enforced by test_packaging_dependencies.py).
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
     "ruff>=0.5",
+    "streamlit>=1.40,<2",
+]
+# The offline, synthetic dashboard prototype only (market_intelligence/dashboard/app.py).
+# Optional: a normal library installation does not install Streamlit.
+dashboard = [
+    "streamlit>=1.40,<2",
 ]
 
 [build-system]

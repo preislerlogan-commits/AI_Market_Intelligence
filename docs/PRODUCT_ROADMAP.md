@@ -116,8 +116,14 @@ documents, or the shadow sample.
    core reviewed and merged (2026-09-29):**
    `market_intelligence/setup_cards/`, under its own authorization. The
    production setup-definition registry is empty, so no production card
-   can be created. Dashboard implementation remains unauthorized, as do
-   card storage and every consumer.
+   can be created. **Offline synthetic dashboard prototype reviewed and
+   implemented through its merge (2026-10-06):** `market_intelligence/dashboard/`,
+   a local Streamlit shell over deterministic synthetic fixtures only. No real
+   evidence, database, provider, registry activation or model is connected,
+   and the assistant remains a disabled placeholder. A dashboard connected to
+   real evidence, live setup qualification, ranking, scenarios,
+   notifications, SMS, machine-decision mode and trading remain
+   unauthorized.
 4. Design persistent evidence and setup-card storage, and versioned
    registry loading. **Design phase reviewed and merged** (the design merge
    itself authorized no implementation):
