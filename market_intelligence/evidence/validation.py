@@ -11,6 +11,9 @@ The functions here add the rules that need the registry or other records:
 - ``validate_envelope``: the run and every item in it;
 - ``validate_conflict``: severity table, timing, and resolution semantics
   (a resolution supersedes only the prior conflict-status record);
+- ``validate_conflict_record``: the same rules without the severity table,
+  for consumers of an already-stored conflict, whose severity the store
+  determined and froze;
 - ``validate_citations``: citations resolve only inside their bundle.
 
 Every refusal raises ``EvidenceValidationError`` with a fixed reason token.
@@ -304,7 +307,41 @@ def validate_conflict(
     prior: EvidenceConflict | None = None,
 ) -> None:
     """Conflicts are winnerless; a resolution supersedes only the prior
-    conflict-status record and never touches the evidence (design §I.3)."""
+    conflict-status record and never touches the evidence (design §I.3).
+
+    The producer side: it also checks the fixed severity table against
+    ``required_item_ids``. The Evidence Store passes the items required by an
+    authorized machine-decision purpose in the registry in force (its frozen
+    derivation). A consumer validating an already-stored conflict uses
+    ``validate_conflict_record`` and never recomputes severity."""
+    _check_conflict_involvement(conflict, items, registry)
+    involves_required = bool(set(conflict.involved_item_ids) & required_item_ids)
+    if conflict.severity is not expected_severity(conflict.conflict_type, involves_required):
+        raise _fail("severity_mismatch")
+    _check_conflict_resolution(conflict, items, prior)
+
+
+def validate_conflict_record(
+    conflict: EvidenceConflict,
+    items: Mapping[str, EvidenceItem],
+    registry: EvidenceRegistry,
+    *,
+    prior: EvidenceConflict | None = None,
+) -> None:
+    """The consumer side: every structural rule of ``validate_conflict``
+    (detector, involved items, timing, resolution semantics) **without**
+    recomputing severity. A stored conflict's severity was determined and
+    frozen by the Evidence Store from the registry in force at its
+    ``evaluated_as_of_utc``; a consuming bundle's own ``required`` flags
+    describe that bundle, not that historical context, so they never
+    re-decide it."""
+    _check_conflict_involvement(conflict, items, registry)
+    _check_conflict_resolution(conflict, items, prior)
+
+
+def _check_conflict_involvement(
+    conflict: EvidenceConflict, items: Mapping[str, EvidenceItem], registry: EvidenceRegistry
+) -> None:
     detector = registry.producer(conflict.detector_producer_id)
     if detector is None or conflict.detector_version not in detector.producer_versions:
         raise _fail("unknown_conflict_detector")
@@ -318,10 +355,13 @@ def validate_conflict(
         involved.append(item)
     if conflict.evaluated_as_of_utc < max(i.effective_at_utc for i in involved):
         raise _fail("conflict_before_evidence")
-    involves_required = bool(set(conflict.involved_item_ids) & required_item_ids)
-    if conflict.severity is not expected_severity(conflict.conflict_type, involves_required):
-        raise _fail("severity_mismatch")
 
+
+def _check_conflict_resolution(
+    conflict: EvidenceConflict,
+    items: Mapping[str, EvidenceItem],
+    prior: EvidenceConflict | None,
+) -> None:
     resolution = conflict.resolution
     if (resolution is None) != (prior is None):
         raise _fail("resolution_prior_mismatch")

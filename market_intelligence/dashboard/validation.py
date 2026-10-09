@@ -26,7 +26,7 @@ from market_intelligence.evidence.enums import BundlePurpose, ConsumerId
 from market_intelligence.evidence.errors import EvidenceValidationError
 from market_intelligence.evidence.holdout import is_holdout_restricted
 from market_intelligence.evidence.registry import EvidenceRegistry, compute_registry_version_id
-from market_intelligence.evidence.validation import validate_conflict, validate_item
+from market_intelligence.evidence.validation import validate_conflict_record, validate_item
 from market_intelligence.setup_cards.contracts import SetupCard
 from market_intelligence.setup_cards.definitions import SetupDefinition
 from market_intelligence.setup_cards.supersession import validate_card_history
@@ -96,13 +96,16 @@ def validate_bundle(
             validate_item(item, registry, payload_models=payload_models)
         except EvidenceValidationError as error:
             raise DashboardInputError(error.reason) from None
-    required = frozenset(e.item_id for e in bundle.entries if e.required)
     for conflict_id, conflict in conflicts.items():
         _check_sealed(conflict, "conflict_invalid")
         if conflict.conflict_id != conflict_id:
             raise DashboardInputError("bundle_conflicts_mismatch")
         try:
-            validate_conflict(conflict, items, registry, required_item_ids=required)
+            # Structure only. The stored severity was frozen by the Evidence
+            # Store from the registry in force when the conflict was evaluated;
+            # this bundle's own ``required`` flags never re-decide it, and the
+            # dashboard never edits, downgrades, upgrades or replaces it.
+            validate_conflict_record(conflict, items, registry)
         except EvidenceValidationError as error:
             raise DashboardInputError(error.reason) from None
 

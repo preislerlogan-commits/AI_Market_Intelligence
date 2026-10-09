@@ -151,7 +151,11 @@ def _requirement(rid, producer, kind, schema, subject=SPY, configurations=("cfg_
     )
 
 
-def make_registry() -> EvidenceRegistry:
+def make_registry(*, machine_decision_fixture: bool = True) -> EvidenceRegistry:
+    """The synthetic slice registry. ``machine_decision_fixture=False`` omits
+    the isolated ``setup_ranker`` fixture grant, so no purpose is
+    machine-decision authorized and the frozen derivation marks no conflict
+    critical; it adds nothing."""
     from market_intelligence.evidence_adapters.market_data import BARS_CONFIGURATION
 
     missing = "missing_evidence.v1"
@@ -315,19 +319,7 @@ def make_registry() -> EvidenceRegistry:
                 # frozen severity derivation mark a provider disagreement on a
                 # required bar as critical. No production authority; must never
                 # appear in a production registry.
-                ConsumerGrant(
-                    consumer_id=ConsumerId.SETUP_RANKER,
-                    purposes=sorted([BundlePurpose.LIVE_MARKET_STATE, BundlePurpose.SETUP_DETAIL]),
-                    permissions=sorted(
-                        [
-                            ConsumerPermission.READ_CALCULATIONS,
-                            ConsumerPermission.READ_CONFLICTS,
-                            ConsumerPermission.READ_FACTS,
-                            ConsumerPermission.READ_RESEARCH,
-                        ]
-                    ),
-                    machine_decision_mode_allowed=True,
-                ),
+                *_fixture_grant(machine_decision_fixture),
             ],
             key=lambda g: g.consumer_id,
         ),
@@ -356,3 +348,26 @@ def make_registry() -> EvidenceRegistry:
         ),
         uncertainty_codes=["iex_partial_volume", "vintage_revisable"],
     )
+
+
+def _fixture_grant(enabled: bool) -> list[ConsumerGrant]:
+    """The isolated synthetic machine-decision grant (review decision, PROJECT_STATE
+    item 66): a test fixture that lets the frozen severity derivation create a
+    legitimately critical stored conflict. No production authority."""
+    if not enabled:
+        return []
+    return [
+        ConsumerGrant(
+            consumer_id=ConsumerId.SETUP_RANKER,
+            purposes=sorted([BundlePurpose.LIVE_MARKET_STATE, BundlePurpose.SETUP_DETAIL]),
+            permissions=sorted(
+                [
+                    ConsumerPermission.READ_CALCULATIONS,
+                    ConsumerPermission.READ_CONFLICTS,
+                    ConsumerPermission.READ_FACTS,
+                    ConsumerPermission.READ_RESEARCH,
+                ]
+            ),
+            machine_decision_mode_allowed=True,
+        )
+    ]
