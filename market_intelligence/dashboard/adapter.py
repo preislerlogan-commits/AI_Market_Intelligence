@@ -104,13 +104,15 @@ RESEARCH_STAGES: tuple[tuple[str, str], ...] = (
 # --- Validation of a whole scenario ---------------------------------------------------------
 
 
-def _validate_input(bundle_input: BundleInput, registry: EvidenceRegistry, purpose) -> None:
+def _validate_input(
+    bundle_input: BundleInput, registry: EvidenceRegistry, purpose, payload_models=PAYLOAD_MODELS
+) -> None:
     validate_bundle(
         bundle_input.bundle,
         bundle_input.items,
         bundle_input.conflicts,
         registry=registry,
-        payload_models=PAYLOAD_MODELS,
+        payload_models=payload_models,
         purpose=purpose,
     )
 
@@ -128,15 +130,16 @@ def _context(bundle_input: BundleInput, registry: EvidenceRegistry, definitions=
 def validate_scenario(scenario: Scenario) -> None:
     """Every bundle and card, before anything is derived."""
     registry = scenario.registry
-    _validate_input(scenario.market, registry, BundlePurpose.LIVE_MARKET_STATE)
-    _validate_input(scenario.premarket, registry, BundlePurpose.PREMARKET_BRIEFING)
+    models = scenario.payload_models
+    _validate_input(scenario.market, registry, BundlePurpose.LIVE_MARKET_STATE, models)
+    _validate_input(scenario.premarket, registry, BundlePurpose.PREMARKET_BRIEFING, models)
     lane = scenario.vwap
     check_definitions(lane.definitions)
-    _validate_input(lane.context, registry, BundlePurpose.SETUP_DETAIL)
+    _validate_input(lane.context, registry, BundlePurpose.SETUP_DETAIL, models)
     if lane.history and not lane.definitions:
         raise DashboardInputError("card_without_definition")
     for record in lane.history:
-        _validate_input(record.source, registry, BundlePurpose.SETUP_DETAIL)
+        _validate_input(record.source, registry, BundlePurpose.SETUP_DETAIL, models)
         if record.card.lane is not Lane.VWAP_REVERSION:
             raise DashboardInputError("card_lane_mismatch")
         validate_card(record.card, _context(record.source, registry, lane.definitions))

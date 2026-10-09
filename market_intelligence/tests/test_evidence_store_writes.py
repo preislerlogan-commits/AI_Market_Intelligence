@@ -221,6 +221,23 @@ def test_missing_parent_is_refused(env):
     )
 
 
+def test_lineage_sees_stored_grandparents_across_envelopes(env):
+    """An item whose parent cites its own stored parents is validated against
+    its whole stored ancestry instead of being refused as ``missing_parent``."""
+    bar = f.bar_item()
+    env.store.append_envelope(fx.envelope([bar], env.evidence_id, run_key="6" * 64))
+    calc = f.calc_item([bar])
+    env.store.append_envelope(
+        fx.envelope([calc], env.evidence_id, producer=f.CALC, run_key="7" * 64)
+    )
+    inference = f.inference_item([calc])
+    env.store.append_envelope(
+        fx.envelope([inference], env.evidence_id, producer=f.AGENT, run_key="8" * 64)
+    )
+    ids = {r["item_id"] for r in _rows(env, "SELECT item_id FROM evidence_items")}
+    assert {bar.item_id, calc.item_id, inference.item_id} <= ids
+
+
 # --- Holdout -------------------------------------------------------------------------------------
 
 
