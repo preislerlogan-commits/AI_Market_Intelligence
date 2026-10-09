@@ -267,7 +267,14 @@ def evaluation_item(
     return seal_item(EvidenceItemContent(**{**fields, "machine_decision_eligible": eligible}))
 
 
-def provider_disagreement(a: EvidenceItem, b: EvidenceItem, at: datetime) -> EvidenceConflict:
+def provider_disagreement(
+    a: EvidenceItem,
+    b: EvidenceItem,
+    at: datetime,
+    severity: ConflictSeverity = ConflictSeverity.CRITICAL,
+) -> EvidenceConflict:
+    """``severity`` must equal the store's frozen derivation, or the store
+    refuses the conflict (``conflict_severity_mismatch``)."""
     return seal_conflict(
         EvidenceConflictContent(
             conflict_type=ConflictType.PROVIDER_DISAGREEMENT,
@@ -275,7 +282,7 @@ def provider_disagreement(a: EvidenceItem, b: EvidenceItem, at: datetime) -> Evi
             detection_method=DetectionMethod.MANUAL_REVIEW,
             detector_producer_id=R.DETECTOR,
             detector_version="1.0.0",
-            severity=ConflictSeverity.CRITICAL,
+            severity=severity,
             status=ConflictStatus.UNRESOLVED,
             evaluated_as_of_utc=at,
             detected_at_utc=at + timedelta(seconds=1),

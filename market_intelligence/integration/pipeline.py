@@ -139,10 +139,12 @@ class ScenarioStore:
     # --- Setup ---------------------------------------------------------------------------------
 
     @classmethod
-    def create(cls, paths: StorePaths, start: datetime) -> ScenarioStore:
+    def create(
+        cls, paths: StorePaths, start: datetime, registry: EvidenceRegistry | None = None
+    ) -> ScenarioStore:
         clock = SliceClock(start)
         store = _open_store(paths, clock, initialize=True)
-        registry = R.make_registry()
+        registry = registry or R.make_registry()
         evidence_id = _register(store, paths, RegistryKind.EVIDENCE_REGISTRY, registry)
         _activate(store, RegistryKind.EVIDENCE_REGISTRY, evidence_id)
         setup_id = _register(store, paths, RegistryKind.SETUP_DEFINITION_REGISTRY, R.SETUP_REGISTRY)
