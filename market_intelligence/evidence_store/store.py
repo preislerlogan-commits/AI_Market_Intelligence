@@ -917,6 +917,19 @@ class EvidenceStore:
                 if ref is not None
             }
             known = self._load_items(conn, referenced | {i.item_id for i in envelope.items})
+            # Lineage validation walks every ancestor (inference taint and the
+            # holdout guard), so stored ancestors are loaded transitively, not
+            # only the direct parents. A truly absent one stays absent and is
+            # refused by the validator as ``missing_parent``.
+            frontier = {p for item in known.values() for p in item.provenance.parent_evidence_ids}
+            while frontier := frontier - set(known):
+                loaded = self._load_items(conn, frontier)
+                if not loaded:
+                    break
+                known.update(loaded)
+                frontier = {
+                    p for item in loaded.values() for p in item.provenance.parent_evidence_ids
+                }
             stored_items = {
                 k: v for k, v in known.items() if k not in {i.item_id for i in envelope.items}
             }

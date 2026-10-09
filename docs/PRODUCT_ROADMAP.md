@@ -113,7 +113,11 @@ documents, or the shadow sample.
    into envelope items. It is exercised only by synthetic tests with a
    labelled test registry. Connecting adapters to ingestion or storage, a
    production registry file or activation, and every consumer remain
-   unauthorized.
+   unauthorized. **Offline Evidence-to-Dashboard vertical slice reviewed and
+   implemented through its merge (2026-10-09):** `market_intelligence/integration/` runs
+   synthetic sources through the adapters, a temporary store, point-in-time
+   bundles, a synthetic setup evaluation and cards into dashboard views read
+   back from storage. It covers ten scenarios, in temporary stores only.
 3. Design the dashboard information architecture and the setup-card
    contract ([vision §7](PRODUCT_VISION.md)). **Design phase reviewed and
    merged (2026-09-29):**

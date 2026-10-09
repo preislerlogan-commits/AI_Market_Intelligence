@@ -79,6 +79,24 @@ streamlit run market_intelligence/dashboard/app.py
 `.streamlit/config.toml` binds the app to `127.0.0.1` and turns off
 Streamlit's usage statistics.
 
+**Offline Evidence-to-Dashboard vertical slice (reviewed and implemented
+through its merge; offline and synthetic only).** `market_intelligence/integration/` runs one deterministic,
+synthetic path through every existing layer:
+
+synthetic source objects → producer adapters → Evidence Envelopes →
+temporary Evidence Store → point-in-time bundles → synthetic setup
+evaluation → setup cards → dashboard views
+
+The dashboard views are built only from records read back from storage.
+Ten scenarios each run in their own temporary store, which is removed
+afterwards. The slice never touches the real database, a provider, a model
+or a production registry.
+
+```bash
+python -m market_intelligence.integration.demo              # build, summarize, clean up
+python -m market_intelligence.integration.demo --dashboard  # show it in the dashboard
+```
+
 ## Architecture
 
 **Implemented:**
@@ -146,6 +164,14 @@ Streamlit's usage statistics.
   Evidence Bundle and setup card before anything renders. Rendering is
   kept separate from fixtures, view derivation, trust labels, navigation
   and validation.
+- **Offline vertical slice** (`market_intelligence/integration/`; offline,
+  synthetic; reviewed and implemented). Small orchestration over the existing components:
+  - a temporary, self-cleaning workspace with guards;
+  - a clearly labelled synthetic registry;
+  - the scenario pipeline and read-back from storage;
+  - a demo entry point.
+
+  Streamlit rendering stays in the dashboard package.
 - **Evidence store core** (`market_intelligence/evidence_store/`, migration
   `0010`; reviewed and implemented offline) — insert-only storage of
   evidence, conflicts, bundles and setup cards with a hash-chained commit

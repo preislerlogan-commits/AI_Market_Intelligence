@@ -11,7 +11,8 @@ order, quantity, sizing, brokerage or execution control anywhere.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any
 
 import pandas as pd
 import streamlit as st
@@ -56,6 +57,17 @@ def _models() -> dict[str, DashboardModel | str]:
         except DashboardInputError as error:
             models[scenario_id] = error.reason
     return models
+
+
+ScenarioSource = Callable[
+    [], tuple[Sequence[str], Mapping[str, str], Mapping[str, DashboardModel | str]]
+]
+
+
+def _prototype_source() -> tuple[Sequence[str], Mapping[str, str], Mapping[str, Any]]:
+    """The prototype's own committed synthetic scenarios (the default)."""
+    scenarios = build_scenarios()
+    return SCENARIO_ORDER, {sid: s.title for sid, s in scenarios.items()}, _models()
 
 
 # --- Shared pieces ------------------------------------------------------------------------------
@@ -423,19 +435,22 @@ def _go(page: Page) -> None:
     _set_nav(go_to(_nav(), page))
 
 
-def main() -> None:
+def main(source: ScenarioSource | None = None) -> None:
+    """Render the dashboard. ``source`` supplies already-validated scenario
+    models (for example the offline vertical slice's read-back records);
+    without it, the prototype's own synthetic scenarios are shown."""
     st.set_page_config(page_title="SPY Market Intelligence (synthetic prototype)", layout="wide")
-    st.session_state.setdefault("nav", NavigationState(scenario_id=SCENARIO_ORDER[0]))
-    st.session_state.setdefault("scenario", SCENARIO_ORDER[0])
+    order, titles, models = (source or _prototype_source)()
+    st.session_state.setdefault("nav", NavigationState(scenario_id=order[0]))
+    st.session_state.setdefault("scenario", order[0])
     st.session_state.setdefault("page", Page.MARKET_OVERVIEW.value)
-    scenarios = build_scenarios()
 
     st.sidebar.title("SPY Market Intelligence")
     st.sidebar.caption(L.SYNTHETIC_BANNER)
     st.sidebar.selectbox(
         "Synthetic scenario",
-        SCENARIO_ORDER,
-        format_func=lambda sid: scenarios[sid].title,
+        list(order),
+        format_func=lambda sid: titles[sid],
         key="scenario",
     )
     st.sidebar.radio("Page", PAGES, format_func=lambda p: PAGE_TITLES[Page(p)], key="page")
@@ -446,7 +461,7 @@ def main() -> None:
 
     st.title(PAGE_TITLES[nav.page])
     st.info(L.SYNTHETIC_BANNER)
-    model = _models()[nav.scenario_id]
+    model = models[nav.scenario_id]
     if isinstance(model, str):
         st.error(f"Validation failed. Nothing is shown. Reason: {L.humanize(model)}")
         return

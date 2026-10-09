@@ -1003,6 +1003,12 @@ class Scenario:
     premarket: BundleInput
     vwap: LaneInput
     registry: EvidenceRegistry = field(repr=False)
+    # The payload schemas every item must validate against. The prototype's
+    # own synthetic scenarios use these fixtures' models; the offline vertical
+    # slice supplies the producer adapters' schemas as well.
+    payload_models: Mapping[str, type[BaseModel]] = field(
+        default_factory=lambda: PAYLOAD_MODELS, repr=False
+    )
 
 
 def _market(registry: EvidenceRegistry, variant: str = "normal") -> BundleInput:
