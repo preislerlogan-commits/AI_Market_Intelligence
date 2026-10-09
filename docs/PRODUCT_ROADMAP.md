@@ -106,7 +106,13 @@ documents, or the shadow sample.
    [EVIDENCE_CONSUMER_RULES.md](EVIDENCE_CONSUMER_RULES.md). **Offline
    core reviewed and merged (2026-09-28):**
    `market_intelligence/evidence/`, under the §Q.5 authorization only.
-   Storage, adapters, a registry file and every consumer remain
+   **Offline producer-adapter core reviewed and implemented through its
+   merge (2026-10-09):** `market_intelligence/evidence_adapters/`. It translates
+   validated Alpaca bar, snapshot and news objects, FRED observations and
+   metadata, injected clock readings and existing regime-engine results
+   into envelope items. It is exercised only by synthetic tests with a
+   labelled test registry. Connecting adapters to ingestion or storage, a
+   production registry file or activation, and every consumer remain
    unauthorized.
 3. Design the dashboard information architecture and the setup-card
    contract ([vision §7](PRODUCT_VISION.md)). **Design phase reviewed and

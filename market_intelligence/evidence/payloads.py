@@ -10,8 +10,11 @@ Only these are defined here:
 - ``contract_selector_result.v1``: the existing, unchanged
   ``spy-contract-selector-1`` ``ContractSelectorResult``.
 
-Adapter payload schemas (``market_bar_fact.v1`` and the rest) are deliberately
-absent: producer adapters are not authorized in this stage.
+Adapter payload schemas (``market_bar_fact.v1`` and the rest) are not defined
+in this core module. The first offline producer adapters define them in
+``market_intelligence/evidence_adapters/payloads.py`` (PROJECT_STATE item 65).
+Those adapters are exercised only by synthetic tests and are connected to no
+ingestion, storage or registry.
 """
 
 from __future__ import annotations

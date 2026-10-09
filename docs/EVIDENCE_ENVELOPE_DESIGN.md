@@ -593,6 +593,7 @@ stale (for example an agent's preflight abstaining with `news_stale`).
 | News item | `news_item:alpaca:<provider_article_id>` | `^news_item:[a-z_]{1,32}:[A-Za-z0-9._-]{1,64}$` | Alpaca articles |
 | Scheduled catalyst | `catalyst:<source>:<event_code>:<YYYY-MM-DD>` | `^catalyst:[a-z_]{1,32}:[a-z0-9_]{1,48}:\d{4}-\d{2}-\d{2}$` | none (no calendar source exists) |
 | Session date | `session:us_equity_regular:2026-12-07` | `^session:us_equity_regular:\d{4}-\d{2}-\d{2}$` | any weekday; no exchange-holiday calendar exists |
+| Regular-hours window date (offline adapters, PROJECT_STATE item 65) | `session:us_equity_regular_hours_window:2027-01-12` | `^session:us_equity_regular_hours_window:\d{4}-\d{2}-\d{2}$` | Monday-Friday 09:30-16:00 New York clock window only; never proves the exchange was open, that the date was a trading session, or that a shortened session was complete |
 | Setup candidate | `setup:<lane>:<setup_definition_id>:<symbol>:<decision_time>` e.g. `setup:vwap_reversion:spy_vwap_ext_v1:SPY:20261207T150500Z` | `^setup:(vwap_reversion|trend_continuation):[a-z0-9_]{1,48}:[A-Z]{1,10}:\d{8}T\d{6}Z$` | none (no setup definition is registered for live use) |
 | Scenario | `scenario:<scenario_definition_id>:<symbol>:<YYYY-MM-DD>` | `^scenario:[a-z0-9_]{1,48}:[A-Z]{1,10}:\d{4}-\d{2}-\d{2}$` | none |
 | Option contract | `option:osi:SPY260918C00750000` | `^option:osi:[A-Z]{1,6}\d{6}[CP]\d{8}$` | SPY |
