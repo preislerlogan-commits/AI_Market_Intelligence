@@ -172,6 +172,7 @@ def test_evidence_kind_taxonomy_is_frozen():
         (SubjectType.INSTRUMENT, "instrument:us_equity:SPY"),
         (SubjectType.OPTION_CONTRACT, "option:osi:SPY260918C00750000"),
         (SubjectType.MARKET_SESSION, "session:us_equity_regular:2027-01-12"),
+        (SubjectType.MARKET_SESSION, "session:us_equity_regular_hours_window:2027-01-12"),
         (SubjectType.MACRO_SERIES, "macro_series:fred:FEDFUNDS"),
         (SubjectType.NEWS_ITEM, "news_item:alpaca:12345"),
         (SubjectType.SCENARIO, "scenario:example:SPY:2027-01-12"),
@@ -192,6 +193,8 @@ def test_canonical_subject_ids_are_accepted(subject_type, subject_id):
         (SubjectType.INSTRUMENT, "instrument:us_equity:SPDR S&P 500 ETF"),
         (SubjectType.OPTION_CONTRACT, "instrument:us_equity:SPY"),
         (SubjectType.MARKET_SESSION, "session:us_equity_regular:2027-13-40"),
+        (SubjectType.MARKET_SESSION, "session:us_equity_regular_hours:2027-01-12"),
+        (SubjectType.MARKET_SESSION, "session:us_equity_regular_hours_window:2027-13-40"),
         (SubjectType.SETUP_CANDIDATE, "setup:breakout:x:SPY:20270112T150500Z"),
     ],
 )

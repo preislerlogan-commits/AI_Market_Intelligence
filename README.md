@@ -40,8 +40,12 @@ offline core lives in `market_intelligence/evidence/`. An offline storage
 and registry-loading core (`market_intelligence/evidence_store/`, migration
 `0010`) is reviewed and implemented. It is tested only on temporary databases,
 and `0010` is not applied to the real database, which stays at `0009` until
-separately authorized with a verified backup. No producer adapter, real
-evidence store, registry activation, setup definition, or consumer exists yet.
+separately authorized with a verified backup. An offline producer-adapter
+core (`market_intelligence/evidence_adapters/`; reviewed and implemented)
+translates already-validated source objects into envelope items. It is
+exercised only by synthetic tests and is connected to no ingestion, storage
+or registry. No real evidence store, registry activation, setup definition
+or consumer exists yet.
 
 **Dashboard (reviewed design; offline synthetic prototype only).** The
 dashboard's information architecture is a reviewed design in
@@ -110,8 +114,26 @@ Streamlit's usage statistics.
   offline contracts, canonical IDs, validators, freshness evaluation,
   point-in-time bundle construction, the permanent Contract Selector
   boundary, and the SPY holdout guard. It opens no database and makes no
-  request. Nothing emits or consumes it yet: producer adapters, storage, a
-  registry file, and every consumer remain unbuilt and unauthorized.
+  request. Nothing emits into storage or consumes it yet. The offline
+  producer adapters (below) are connected to nothing, and a registry file
+  and every consumer remain unauthorized.
+- **Evidence producer adapters** (`market_intelligence/evidence_adapters/`;
+  offline; reviewed and implemented). Pure functions from already-validated source
+  objects to envelope items:
+  - Alpaca SPY bars and snapshots, as confirmed facts;
+  - FRED observations and series metadata, as confirmed facts, with a
+    missing value kept as explicit missing evidence;
+  - Alpaca news publication metadata, as confirmed facts, with the headline
+    and summary display-only and marked provider-reported and unverified;
+  - injected clock-health readings;
+  - already-produced regime-engine results, as deterministic calculations
+    with complete parent lineage.
+
+  Every time, configuration, source reference and parent is passed in
+  explicitly. They make no database, file, environment, network, clock,
+  randomness or model access. They enforce the SPY holdout guard
+  themselves, and copy machine-decision eligibility from the registry
+  rather than granting it.
 - **Setup-card core** (`market_intelligence/setup_cards/`) — pure, offline
   `setup-card-1` contracts, identity, bundle-bound validation, supersession
   and a builder over in-memory evidence. The production setup-definition

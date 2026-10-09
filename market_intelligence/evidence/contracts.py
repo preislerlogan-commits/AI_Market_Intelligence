@@ -144,7 +144,12 @@ SUBJECT_PATTERNS: dict[SubjectType, re.Pattern[str]] = {
     SubjectType.SCHEDULED_CATALYST: re.compile(
         r"^catalyst:[a-z_]{1,32}:[a-z0-9_]{1,48}:\d{4}-\d{2}-\d{2}$"
     ),
-    SubjectType.MARKET_SESSION: re.compile(r"^session:us_equity_regular:\d{4}-\d{2}-\d{2}$"),
+    # ``us_equity_regular_hours_window`` (the offline producer adapters) names
+    # only a Monday-Friday 09:30-16:00 New York clock window; no exchange
+    # calendar exists, so it never asserts that the exchange was open.
+    SubjectType.MARKET_SESSION: re.compile(
+        r"^session:(us_equity_regular|us_equity_regular_hours_window):\d{4}-\d{2}-\d{2}$"
+    ),
     SubjectType.SETUP_CANDIDATE: re.compile(
         r"^setup:(vwap_reversion|trend_continuation):[a-z0-9_]{1,48}:[A-Z]{1,10}:\d{8}T\d{6}Z$"
     ),

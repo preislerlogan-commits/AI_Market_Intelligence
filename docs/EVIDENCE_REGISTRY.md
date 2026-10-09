@@ -17,6 +17,20 @@ content of the evidence registry designed in
   envelope adapter, or evidence table exists, and this draft's entries are
   not loaded anywhere. "Implemented" below describes only the
   **existing module** behind a producer, never an envelope emitter.
+- **Implementation status (2026-10-08; PROJECT_STATE item 65).** The first
+  offline producer adapters now exist in
+  `market_intelligence/evidence_adapters/`, for these producers:
+  `alpaca_market_bars`, `alpaca_market_snapshot`, `alpaca_news`,
+  `fred_macro_observations`, `fred_macro_series_metadata`,
+  `system_clock_health` and `spy_regime_engine`.
+  - They are pure functions exercised only by synthetic tests with a
+    labelled test registry, and are connected to no ingestion, storage or
+    registry.
+  - This note supersedes the "no envelope adapter exists" wording in this
+    document.
+  - It changes no registry rule, producer authority, schema or
+    authorization table. No registry file exists, and no producer is
+    registered or activated.
 - **Nothing is authorized.** An entry marked `future` or `unauthorized`
   describes a boundary, not a plan of record. Listing a producer does not
   authorize building it.
