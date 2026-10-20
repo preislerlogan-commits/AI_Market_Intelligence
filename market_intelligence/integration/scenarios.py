@@ -3,9 +3,12 @@
 Every scenario runs in its own temporary store on one fixed synthetic
 timeline (Tuesday 2027-01-12, outside the sealed holdout window). Source
 objects are the real connector dataclasses filled with synthetic values; they
-pass through the producer adapters. Items no adapter covers yet (the
-selector result, the recorded research result and a labelled inference) come
-from the dashboard prototype's existing synthetic builders. The setup
+pass through the producer adapters. Option-chain snapshots pass through the
+option-chain adapter; the deterministic Contract Selector runs on the batch
+rebuilt from that stored-to-be evidence, and its result passes through the
+selector adapter citing exactly those chain items. Items no adapter covers
+yet (the recorded research result and a labelled inference) come from the
+dashboard prototype's existing synthetic builders. The setup
 evaluation is the one synthetic, in-memory, ``synthetic-only-`` definition's
 deterministic output.
 """
@@ -18,9 +21,15 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
+from market_intelligence.contract_selection.contracts import (
+    ContractSelectorInput,
+    SelectorConfig,
+)
+from market_intelligence.contract_selection.selector import select_eligible_contracts
 from market_intelligence.dashboard import fixtures as dash
 from market_intelligence.dashboard.fixtures import Scenario
 from market_intelligence.data_connectors.alpaca_bars import Bar
+from market_intelligence.data_connectors.alpaca_options_chain import OptionChainSnapshot
 from market_intelligence.data_connectors.fred_macro_data import FredObservation, FredSeriesMetadata
 from market_intelligence.evidence.canonical import canonical_sha256, sort_key
 from market_intelligence.evidence.contracts import (
@@ -64,9 +73,11 @@ from market_intelligence.evidence.enums import (
 from market_intelligence.evidence.errors import EvidenceValidationError
 from market_intelligence.evidence.validation import derive_machine_decision_eligible
 from market_intelligence.evidence_adapters import clock as clock_adapter
+from market_intelligence.evidence_adapters import contract_selector as selector_adapter
 from market_intelligence.evidence_adapters import fred as fred_adapter
 from market_intelligence.evidence_adapters import market_calculations as calc_adapter
 from market_intelligence.evidence_adapters import market_data as bar_adapter
+from market_intelligence.evidence_adapters import options as chain_adapter
 from market_intelligence.evidence_adapters.common import window_subject
 from market_intelligence.integration import registry as R
 from market_intelligence.integration.pipeline import ScenarioStore, read_back
@@ -77,6 +88,7 @@ from market_intelligence.market_features.spy_regime_contracts import (
     CatalystState,
     IntradayBar,
     RegimeEngineInput,
+    ScenarioHorizon,
 )
 from market_intelligence.market_features.spy_regime_features import compute_features
 from market_intelligence.setup_cards.definitions import (
@@ -157,6 +169,51 @@ def _bars_reference(bars: list[Bar]) -> ProviderRequestReference:
         feed=Feed.IEX,
         provider="alpaca",
     )
+
+
+CHAIN_RETRIEVED = _t(14, 58)
+CHAIN_AS_OF = _t(15, 0)
+CHAIN_QUOTED = "2027-01-12T14:57:58.250000Z"
+
+
+def synthetic_chain(feed: str) -> list[OptionChainSnapshot]:
+    """Four synthetic SPY call snapshots from one retrieval (the real
+    connector dataclass). Two pass every selector filter; the third has a wide
+    spread and the fourth a crossed quote (bid above ask), so the selector
+    rejects both."""
+    quotes = {
+        "680": ("1.00", "1.10"),
+        "681": ("1.00", "1.10"),
+        "682": ("1.00", "3.00"),
+        "683": ("1.20", "1.10"),
+    }
+    return [
+        OptionChainSnapshot(
+            provider="alpaca",
+            underlying="SPY",
+            feed=feed,
+            contract_symbol=f"SPY270112C00{strike}000",
+            expiration_date="2027-01-12",
+            option_type="call",
+            strike_price=Decimal(strike),
+            quote_timestamp=CHAIN_QUOTED,
+            bid_price=Decimal(bid),
+            bid_size=10,
+            ask_price=Decimal(ask),
+            ask_size=10,
+            trade_timestamp=None,
+            trade_price=None,
+            trade_size=None,
+            implied_volatility=Decimal("0.2"),
+            delta=Decimal("0.40"),
+            gamma=Decimal("0.05"),
+            theta=Decimal("-0.10"),
+            vega=Decimal("0.10"),
+            rho=Decimal("0.01"),
+            retrieved_at=CHAIN_RETRIEVED.isoformat().replace("+00:00", "Z"),
+        )
+        for strike, (bid, ask) in quotes.items()
+    ]
 
 
 def series_metadata() -> FredSeriesMetadata:
@@ -335,7 +392,7 @@ def _session(
     *,
     bars: bool = True,
     twin: bool = False,
-    selector=None,
+    selector: str | None = None,
     qualification=SetupQualification.QUALIFIED,
     clock_at: datetime = _t(15, 1, 30),
 ) -> Built:
@@ -404,7 +461,7 @@ def _session(
     )
     s.at(clock_at + timedelta(seconds=10)).ingest([_clock(s, reading)])
     if selector is not None:
-        s.at(max(s.clock(), _t(15, 1, 50))).ingest([dash.selector_item(selector)])
+        _chain_and_selector(s, selector)
     lane_level = qualification is SetupQualification.NOT_QUALIFIED
     s.at(max(s.clock(), _t(15, 2)))
     evaluation = evaluation_item(
@@ -426,6 +483,49 @@ def _session(
         )
         s.at(max(s.clock(), _t(15, 2, 10))).ingest([inference])
     return Built(s, bar_items, features_item)
+
+
+def _chain_and_selector(s: ScenarioStore, feed: str) -> None:
+    """Chain snapshots -> option-chain evidence (stored) -> the deterministic
+    Contract Selector on the batch rebuilt from that evidence -> selector
+    evidence citing exactly those items (stored). Indicative chains run with
+    research explicitly allowed, so their contracts are research-only."""
+    s.at(max(s.clock(), _t(15, 1, 45)))
+    context = s.context(chain_adapter.OPTION_CHAIN_CONFIGURATION)
+    reference = _request(
+        EndpointClass.ALPACA_OPTION_CHAIN,
+        CHAIN_RETRIEVED - timedelta(seconds=2),
+        feed=Feed(feed),
+        provider="alpaca",
+    )
+    chain_items = [
+        chain_adapter.adapt_option_quote(snapshot, reference=reference, context=context)
+        for snapshot in synthetic_chain(feed)
+    ]
+    s.ingest(chain_items)
+    batch = selector_adapter.option_chain_batch(chain_items)
+    selector_input = ContractSelectorInput(
+        scenario_horizon=ScenarioHorizon.INTRADAY_30M,
+        regime_as_of_timestamp=batch.retrieved_at,
+        underlying_price_timestamp=batch.retrieved_at,
+        as_of_timestamp=CHAIN_AS_OF,
+        underlying_price=Decimal("680"),
+        batch=batch,
+        config=SelectorConfig(allow_indicative_for_research=feed == "indicative"),
+    )
+    s.at(max(s.clock(), _t(15, 1, 50)))
+    result = select_eligible_contracts(selector_input, generated_at=s.clock())
+    identity = selector_adapter.selector_configuration_identity(result.config_snapshot)
+    s.ingest(
+        [
+            selector_adapter.adapt_selector_result(
+                result,
+                selector_input=selector_input,
+                chain_items=chain_items,
+                context=s.context(identity),
+            )
+        ]
+    )
 
 
 def _bundles_and_card(built: Built, as_of: datetime, *, no_setup: bool = False, selector=True):
@@ -465,7 +565,7 @@ class SliceScenario:
 
 def _ready(s: ScenarioStore) -> str:
     _premarket(s)
-    _bundles_and_card(_session(s, selector=dash.selector_result()), AS_OF)
+    _bundles_and_card(_session(s, selector="opra"), AS_OF)
     return "market"
 
 
@@ -478,26 +578,26 @@ def _not_qualified(s: ScenarioStore) -> str:
 
 def _missing(s: ScenarioStore) -> str:
     _premarket(s)
-    _bundles_and_card(_session(s, bars=False, selector=dash.selector_result()), AS_OF)
+    _bundles_and_card(_session(s, bars=False, selector="opra"), AS_OF)
     return "market"
 
 
 def _stale(s: ScenarioStore) -> str:
     _premarket(s)
-    built = _session(s, selector=dash.selector_result(), clock_at=_t(15, 24))
+    built = _session(s, selector="opra", clock_at=_t(15, 24))
     _bundles_and_card(built, STALE_AS_OF)
     return "market"
 
 
 def _ambiguous(s: ScenarioStore) -> str:
     _premarket(s)
-    _bundles_and_card(_session(s, twin=True, selector=dash.selector_result()), AS_OF)
+    _bundles_and_card(_session(s, twin=True, selector="opra"), AS_OF)
     return "market"
 
 
 def _critical(s: ScenarioStore) -> str:
     _premarket(s)
-    built = _session(s, selector=dash.selector_result())
+    built = _session(s, selector="opra")
     s.at(_t(15, 2, 20)).conflict(provider_disagreement(built.bars[0], built.bars[-1], _t(15, 2)))
     _bundles_and_card(built, AS_OF)
     return "market"
@@ -511,7 +611,7 @@ def _selector_unavailable(s: ScenarioStore) -> str:
 
 def _research_only(s: ScenarioStore) -> str:
     _premarket(s)
-    _bundles_and_card(_session(s, selector=dash.selector_result(feed="indicative")), AS_OF)
+    _bundles_and_card(_session(s, selector="indicative"), AS_OF)
     return "market"
 
 
@@ -527,13 +627,13 @@ def _holdout(s: ScenarioStore) -> str:
         )
     except EvidenceValidationError as refusal:
         s.refusals.append(refusal.reason)  # refused before anything reached storage
-    _bundles_and_card(_session(s, selector=dash.selector_result()), AS_OF)
+    _bundles_and_card(_session(s, selector="opra"), AS_OF)
     return "market"
 
 
 def _correction(s: ScenarioStore) -> str:
     _premarket_with_macro(s)
-    _bundles_and_card(_session(s, selector=dash.selector_result()), AS_OF)
+    _bundles_and_card(_session(s, selector="opra"), AS_OF)
     # A later vintage corrects the observation. The earlier bundle is untouched.
     s.at(_t(15, 10))
     corrected = fred_adapter.adapt_fred_observation(

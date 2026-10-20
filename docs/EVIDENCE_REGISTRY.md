@@ -26,6 +26,15 @@ content of the evidence registry designed in
   - They are pure functions exercised only by synthetic tests with a
     labelled test registry, and are connected to no ingestion, storage or
     registry.
+  - **Update (2026-10-20; PROJECT_STATE item 68).** Offline adapters now
+    also exist for `alpaca_option_chain_snapshot` and the
+    `deterministic_contract_selector` result, under the same conditions:
+    synthetic tests and labelled synthetic registries only, connected to no
+    ingestion, storage, provider or registry file. The reserved
+    `option_quote_fact.v1` is implemented as two per-feed schemas,
+    `option_quote_opra_fact.v1` and `option_quote_indicative_fact.v1`;
+    indicative quotes are never machine-decision eligible, and contract
+    eligibility remains the selector's alone.
   - This note supersedes the "no envelope adapter exists" wording in this
     document.
   - It changes no registry rule, producer authority, schema or
@@ -187,7 +196,9 @@ Display names are for the UI only and never enter an identity.
 - **Module:** `market_intelligence/data_connectors/alpaca_options_chain.py`,
   `market_intelligence/storage/option_chain_snapshot_repository.py`.
 - **Schema versions:** `evidence-envelope-1`; payload
-  `option_quote_fact.v1`.
+  `option_quote_fact.v1` (reserved name; implemented in PROJECT_STATE
+  item 68 as the per-feed `option_quote_opra_fact.v1` and
+  `option_quote_indicative_fact.v1`).
 
 #### `alpaca_news`
 - **Display name:** Alpaca news (SPY). **Status:** implemented, stored
@@ -565,7 +576,7 @@ unchanged.
 |---|---|---|
 | `market_bar_fact.v1` | one stored bar | none |
 | `market_snapshot_fact.v1` | sanitized latest trade/quote | none |
-| `option_quote_fact.v1` | one stored contract observation | none |
+| `option_quote_fact.v1` (implemented per feed in item 68: `option_quote_opra_fact.v1`, `option_quote_indicative_fact.v1`) | one stored contract observation | none |
 | `news_publication_fact.v1` | article metadata | `headline`, `summary` (≤ 500 characters each) |
 | `macro_observation_fact.v1` / `macro_series_metadata_fact.v1` | one stored row | `title` |
 | `market_context_calc.v1`, `session_quality_calc.v1`, `news_evidence_calc.v1`, `macro_evidence_calc.v1` | the existing snapshot sections | none |

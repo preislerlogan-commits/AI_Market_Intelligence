@@ -57,7 +57,7 @@ def _stored_conflict_run(tmp_path, *, fixture_grant: bool, pair: tuple[int, int]
     registry = R.make_registry(machine_decision_fixture=fixture_grant)
     store = ScenarioStore.create(store_paths(tmp_path, "case"), S.START, registry=registry)
     S._premarket(store)
-    built = S._session(store, selector=S.dash.selector_result())
+    built = S._session(store, selector="opra")
     a, b = (built.bars[i] for i in pair)
     store.at(S._t(15, 2, 20)).conflict(S.provider_disagreement(a, b, S._t(15, 2), severity))
     S._bundles_and_card(built, S.AS_OF)

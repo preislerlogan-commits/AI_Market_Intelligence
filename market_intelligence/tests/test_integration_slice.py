@@ -12,6 +12,7 @@ import json
 import socket
 import tempfile
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 
 import duckdb
@@ -25,6 +26,7 @@ from market_intelligence.evidence.canonical import canonical_json_bytes
 from market_intelligence.evidence.enums import EvidenceKind
 from market_intelligence.evidence.holdout import is_holdout_restricted
 from market_intelligence.evidence.selector_boundary import CONTRACT_SELECTOR_PAYLOAD_ID
+from market_intelligence.evidence_adapters import contract_selector as cs
 from market_intelligence.evidence_store import records as rec
 from market_intelligence.evidence_store.reads import read_card, reproduce_bundle
 from market_intelligence.evidence_store.store_io import select_rows
@@ -227,6 +229,124 @@ def test_selector_statuses_are_preserved_exactly(runs):
         )
 
 
+# The contracts ``scenarios.synthetic_chain`` makes the selector reject, and why.
+REJECTED_CONTRACTS = {
+    "SPY270112C00682000": "spread_too_wide",
+    "SPY270112C00683000": "crossed_quote",
+}
+
+
+def _selector_and_chain(run: Run):
+    items = {i.item_id: i for i in _items(run)}
+    selectors = [i for i in items.values() if i.payload_schema_id == CONTRACT_SELECTOR_PAYLOAD_ID]
+    chain = [i for i in items.values() if i.provenance.producer_id == R.OPTION_CHAIN]
+    return items, selectors, chain
+
+
+def test_selector_evidence_comes_through_the_adapters_with_exact_lineage(runs):
+    with_selector = set()
+    for scenario_id, run in runs.items():
+        items, selectors, chain = _selector_and_chain(run)
+        if not selectors:
+            assert chain == [], scenario_id  # no chain evidence without a selector run
+            continue
+        (selector,) = selectors
+        with_selector.add(scenario_id)
+        assert selector.provenance.configuration_identity in cs.KNOWN_SELECTOR_CONFIGURATIONS
+        assert selector.provenance.parent_evidence_ids == sorted(i.item_id for i in chain)
+        assert len(chain) == 4
+        for parent in chain:
+            assert parent.evidence_kind is EvidenceKind.CONFIRMED_FACT
+            feed = parent.payload["feed"]
+            assert feed == selector.payload["feed"]
+            assert parent.payload_schema_id == f"option_quote_{feed}_fact.v1"
+            assert parent.machine_decision_eligible is (feed == "opra")
+            crossed = Decimal(parent.payload["bid_price"]) > Decimal(parent.payload["ask_price"])
+            assert parent.quality.uncertainty_codes == sorted(
+                [
+                    *(["crossed_market"] if crossed else []),
+                    *(["indicative_feed"] * (feed != "opra")),
+                ]
+            )
+        # The stored result is exactly the selector's output on the stored chain.
+        result = ContractSelectorResult.model_validate_json(canonical_json_bytes(selector.payload))
+        batch = cs.option_chain_batch(chain)
+        assert {c.contract_symbol for c in batch.contracts} == {
+            c["contract_symbol"] for c in (i.payload for i in chain)
+        }
+        assert result.feed.value == batch.feed.value
+    cited = {
+        scenario_id
+        for scenario_id, run in runs.items()
+        for card in _cards(run)
+        if card.contracts is not None and card.contracts.selector_result_item_id is not None
+    }
+    assert cited <= with_selector
+    assert "selector_unavailable" not in with_selector
+    assert {"ready_for_manual_review", "research_only_contracts"} <= with_selector
+
+
+def test_research_only_contracts_never_appear_as_eligible(runs):
+    run = runs["research_only_contracts"]
+    (card,) = _cards(run)
+    assert card.contracts.eligible_contracts == []
+    assert card.contracts.research_only_contracts == ["SPY270112C00680000", "SPY270112C00681000"]
+    review = run.model.contract_reviews[card.card_id]
+    assert review.eligible == ()
+    assert review.research_only == ("SPY270112C00680000", "SPY270112C00681000")
+    assert review.feed == "indicative" and review.indicative_warning
+    for other in runs.values():
+        for view in other.model.contract_reviews.values():
+            if view.feed == "indicative":
+                assert view.eligible == ()
+
+
+def test_rejected_contracts_appear_only_as_aggregate_counts(runs):
+    for scenario_id, run in runs.items():
+        items, selectors, chain = _selector_and_chain(run)
+        if not selectors:
+            continue
+        (selector,) = selectors
+        # Rejected contracts' quote facts stay stored (nothing is discarded) ...
+        assert set(REJECTED_CONTRACTS) <= {i.payload["contract_symbol"] for i in chain}
+        rejected_ids = {
+            i.item_id for i in chain if i.payload["contract_symbol"] in REJECTED_CONTRACTS
+        }
+        bundles = [reproduce_bundle(run.store.store, b) for b in run.store.bundles.values()]
+        for bundle in bundles:
+            assert not rejected_ids & {e.item_id for e in bundle.entries}, scenario_id
+        # ... but no selector record, bundle, card or view names them; they
+        # appear only in the aggregate counts.
+        for symbol, reason in REJECTED_CONTRACTS.items():
+            assert symbol not in json.dumps(selector.payload)
+            assert selector.payload["rejection_counts"][reason] == 1
+            for card in _cards(run):
+                assert symbol not in card.model_dump_json()
+            assert symbol not in repr(run.model), scenario_id
+
+
+def test_the_dashboard_cannot_add_remove_or_reclassify_contracts(runs):
+    for run in runs.values():
+        items, selectors, _ = _selector_and_chain(run)
+        for card in _cards(run):
+            if card.contracts is None or card.contracts.selector_result_item_id is None:
+                continue
+            stored = items[card.contracts.selector_result_item_id]
+            result = ContractSelectorResult.model_validate_json(
+                canonical_json_bytes(stored.payload)
+            )
+            view = run.model.contract_reviews[card.card_id]
+            assert view.eligible == tuple(
+                sorted(c.contract_symbol for c in result.eligible_contracts)
+            )
+            assert view.research_only == tuple(
+                sorted(c.contract_symbol for c in result.research_only_contracts)
+            )
+            assert dict(view.rejection_counts) == {
+                reason.value: count for reason, count in result.rejection_counts.items()
+            }
+
+
 def test_inference_is_never_promoted(runs):
     seen = False
     for run in runs.values():
@@ -266,6 +386,8 @@ def test_identical_runs_give_identical_identities_and_views(tmp_path):
         i.item_id for i in _items(Run(second_store, None))
     }
     assert present(first) == present(second)
+    producers = {i.provenance.producer_id for i in _items(Run(first_store, None))}
+    assert {R.OPTION_CHAIN, cs.SELECTOR_PRODUCER} <= producers
 
 
 # --- Boundaries --------------------------------------------------------------------------------
@@ -344,6 +466,7 @@ _FORBIDDEN = (
 )
 _CONNECTOR_DATACLASSES = {
     "market_intelligence.data_connectors.alpaca_bars": {"Bar"},
+    "market_intelligence.data_connectors.alpaca_options_chain": {"OptionChainSnapshot"},
     "market_intelligence.data_connectors.fred_macro_data": {
         "FredObservation",
         "FredSeriesMetadata",
