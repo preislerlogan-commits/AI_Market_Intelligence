@@ -41,6 +41,9 @@ MACRO_OBSERVATION_FACT = "macro_observation_fact.v1"
 MACRO_SERIES_METADATA_FACT = "macro_series_metadata_fact.v1"
 SPY_REGIME_FEATURES = "spy_regime_features.v1"
 SPY_REGIME_CLASSIFICATION = "spy_regime_classification.v1"
+# One schema per feed, so registry permissions are separate structurally.
+OPTION_QUOTE_OPRA_FACT = "option_quote_opra_fact.v1"
+OPTION_QUOTE_INDICATIVE_FACT = "option_quote_indicative_fact.v1"
 
 DISPLAY_TEXT_LIMIT = 500
 _Symbol = Annotated[str, Field(pattern=r"^[A-Z][A-Z0-9.]{0,9}$")]
@@ -183,6 +186,49 @@ class MacroSeriesMetadataFact(BaseModel):
     retrieved_at_utc: UtcTimestamp
 
 
+class OptionQuoteFact(BaseModel):
+    """One provider-reported SPY option-contract observation from one chain
+    snapshot. The feed is copied verbatim: ``indicative`` is never relabelled
+    ``opra``. No field is derived here: no eligibility, ranking, sentiment,
+    direction, return or probability. Whether a contract is eligible is the
+    deterministic Contract Selector's decision alone."""
+
+    model_config = STRICT_FROZEN
+
+    provider: Literal["alpaca"]
+    underlying: Literal["SPY"]
+    feed: Literal["opra", "indicative"]
+    contract_symbol: Annotated[str, Field(pattern=r"^SPY\d{6}[CP]\d{8}$")]
+    expiration_date: date
+    option_type: Literal["call", "put"]
+    strike_price: CanonicalDecimal
+    quote_at_utc: UtcTimestamp | None
+    bid_price: CanonicalDecimal | None
+    bid_size: _Size | None
+    ask_price: CanonicalDecimal | None
+    ask_size: _Size | None
+    implied_volatility: CanonicalDecimal | None
+    delta: CanonicalDecimal | None
+    gamma: CanonicalDecimal | None
+    theta: CanonicalDecimal | None
+    vega: CanonicalDecimal | None
+    rho: CanonicalDecimal | None
+    retrieved_at_utc: UtcTimestamp
+
+
+class OptionQuoteOpraFact(OptionQuoteFact):
+    """``option_quote_opra_fact.v1``: the shared model, OPRA feed only."""
+
+    feed: Literal["opra"]
+
+
+class OptionQuoteIndicativeFact(OptionQuoteFact):
+    """``option_quote_indicative_fact.v1``: the shared model, indicative feed
+    only. Never eligible for operational machine-decision use."""
+
+    feed: Literal["indicative"]
+
+
 ADAPTER_PAYLOAD_MODELS: Mapping[str, type[BaseModel]] = MappingProxyType(
     {
         **CORE_PAYLOAD_MODELS,
@@ -193,5 +239,7 @@ ADAPTER_PAYLOAD_MODELS: Mapping[str, type[BaseModel]] = MappingProxyType(
         MACRO_SERIES_METADATA_FACT: MacroSeriesMetadataFact,
         SPY_REGIME_FEATURES: RegimeFeatures,
         SPY_REGIME_CLASSIFICATION: RegimeClassificationResult,
+        OPTION_QUOTE_OPRA_FACT: OptionQuoteOpraFact,
+        OPTION_QUOTE_INDICATIVE_FACT: OptionQuoteIndicativeFact,
     }
 )

@@ -118,6 +118,14 @@ documents, or the shadow sample.
    synthetic sources through the adapters, a temporary store, point-in-time
    bundles, a synthetic setup evaluation and cards into dashboard views read
    back from storage. It covers ten scenarios, in temporary stores only.
+   **Offline option-chain and Contract Selector evidence adapters
+   reviewed and implemented through their merge (2026-10-20):** synthetic option-chain
+   snapshots become confirmed facts under separate OPRA and indicative
+   schemas (indicative never presented as OPRA and never machine-decision
+   eligible; crossed quotes kept and left to the selector to reject), and the deterministic selector's own result becomes a
+   deterministic calculation citing exactly those facts. The slice now uses
+   them instead of the dashboard's synthetic selector builder. No provider,
+   real chain, production registry, ranking or execution is connected.
 3. Design the dashboard information architecture and the setup-card
    contract ([vision §7](PRODUCT_VISION.md)). **Design phase reviewed and
    merged (2026-09-29):**

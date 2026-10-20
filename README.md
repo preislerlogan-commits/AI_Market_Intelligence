@@ -145,7 +145,22 @@ python -m market_intelligence.integration.demo --dashboard  # show it in the das
     and summary display-only and marked provider-reported and unverified;
   - injected clock-health readings;
   - already-produced regime-engine results, as deterministic calculations
-    with complete parent lineage.
+    with complete parent lineage;
+  - SPY option-chain snapshots, as confirmed facts under one schema per
+    feed (`option_quote_opra_fact.v1`, `option_quote_indicative_fact.v1`),
+    chosen from the actual feed and never upgraded. Indicative quotes carry
+    the `indicative_feed` uncertainty code and are never machine-decision
+    eligible; a registry that says otherwise is refused. A crossed quote is
+    kept as reported, marked `crossed_market`, and left for the selector to
+    reject as `crossed_quote`. Malformed OCC symbols, invalid prices and
+    mismatched source references are refused;
+  - deterministic Contract Selector results, as deterministic calculations
+    that cite exactly the option-chain items the selector evaluated. The
+    adapter re-runs the selector on the batch rebuilt from that evidence and
+    refuses any result that adds, omits, duplicates or reclassifies a
+    contract, combines the eligible and research-only sets, exposes a
+    rejected contract or changes a rejection count. It assigns no status of
+    its own, and it ranks and recommends nothing.
 
   Every time, configuration, source reference and parent is passed in
   explicitly. They make no database, file, environment, network, clock,
@@ -170,6 +185,9 @@ python -m market_intelligence.integration.demo --dashboard  # show it in the das
   - a clearly labelled synthetic registry;
   - the scenario pipeline and read-back from storage;
   - a demo entry point.
+
+  Option-chain and selector evidence in the slice now come through the
+  option-chain and Contract Selector adapters, over synthetic chains only.
 
   Streamlit rendering stays in the dashboard package.
 - **Evidence store core** (`market_intelligence/evidence_store/`, migration

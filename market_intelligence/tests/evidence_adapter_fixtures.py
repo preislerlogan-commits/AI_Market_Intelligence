@@ -110,9 +110,15 @@ def _policy(pid, kinds, current=None, stale=None, timeless=False) -> FreshnessPo
     )
 
 
-def make_test_registry(*, price_schemas_declared: bool = True, eligible: bool = True):
-    """The synthetic test registry. ``price_schemas_declared=False`` builds a
-    deliberately wrong registry to prove the adapters refuse it."""
+def make_test_registry(
+    *,
+    price_schemas_declared: bool = True,
+    eligible: bool = True,
+    indicative_eligible: bool = False,
+):
+    """The synthetic test registry. ``price_schemas_declared=False`` and
+    ``indicative_eligible=True`` build deliberately wrong registries to prove
+    the adapters refuse them."""
     S = SubjectType
     missing = "missing_evidence.v1"
     producers = [
@@ -191,6 +197,39 @@ def make_test_registry(*, price_schemas_declared: bool = True, eligible: bool = 
             ],
             [S.INSTRUMENT, S.MARKET_SESSION],
         ),
+        _producer(
+            "alpaca_option_chain_snapshot",
+            ProducerType.SOURCE_ADAPTER,
+            [
+                _rule(
+                    K.CONFIRMED_FACT,
+                    P.OPTION_QUOTE_OPRA_FACT,
+                    "fp.option_chain_selector.v1",
+                    eligible,
+                ),
+                _rule(
+                    K.CONFIRMED_FACT,
+                    P.OPTION_QUOTE_INDICATIVE_FACT,
+                    "fp.option_chain_selector.v1",
+                    indicative_eligible,
+                ),
+            ],
+            [S.INSTRUMENT, S.OPTION_CONTRACT],
+            reasons=("missing_data",),
+        ),
+        _producer(
+            "deterministic_contract_selector",
+            ProducerType.DETERMINISTIC_ENGINE,
+            [
+                _rule(
+                    K.DETERMINISTIC_CALCULATION,
+                    "contract_selector_result.v1",
+                    "fp.option_chain_selector.v1",
+                    eligible,
+                )
+            ],
+            [S.INSTRUMENT],
+        ),
     ]
     price = price_schemas_declared
     schemas = [
@@ -203,6 +242,9 @@ def make_test_registry(*, price_schemas_declared: bool = True, eligible: bool = 
         (P.SPY_REGIME_CLASSIFICATION, price),
         ("clock_health_fact.v1", False),
         (missing, False),
+        (P.OPTION_QUOTE_OPRA_FACT, price),
+        (P.OPTION_QUOTE_INDICATIVE_FACT, price),
+        ("contract_selector_result.v1", price),
     ]
     facts = [K.CONFIRMED_FACT, K.DETERMINISTIC_CALCULATION, K.MISSING_EVIDENCE]
     return EvidenceRegistry(
@@ -220,6 +262,12 @@ def make_test_registry(*, price_schemas_declared: bool = True, eligible: bool = 
                 _policy("fp.macro_monthly.v1", facts, 7_776_000, 7_776_000),
                 _policy("fp.reference_metadata.v1", [K.CONFIRMED_FACT]),
                 _policy("fp.clock.v1", [K.CONFIRMED_FACT], 60, 60),
+                _policy(
+                    "fp.option_chain_selector.v1",
+                    [K.CONFIRMED_FACT, K.DETERMINISTIC_CALCULATION],
+                    300,
+                    300,
+                ),
             ],
             key=lambda p: p.policy_id,
         ),
@@ -263,13 +311,15 @@ def make_test_registry(*, price_schemas_declared: bool = True, eligible: bool = 
         ],
         uncertainty_codes=sorted(
             [
+                "crossed_market",
                 "headline_only",
                 "iex_partial_volume",
+                "indicative_feed",
                 "provider_reported_unverified",
                 "vintage_revisable",
             ]
         ),
-        component_tokens=["latest_quote"],
+        component_tokens=["latest_quote", "quote"],
     )
 
 
@@ -512,3 +562,92 @@ def engine_input(bars: list[Bar], **overrides: Any) -> RegimeEngineInput:
 
 def utc_text(moment: datetime) -> str:
     return format_utc(moment)
+
+
+# --- Option chain (the real connector dataclass, synthetic values) -----------------------------
+
+CHAIN_RETRIEVED = datetime(2027, 1, 12, 14, 58, tzinfo=UTC)
+CHAIN_AS_OF = datetime(2027, 1, 12, 15, 0, tzinfo=UTC)
+
+
+def option_snapshot(
+    symbol: str = "SPY270112C00680000",
+    *,
+    feed: str = "opra",
+    bid: str | None = "1.00",
+    ask: str | None = "1.10",
+    **overrides: Any,
+):
+    from market_intelligence.data_connectors.alpaca_options_chain import OptionChainSnapshot
+
+    strike = Decimal(int(symbol[-8:])) / 1000
+    fields: dict[str, Any] = dict(
+        provider="alpaca",
+        underlying="SPY",
+        feed=feed,
+        contract_symbol=symbol,
+        expiration_date=f"20{symbol[3:5]}-{symbol[5:7]}-{symbol[7:9]}",
+        option_type="call" if symbol[9] == "C" else "put",
+        strike_price=strike,
+        quote_timestamp="2027-01-12T14:57:58.250000Z",
+        bid_price=None if bid is None else Decimal(bid),
+        bid_size=10,
+        ask_price=None if ask is None else Decimal(ask),
+        ask_size=10,
+        trade_timestamp=None,
+        trade_price=None,
+        trade_size=None,
+        implied_volatility=Decimal("0.2"),
+        delta=Decimal("0.40"),
+        gamma=Decimal("0.05"),
+        theta=Decimal("-0.10"),
+        vega=Decimal("0.10"),
+        rho=Decimal("0.01"),
+        retrieved_at=CHAIN_RETRIEVED.isoformat().replace("+00:00", "Z"),
+    )
+    fields.update(overrides)
+    return OptionChainSnapshot(**fields)
+
+
+def chain_reference(snapshot) -> DuckDbRowReference:
+    return DuckDbRowReference(
+        reference_type="duckdb_row",
+        table=DuckDbTable.OPTION_CHAIN_SNAPSHOTS,
+        primary_key=[
+            PrimaryKeyComponent(column="provider", value=snapshot.provider),
+            PrimaryKeyComponent(column="underlying", value=snapshot.underlying),
+            PrimaryKeyComponent(column="feed", value=snapshot.feed),
+            PrimaryKeyComponent(column="contract_symbol", value=snapshot.contract_symbol),
+            PrimaryKeyComponent(column="retrieved_at", value=snapshot.retrieved_at),
+        ],
+        db_schema_version="0009",
+        ingestion_run_id="run-synthetic-chain",
+    )
+
+
+def chain_snapshots(feed: str = "opra", *, all_wide: bool = False):
+    """Three contracts: two pass every filter, one has a wide spread."""
+    wide = "3.00"
+    return [
+        option_snapshot("SPY270112C00680000", feed=feed, ask=wide if all_wide else "1.10"),
+        option_snapshot("SPY270112C00681000", feed=feed, ask=wide if all_wide else "1.10"),
+        option_snapshot("SPY270112C00682000", feed=feed, ask=wide),
+    ]
+
+
+def selector_input(batch, *, horizon=None, allow_indicative: bool = False):
+    from market_intelligence.contract_selection.contracts import (
+        ContractSelectorInput,
+        SelectorConfig,
+    )
+    from market_intelligence.market_features.spy_regime_contracts import ScenarioHorizon
+
+    return ContractSelectorInput(
+        scenario_horizon=horizon or ScenarioHorizon.INTRADAY_30M,
+        regime_as_of_timestamp=batch.retrieved_at,
+        underlying_price_timestamp=batch.retrieved_at,
+        as_of_timestamp=CHAIN_AS_OF,
+        underlying_price=Decimal("680"),
+        batch=batch,
+        config=SelectorConfig(allow_indicative_for_research=allow_indicative),
+    )

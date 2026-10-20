@@ -6,9 +6,10 @@ the repository, and nothing here registers or activates anything outside a
 temporary store.
 
 - The evidence registry (``synthetic-offline-slice-registry``) admits the
-  offline adapters' producers plus the dashboard's existing synthetic
-  producers (selector result, research result, labelled inference, conflict
-  detector and setup evaluator).
+  offline adapters' producers (including the option-chain and Contract
+  Selector adapters) plus the dashboard's existing synthetic producers
+  (research result, labelled inference, conflict detector and setup
+  evaluator).
 - Its single machine-decision grant (a synthetic ``setup_ranker``) exists only
   because the store's frozen conflict-severity derivation counts a conflict as
   critical only when it involves an item required by a machine-decision
@@ -59,6 +60,7 @@ from market_intelligence.evidence.selector_boundary import (
 )
 from market_intelligence.evidence_adapters import payloads as P
 from market_intelligence.evidence_adapters.market_calculations import REGIME_CONFIGURATION
+from market_intelligence.evidence_adapters.options import OPTION_CHAIN_PRODUCER
 from market_intelligence.evidence_store.registry_files import (
     SetupDefinitionRegistry,
     compute_setup_registry_version_id,
@@ -74,6 +76,7 @@ SYNTHETIC_DEFINITION = dashboard_fixtures.SYNTHETIC_DEFINITION
 SYNTHETIC_DEFINITIONS = MappingProxyType({SETUP_REGISTRY_ID: (SYNTHETIC_DEFINITION,)})
 
 BARS = "alpaca_market_bars"
+OPTION_CHAIN = OPTION_CHAIN_PRODUCER
 REGIME = "spy_regime_engine"
 CLOCK = "system_clock_health"
 FRED = "fred_macro_observations"
@@ -221,6 +224,19 @@ def make_registry(*, machine_decision_fixture: bool = True) -> EvidenceRegistry:
             reasons=("missing_observation",),
         ),
         _producer(
+            OPTION_CHAIN,
+            ProducerType.SOURCE_ADAPTER,
+            [
+                _rule(K.CONFIRMED_FACT, P.OPTION_QUOTE_OPRA_FACT, "fp.option_chain.v1"),
+                # Indicative quotes never qualify for machine-decision use.
+                _rule(
+                    K.CONFIRMED_FACT, P.OPTION_QUOTE_INDICATIVE_FACT, "fp.option_chain.v1", False
+                ),
+            ],
+            [S.INSTRUMENT, S.OPTION_CONTRACT],
+            reasons=("missing_data",),
+        ),
+        _producer(
             CONTRACT_SELECTOR_PRODUCER_ID,
             ProducerType.DETERMINISTIC_ENGINE,
             [_rule(K.DETERMINISTIC_CALCULATION, CONTRACT_SELECTOR_PAYLOAD_ID, "fp.selector.v1")],
@@ -266,6 +282,8 @@ def make_registry(*, machine_decision_fixture: bool = True) -> EvidenceRegistry:
         (P.SPY_REGIME_CLASSIFICATION, True),
         ("clock_health_fact.v1", False),
         (P.MACRO_OBSERVATION_FACT, False),
+        (P.OPTION_QUOTE_OPRA_FACT, True),
+        (P.OPTION_QUOTE_INDICATIVE_FACT, True),
         (CONTRACT_SELECTOR_PAYLOAD_ID, True),
         ("synthetic_research.v1", False),
         ("synthetic_context_inference.v1", True),
@@ -287,6 +305,7 @@ def make_registry(*, machine_decision_fixture: bool = True) -> EvidenceRegistry:
                 _policy("fp.regime_synthetic.v1", [K.DETERMINISTIC_CALCULATION], 3600, 7200),
                 _policy("fp.evaluation.v1", [K.DETERMINISTIC_CALCULATION], 1800, 3600),
                 _policy("fp.selector.v1", [K.DETERMINISTIC_CALCULATION], 300, 300),
+                _policy("fp.option_chain.v1", [K.CONFIRMED_FACT], 300, 300),
                 _policy("fp.clock.v1", [K.CONFIRMED_FACT], 300, 300),
                 _policy("fp.macro_monthly.v1", live, 7_776_000, 7_776_000),
                 _policy("fp.inference.v1", [K.CURRENT_INFERENCE], 1800, 3600),
@@ -346,7 +365,13 @@ def make_registry(*, machine_decision_fixture: bool = True) -> EvidenceRegistry:
             ],
             key=lambda r: r.purpose,
         ),
-        uncertainty_codes=["iex_partial_volume", "vintage_revisable"],
+        uncertainty_codes=[
+            "crossed_market",
+            "iex_partial_volume",
+            "indicative_feed",
+            "vintage_revisable",
+        ],
+        component_tokens=["quote"],
     )
 
 
