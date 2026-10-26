@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from enum import StrEnum
 
-from market_intelligence.dashboard.views import DashboardModel
+from market_intelligence.dashboard.views import AssistantPanelView, DashboardModel
 
 
 class Page(StrEnum):
@@ -31,10 +31,10 @@ PAGE_TITLES: dict[Page, str] = {
     Page.SETUP_DETAIL: "Setup Detail",
     Page.CONTRACT_REVIEW: "Contract Review",
     Page.RESEARCH_STATUS: "Research and System Status",
-    Page.ASSISTANT: "Assistant (not available)",
+    Page.ASSISTANT: "Assistant (synthetic, explanatory)",
 }
 # Reached from context (one card), never browsed blindly.
-CONTEXT_PAGES = frozenset({Page.SETUP_DETAIL, Page.CONTRACT_REVIEW})
+CONTEXT_PAGES = frozenset({Page.SETUP_DETAIL, Page.CONTRACT_REVIEW, Page.ASSISTANT})
 
 
 class NavigationError(ValueError):
@@ -72,6 +72,13 @@ def open_contract_review(state: NavigationState) -> NavigationState:
     return replace(state, page=Page.CONTRACT_REVIEW)
 
 
+def open_assistant(state: NavigationState) -> NavigationState:
+    """The assistant for the card already open: same card, same bundle."""
+    if state.card_id is None:
+        raise NavigationError("no_card_selected")
+    return replace(state, page=Page.ASSISTANT)
+
+
 def switch_scenario(state: NavigationState, scenario_id: str) -> NavigationState:
     """A different synthetic scenario starts fresh: no card carries over."""
     if scenario_id == state.scenario_id:
@@ -90,3 +97,15 @@ def selected_card(model: DashboardModel, state: NavigationState) -> str | None:
     if detail.summary.bundle_id != state.bundle_id:
         raise NavigationError("card_bundle_mismatch")
     return state.card_id
+
+
+def assistant_panel(model: DashboardModel, state: NavigationState) -> AssistantPanelView | None:
+    """The assistant bound to the selected card and the exact bundle the
+    navigation state carries. Any other card or bundle is refused."""
+    card_id = selected_card(model, state)
+    if card_id is None:
+        return None
+    panel = model.assistant.get(card_id)
+    if panel is None or panel.card_id != card_id or panel.bundle_id != state.bundle_id:
+        raise NavigationError("assistant_handoff_mismatch")
+    return panel

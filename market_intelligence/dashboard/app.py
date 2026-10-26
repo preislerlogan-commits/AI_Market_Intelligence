@@ -25,7 +25,9 @@ from market_intelligence.dashboard.navigation import (
     NavigationError,
     NavigationState,
     Page,
+    assistant_panel,
     go_to,
+    open_assistant,
     open_card,
     open_contract_review,
     selected_card,
@@ -33,6 +35,8 @@ from market_intelligence.dashboard.navigation import (
 )
 from market_intelligence.dashboard.validation import DashboardInputError
 from market_intelligence.dashboard.views import (
+    AssistantAnswerView,
+    AssistantStatementView,
     BundleView,
     ConflictView,
     DashboardModel,
@@ -332,6 +336,7 @@ def _setup_detail(model: DashboardModel, nav: NavigationState) -> None:
         st.caption("The contract selector was not requested for this card.")
     else:
         st.button("Open contract review", on_click=_open_contract_review)
+    st.button("Explain this card (assistant)", on_click=_open_assistant)
 
 
 def _contract_review(model: DashboardModel, nav: NavigationState) -> None:
@@ -406,9 +411,74 @@ def _research_status(model: DashboardModel) -> None:
     )
 
 
-def _assistant() -> None:
-    st.info(L.ASSISTANT_PLACEHOLDER)
-    st.text_input("Question for the assistant (disabled)", disabled=True, key="assistant_off")
+def _statement(statement: AssistantStatementView) -> None:
+    st.markdown(f"`{statement.label.upper()}` {statement.text}")
+    conflicts = ", ".join(statement.conflict_ids)
+    conflict = f"; conflict {conflicts}" if conflicts else ""
+    for row in statement.cited:
+        st.caption(
+            f"Evidence citation: `{row.item_id}` ({row.kind_label}, {row.producer_id}, "
+            f"{row.freshness}; role {statement.role}{conflict})"
+        )
+    if statement.missing_requirement:
+        st.caption(
+            f"Missing requirement reference: {statement.missing_requirement}. "
+            "This is the bundle's missing-requirement record, not an evidence citation: "
+            "no evidence item exists for it."
+        )
+
+
+def _answer(answer: AssistantAnswerView) -> None:
+    with st.container(border=True):
+        st.markdown(f"**{answer.question}**")
+        if answer.answerable:
+            st.markdown(answer.headline)
+        else:
+            st.warning(answer.headline)
+        for statement in answer.statements:
+            _statement(statement)
+        if answer.inference:
+            st.markdown("**INFERENCE (labelled; never supporting or contradicting evidence)**")
+            for statement in answer.inference:
+                _statement(statement)
+        cited = {
+            row.item_id: row
+            for statement in (*answer.statements, *answer.inference)
+            for row in statement.cited
+        }
+        if cited:
+            st.markdown("**Evidence citations (items in the selected bundle)**")
+            st.dataframe(_rows_table(list(cited.values())), hide_index=True)
+        st.caption(answer.scope)
+
+
+def _assistant(model: DashboardModel, nav: NavigationState) -> None:
+    st.warning(L.ASSISTANT_BANNER)
+    panel = assistant_panel(model, nav)
+    if panel is None:
+        st.info(L.ASSISTANT_NO_CARD)
+        return
+    summary = model.cards[panel.card_id].summary
+    with st.container(border=True):
+        st.markdown(
+            f"**Context:** `SYNTHETIC` card `{summary.short_id}` ({summary.card_kind.value}). "
+            f"{summary.qualification_label}. Evidence readiness `{summary.readiness_label}`."
+        )
+        st.caption(
+            f"Card ID: `{panel.card_id}`. Evidence bundle (setup_detail): `{panel.bundle_id}`. "
+            "Every answer cites only this bundle."
+        )
+    if panel.unavailable_reason is not None:
+        st.error(f"Assistant unavailable. Reason: {L.humanize(panel.unavailable_reason)}")
+    else:
+        question = st.radio(
+            "Supported questions",
+            list(panel.answers),
+            format_func=lambda q: panel.answers[q].question,
+            key="assistant_question",
+        )
+        _answer(panel.answers[question])
+    st.button("Back to setup detail", on_click=_go, args=(Page.SETUP_DETAIL,))
 
 
 # --- Navigation callbacks and the app ----------------------------------------------------------
@@ -429,6 +499,10 @@ def _open_card(card_id: str, bundle_id: str) -> None:
 
 def _open_contract_review() -> None:
     _set_nav(open_contract_review(_nav()))
+
+
+def _open_assistant() -> None:
+    _set_nav(open_assistant(_nav()))
 
 
 def _go(page: Page) -> None:
@@ -480,7 +554,7 @@ def main(source: ScenarioSource | None = None) -> None:
         elif nav.page is Page.RESEARCH_STATUS:
             _research_status(model)
         else:
-            _assistant()
+            _assistant(model, nav)
     except NavigationError as error:
         st.error(f"Navigation refused. Reason: {L.humanize(error.reason)}")
     st.caption(L.SCOPE_STATEMENT)

@@ -202,6 +202,43 @@ class SystemStatusView:
 
 
 @dataclass(frozen=True)
+class AssistantStatementView:
+    """One labelled assistant sentence and its single reference: evidence
+    rows from the bundle (``evidence_item``), or the bundle's own
+    missing-requirement record (``missing_requirement``), never both."""
+
+    label: str
+    text: str
+    reference_type: str
+    role: str | None
+    cited: tuple[EvidenceRow, ...]
+    conflict_ids: tuple[str, ...]
+    missing_requirement: str | None
+
+
+@dataclass(frozen=True)
+class AssistantAnswerView:
+    question_id: str
+    question: str
+    answerable: bool
+    headline: str
+    statements: tuple[AssistantStatementView, ...]
+    inference: tuple[AssistantStatementView, ...]
+    scope: str
+
+
+@dataclass(frozen=True)
+class AssistantPanelView:
+    """The offline assistant for one card, bound to that card's own bundle.
+    ``unavailable_reason`` is a bounded token when the assistant refused."""
+
+    card_id: str
+    bundle_id: str
+    unavailable_reason: str | None
+    answers: Mapping[str, AssistantAnswerView] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class DashboardModel:
     """Everything one synthetic scenario renders, derived only after every
     bundle and card in it passed validation."""
@@ -216,3 +253,4 @@ class DashboardModel:
     cards: Mapping[str, SetupDetailView] = field(default_factory=dict)
     contract_reviews: Mapping[str, ContractReviewView] = field(default_factory=dict)
     system: SystemStatusView | None = None
+    assistant: Mapping[str, AssistantPanelView] = field(default_factory=dict)

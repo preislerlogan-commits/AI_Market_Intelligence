@@ -15,6 +15,12 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from market_intelligence.assistant.explain import (
+    AssistantRefusal,
+    Selection,
+    Statement,
+    answer_all,
+)
 from market_intelligence.dashboard import labels as L
 from market_intelligence.dashboard.fixtures import (
     PAYLOAD_MODELS,
@@ -32,6 +38,9 @@ from market_intelligence.dashboard.validation import (
 )
 from market_intelligence.dashboard.views import (
     AmbiguityView,
+    AssistantAnswerView,
+    AssistantPanelView,
+    AssistantStatementView,
     BundleView,
     CardSummary,
     ConflictView,
@@ -86,7 +95,10 @@ AUTHORIZATION: tuple[tuple[str, str], ...] = (
     ("Registry activation and producer adapters", "Not authorized"),
     ("Live setup definitions and live qualification", "Not authorized (definition table empty)"),
     ("Trend-day research and detection", "Not researched; not authorized"),
-    ("Assistant retrieval and explanation", "Not authorized (needs a registry grant)"),
+    (
+        "Assistant explanation",
+        "Synthetic only: deterministic templates over the selected card's bundle; no model",
+    ),
     ("Setup and contract ranking; scenario relations", "Not authorized"),
     ("Notifications and SMS", "Not authorized"),
     ("Machine-decision mode", "Not authorized"),
@@ -452,6 +464,54 @@ def _contract_review(record: CardRecord) -> ContractReviewView:
     )
 
 
+def _statement_view(statement: Statement, rows: Mapping[str, EvidenceRow]):
+    citation = statement.evidence_citation
+    requirement = statement.missing_requirement
+    return AssistantStatementView(
+        label=statement.label.value,
+        text=statement.text,
+        reference_type=statement.reference_type.value,
+        role=citation.citation_role.value if citation else None,
+        cited=tuple(rows[i] for i in citation.cited_item_ids) if citation else (),
+        conflict_ids=tuple(citation.cited_conflict_ids) if citation else (),
+        missing_requirement=(
+            f"`{requirement.requirement_id}` ({requirement.producer_id}, "
+            f"{requirement.reason.value}) in bundle `{requirement.bundle_id}`"
+            if requirement
+            else None
+        ),
+    )
+
+
+def _assistant_panel(record: CardRecord, registry: EvidenceRegistry) -> AssistantPanelView:
+    """The offline assistant's answers for one card, from that card's own
+    bundle only. A refusal is kept as a bounded token; nothing else is shown."""
+    card, source = record.card, record.source
+    selection = Selection(card, source.bundle, source.items, source.conflicts, registry)
+    try:
+        answers = answer_all(selection, card_id=card.card_id, bundle_id=source.bundle.bundle_id)
+    except AssistantRefusal as refusal:
+        return AssistantPanelView(card.card_id, source.bundle.bundle_id, refusal.reason)
+    rows = _rows(source)
+    return AssistantPanelView(
+        card_id=card.card_id,
+        bundle_id=source.bundle.bundle_id,
+        unavailable_reason=None,
+        answers={
+            question.value: AssistantAnswerView(
+                question_id=question.value,
+                question=answer.question,
+                answerable=answer.answerable,
+                headline=answer.headline,
+                statements=tuple(_statement_view(s, rows) for s in answer.statements),
+                inference=tuple(_statement_view(s, rows) for s in answer.inference),
+                scope=answer.scope,
+            )
+            for question, answer in answers.items()
+        },
+    )
+
+
 def _vwap_lane(lane: LaneInput, registry: EvidenceRegistry, summaries) -> LaneView:
     title = "VWAP reversion"
     if not lane.definitions:
@@ -572,4 +632,5 @@ def present(scenario: Scenario) -> DashboardModel:
         cards={r.card.card_id: _detail(r, history, now) for r in lane.history},
         contract_reviews={r.card.card_id: _contract_review(r) for r in lane.history},
         system=_system(scenario, market, scenario.premarket),
+        assistant={r.card.card_id: _assistant_panel(r, registry) for r in lane.history},
     )

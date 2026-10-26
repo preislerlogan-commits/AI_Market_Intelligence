@@ -33,7 +33,7 @@ RESTRICTED_BAR = fixtures.bar_item(HOLDOUT_T0, close="611.11")
 REJECTED_CONTRACT = "SPY270112C00682000"  # rejected in every synthetic selector run
 ALLOWED_BUTTON = re.compile(
     r"^(Open setup detail|Open contract review|Back to setup detail"
-    r"|Open the newer revision|Open revision \d+)$"
+    r"|Open the newer revision|Open revision \d+|Explain this card \(assistant\))$"
 )
 
 
@@ -93,8 +93,7 @@ def _assert_safe(at: AppTest) -> None:
         "chat_input",
     ):
         assert not getattr(at, widget, []), widget
-    assert [t.label for t in at.text_input] in ([], ["Question for the assistant (disabled)"])
-    assert all(t.disabled for t in at.text_input)
+    assert not at.text_input  # no free-form question box
 
 
 # --- Every page, every scenario -----------------------------------------------------------------
@@ -194,11 +193,54 @@ def test_context_pages_without_a_card_explain_how_to_open_one():
 # --- Assistant, fail-closed rendering and isolation -------------------------------------------
 
 
-def test_assistant_is_a_disabled_placeholder():
+def test_assistant_without_a_card_explains_how_to_open_one():
     at = _go(_app(), Page.ASSISTANT)
-    assert at.text_input[0].disabled
-    assert any("registry grant" in i.value for i in at.info)
-    assert not [b for b in at.button]
+    assert L.ASSISTANT_BANNER in _text(at) and L.ASSISTANT_NO_CARD in _text(at)
+    assert not at.button and not at.text_input
+
+
+def test_assistant_handoff_keeps_the_card_and_bundle_and_shows_citations():
+    scenario = build_scenarios()["research_only_contracts"]
+    card = scenario.vwap.history[0].card
+    at = _go(_app("research_only_contracts"), Page.LIVE_SCANNER)
+    _click(at, "Open setup detail")
+    _click(at, "Explain this card (assistant)")
+    assert at.sidebar.radio[0].value == Page.ASSISTANT.value
+    text = _text(at)
+    assert card.card_id in text and card.decision_context_bundle_id in text
+    assert L.ASSISTANT_BANNER in text
+    (questions,) = [r for r in at.radio if r.label == "Supported questions"]
+    assert len(questions.options) == 6
+    questions.set_value("contract_status").run()
+    text = _text(at)
+    assert (
+        "`CALCULATION` The deterministic Contract Selector records outcome `research_only`" in text
+    )
+    assert "Eligible, as returned by the selector: none." in text
+    selector_id = card.contracts.selector_result_item_id
+    assert f"Evidence citation: `{selector_id}`" in text  # names the evidence item
+    assert "Evidence citations (items in the selected bundle)" in text
+    assert "Missing requirement reference" not in text
+    _assert_safe(at)
+    _click(at, "Back to setup detail")
+    assert at.sidebar.radio[0].value == Page.SETUP_DETAIL.value
+    assert card.decision_context_bundle_id in _text(at)
+
+
+def test_assistant_states_missing_evidence_and_unanswerable_questions():
+    at = _go(_app("missing_evidence"), Page.LIVE_SCANNER)
+    _click(at, "Open setup detail")
+    _click(at, "Explain this card (assistant)")
+    (questions,) = [r for r in at.radio if r.label == "Supported questions"]
+    questions.set_value("missing_or_stale").run()
+    text = _text(at)
+    assert "`MISSING_EVIDENCE` Required input `req.bars.spy`" in text
+    assert "Missing requirement reference: `req.bars.spy`" in text
+    assert "not an evidence citation" in text
+    assert "Evidence citation:" not in text  # nothing is presented as an item citation
+    questions.set_value("supporting").run()
+    assert "Not answerable from this evidence." in _text(at)
+    _assert_safe(at)
 
 
 def test_invalid_bundle_renders_only_the_reason_token(monkeypatch):
