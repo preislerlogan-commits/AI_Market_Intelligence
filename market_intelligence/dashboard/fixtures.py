@@ -299,8 +299,9 @@ RESEARCH_REQUIREMENT = _requirement(
 
 def make_registry() -> EvidenceRegistry:
     """The synthetic registry the prototype's bundles are built under. It
-    grants the dashboard read-only access to four purposes and nothing else:
-    no assistant grant, no machine-decision mode."""
+    grants the dashboard read-only access to three purposes, and the offline
+    assistant read-only access to ``setup_detail`` only (a synthetic,
+    test-only grant: no production authority, no machine-decision mode)."""
     live_kinds = [K.CONFIRMED_FACT, K.DETERMINISTIC_CALCULATION, K.MISSING_EVIDENCE]
     calc_subjects = [SubjectType.INSTRUMENT, SubjectType.MARKET_SESSION]
     producers = [
@@ -453,6 +454,14 @@ def make_registry() -> EvidenceRegistry:
             max_measurement_age_seconds=600,
         ),
         consumer_grants=[
+            # Synthetic, test-only: lets the offline assistant read the card's
+            # own setup_detail bundle. Never a production grant.
+            ConsumerGrant(
+                consumer_id=ConsumerId.ASSISTANT,
+                purposes=[BundlePurpose.SETUP_DETAIL],
+                permissions=ALL_READS,
+                machine_decision_mode_allowed=False,
+            ),
             ConsumerGrant(
                 consumer_id=ConsumerId.DASHBOARD,
                 purposes=sorted(
@@ -464,7 +473,7 @@ def make_registry() -> EvidenceRegistry:
                 ),
                 permissions=ALL_READS,
                 machine_decision_mode_allowed=False,
-            )
+            ),
         ],
         selection_rules=sorted(rules, key=lambda r: r.purpose),
     )

@@ -138,7 +138,12 @@ documents, or the shadow sample.
    implemented through its merge (2026-10-06):** `market_intelligence/dashboard/`,
    a local Streamlit shell over deterministic synthetic fixtures only. No real
    evidence, database, provider, registry activation or model is connected,
-   and the assistant remains a disabled placeholder. A dashboard connected to
+   and the assistant was a disabled placeholder. **Offline synthetic
+   evidence assistant reviewed and implemented through its merge (2026-10-26):**
+   `market_intelligence/assistant/` answers six fixed questions about the
+   selected card with deterministic, cited, labelled templates over that
+   card's own `setup_detail` bundle, through a synthetic, test-only read
+   grant. No model, free-form chat, production grant or live data. A dashboard connected to
    real evidence, live setup qualification, ranking, scenarios,
    notifications, SMS, machine-decision mode and trading remain
    unauthorized.

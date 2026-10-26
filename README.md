@@ -64,7 +64,9 @@ no data:
 - no real evidence, database, provider, registry activation, model or
   network;
 - no persistence;
-- the assistant is a disabled placeholder;
+- the assistant is an offline, synthetic, explanatory prototype only: six
+  fixed questions answered by deterministic templates over the selected
+  card's own bundle, with no model and no free-form chat;
 - no order, quantity, sizing, brokerage or execution control.
 
 A dashboard connected to real evidence, every other card consumer, live
@@ -174,11 +176,33 @@ python -m market_intelligence.integration.demo --dashboard  # show it in the das
   the synthetic dashboard prototype renders cards, from synthetic fixtures.
 - **Dashboard prototype** (`market_intelligence/dashboard/`; offline,
   synthetic; reviewed and implemented) — a Streamlit shell for the six reviewed
-  pages, plus a disabled assistant placeholder. It is built from committed
+  pages, plus an offline assistant page (below). It is built from committed
   synthetic fixtures. A fail-closed presentation adapter validates every
   Evidence Bundle and setup card before anything renders. Rendering is
   kept separate from fixtures, view derivation, trust labels, navigation
   and validation.
+- **Offline evidence assistant** (`market_intelligence/assistant/`; offline,
+  synthetic; reviewed and implemented). Deterministic answers
+  to six fixed questions about the card open in the dashboard: qualification,
+  supporting and contradicting evidence, missing or stale evidence, contract
+  status, and market or research status.
+  - It reads only that card and the `setup_detail` bundle it names, and
+    refuses any other evidence, card/bundle mismatch or handoff mismatch.
+  - Every statement is labelled (fact, calculation, research result,
+    inference, missing or stale evidence) and carries one of two explicit
+    reference types: an `evidence_item` citation that must resolve to an item
+    in that bundle, or, only for a required input with no item, a
+    `missing_requirement` reference that must resolve to the bundle's own
+    missing-requirement record. The page labels the second "Missing
+    requirement reference", never an evidence citation. Inference is listed
+    separately.
+  - Contract answers repeat the Contract Selector's own status and sets,
+    never name a rejected contract, and never rank or reclassify.
+  - Unsupported questions get a fixed "not answerable from this evidence"
+    response. There is no model call and no free-form chat box.
+  - It runs only under a synthetic registry with a synthetic, test-only,
+    read-only `assistant` grant for `setup_detail` (in the dashboard
+    prototype's fixture registry only). No production grant exists.
 - **Offline vertical slice** (`market_intelligence/integration/`; offline,
   synthetic; reviewed and implemented). Small orchestration over the existing components:
   - a temporary, self-cleaning workspace with guards;

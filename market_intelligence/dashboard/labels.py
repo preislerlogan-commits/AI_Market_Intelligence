@@ -117,10 +117,14 @@ VWAP_LANE_TEXT: dict[LaneQualificationAvailability, str] = {
 TREND_LANE_TEXT = "Not researched. No trend signal exists."
 NO_QUALIFIED_SETUP_TEXT = "No qualified setup in this lane (a valid result, not an error)."
 
-ASSISTANT_PLACEHOLDER = (
-    "The assistant is not available. Assistant access needs a separate registry grant "
-    "(read-only access to the card's evidence bundle) and its own implementation "
-    "authorization. Neither exists, so nothing here can answer questions."
+ASSISTANT_BANNER = (
+    "SYNTHETIC, OFFLINE, EXPLANATORY ONLY. The assistant answers a fixed set of questions with "
+    "deterministic templates over the selected card's own evidence bundle. No model, live data "
+    "or free-form chat; no forecast, probability, direction, advice or order."
+)
+ASSISTANT_NO_CARD = (
+    "The assistant explains one card. Open a card from the Live Scanner, then choose "
+    "'Explain this card' on Setup Detail."
 )
 
 # Reviewed forbidden wording (IA §8, plus the prototype authorization). Matched
