@@ -210,7 +210,7 @@ def test_assistant_handoff_keeps_the_card_and_bundle_and_shows_citations():
     assert card.card_id in text and card.decision_context_bundle_id in text
     assert L.ASSISTANT_BANNER in text
     (questions,) = [r for r in at.radio if r.label == "Supported questions"]
-    assert len(questions.options) == 6
+    assert len(questions.options) == 10
     questions.set_value("contract_status").run()
     text = _text(at)
     assert (
@@ -225,6 +225,23 @@ def test_assistant_handoff_keeps_the_card_and_bundle_and_shows_citations():
     _click(at, "Back to setup detail")
     assert at.sidebar.radio[0].value == Page.SETUP_DETAIL.value
     assert card.decision_context_bundle_id in _text(at)
+
+
+def test_assistant_shows_agent_interpretations_only_as_labelled_inference():
+    at = _go(_app("agent_interpretations"), Page.LIVE_SCANNER)
+    _click(at, "Open setup detail")
+    _click(at, "Explain this card (assistant)")
+    (questions,) = [r for r in at.radio if r.label == "Supported questions"]
+    questions.set_value("news_context").run()
+    text = _text(at)
+    assert "The News Analyst produced no interpretation" in text
+    assert "`MISSING_EVIDENCE` News Analyst: Abstained" in text
+    assert "`INFERENCE` News Analyst" not in text  # an abstention is never inference
+    questions.set_value("interpretation_basis").run()
+    text = _text(at)
+    assert "`FACT` Cited by the Market Evidence Agent" in text
+    assert "`MISSING_EVIDENCE` Cited by the News Analyst" in text
+    _assert_safe(at)
 
 
 def test_assistant_states_missing_evidence_and_unanswerable_questions():

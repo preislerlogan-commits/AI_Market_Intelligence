@@ -143,7 +143,14 @@ documents, or the shadow sample.
    `market_intelligence/assistant/` answers six fixed questions about the
    selected card with deterministic, cited, labelled templates over that
    card's own `setup_detail` bundle, through a synthetic, test-only read
-   grant. No model, free-form chat, production grant or live data. A dashboard connected to
+   grant. No model, free-form chat, production grant or live data.
+   **Offline agent evidence adapters reviewed and implemented through
+   their merge (2026-10-27):** the Market Evidence Agent's, News Analyst's and Macro
+   Analyst's validated reports become labelled, non-directional
+   `current_inference` that cites its source evidence (an abstention is
+   `missing_evidence`, per the registry design), and the synthetic
+   assistant can explain them. No model call, production inference-input
+   or machine-decision authorization. A dashboard connected to
    real evidence, live setup qualification, ranking, scenarios,
    notifications, SMS, machine-decision mode and trading remain
    unauthorized.

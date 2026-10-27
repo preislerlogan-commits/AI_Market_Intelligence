@@ -26,6 +26,13 @@ open, from that card's own ``setup_detail`` bundle only:
 - **Selector authority.** Contract answers repeat the Contract Selector's own
   outcome and returned sets, checked with ``validate_contract_view``; no
   rejected contract is named and nothing is re-ranked or reclassified.
+- **Agent interpretations stay inference.** Four questions read the
+  Market Evidence Agent, News Analyst and Macro Analyst outputs in the
+  bundle. Their claims and limitations are returned only as labelled
+  inference; an abstention is shown as missing evidence; the evidence they
+  cite is listed by its own kind. They
+  never become supporting or contradicting setup evidence, and never touch
+  qualification or contract status.
 - **Nothing invented.** Values are copied from payloads; there is no
   probability, confidence, price target, direction or recommendation. An
   unsupported question, or one the evidence cannot answer, says so.
@@ -63,6 +70,11 @@ from market_intelligence.evidence.selector_boundary import (
     validate_contract_view,
 )
 from market_intelligence.evidence.validation import validate_citations
+from market_intelligence.evidence_adapters.payloads import (
+    MACRO_CLAIM,
+    MARKET_EVIDENCE_OBSERVATION,
+    NEWS_EVENT_CLAIM,
+)
 from market_intelligence.setup_cards.contracts import SetupCard
 from market_intelligence.setup_cards.definitions import SETUP_EVALUATION_PAYLOAD
 from market_intelligence.setup_cards.enums import SelectorAvailability
@@ -92,6 +104,10 @@ class QuestionId(StrEnum):
     MISSING_OR_STALE = "missing_or_stale"
     CONTRACT_STATUS = "contract_status"
     MARKET_AND_RESEARCH = "market_and_research"
+    MARKET_EVIDENCE = "market_evidence"
+    MACRO_CONDITIONS = "macro_conditions"
+    NEWS_CONTEXT = "news_context"
+    INTERPRETATION_BASIS = "interpretation_basis"
 
 
 QUESTIONS: Mapping[QuestionId, str] = {
@@ -101,7 +117,26 @@ QUESTIONS: Mapping[QuestionId, str] = {
     QuestionId.MISSING_OR_STALE: "What information is missing or stale?",
     QuestionId.CONTRACT_STATUS: "Why is this contract eligible or research-only?",
     QuestionId.MARKET_AND_RESEARCH: "What does the current market or research status mean?",
+    QuestionId.MARKET_EVIDENCE: "What does the market evidence show?",
+    QuestionId.MACRO_CONDITIONS: "What macro conditions matter?",
+    QuestionId.NEWS_CONTEXT: "What news context is relevant?",
+    QuestionId.INTERPRETATION_BASIS: "What evidence supports or limits those interpretations?",
 }
+AGENT_QUESTIONS = frozenset(
+    {
+        QuestionId.MARKET_EVIDENCE,
+        QuestionId.MACRO_CONDITIONS,
+        QuestionId.NEWS_CONTEXT,
+        QuestionId.INTERPRETATION_BASIS,
+    }
+)
+DETERMINISTIC_QUESTIONS = tuple(q for q in QuestionId if q not in AGENT_QUESTIONS)
+_AGENT_NAMES: Mapping[str, str] = {
+    "market_evidence_agent": "Market Evidence Agent",
+    "news_agent": "News Analyst",
+    "macro_agent": "Macro Analyst",
+}
+_AGENT_SCHEMAS = frozenset({MARKET_EVIDENCE_OBSERVATION, NEWS_EVENT_CLAIM, MACRO_CLAIM})
 
 
 class StatementLabel(StrEnum):
@@ -311,6 +346,8 @@ def _kind(kind: EvidenceKind) -> str:
 def _payload_summary(item: EvidenceItem) -> str:
     """Recorded values only, copied from the payload; nothing is derived."""
     payload = item.payload
+    if _is_agent_item(item):
+        return f"{_AGENT_NAMES[payload['agent']]}: {_agent_claim(item)}"
     if item.payload_schema_id == CONTRACT_SELECTOR_PAYLOAD_ID:
         return f"Contract Selector result, outcome `{payload.get('status')}`"
     if item.payload_schema_id == SETUP_EVALUATION_PAYLOAD:
@@ -613,6 +650,198 @@ def _supporting(b: _Builder) -> tuple[bool, str, list[Statement]]:
     return _cited(b, b.s.card.supporting_citations, CitationRole.SUPPORTS_CLAIM, "supporting")
 
 
+# --- Agent interpretations (claims are inference; abstentions are missing evidence) ----------
+
+
+def _is_agent_item(item: EvidenceItem) -> bool:
+    """A completed agent claim: labelled inference."""
+    return (
+        item.evidence_kind is EvidenceKind.CURRENT_INFERENCE
+        and item.payload_schema_id in _AGENT_SCHEMAS
+        and item.payload.get("agent") == item.provenance.producer_id
+        and item.provenance.producer_id in _AGENT_NAMES
+    )
+
+
+def _is_agent_abstention(item: EvidenceItem) -> bool:
+    """An agent that produced no interpretation: missing evidence."""
+    return (
+        item.evidence_kind is EvidenceKind.MISSING_EVIDENCE
+        and item.provenance.producer_id in _AGENT_NAMES
+        and item.payload.get("expected_producer_id") == item.provenance.producer_id
+    )
+
+
+def _agent_outputs(b: _Builder, agent: str | None = None) -> tuple[list[str], list[str]]:
+    """The agents' claims (inference) and abstentions (missing evidence)."""
+    claims = sorted(
+        (item.payload["agent"], item.payload["claim_index"], item_id)
+        for item_id, item in b.s.items.items()
+        if _is_agent_item(item) and agent in (None, item.payload["agent"])
+    )
+    abstentions = sorted(
+        (item.provenance.producer_id, item_id)
+        for item_id, item in b.s.items.items()
+        if _is_agent_abstention(item) and agent in (None, item.provenance.producer_id)
+    )
+    return [c[-1] for c in claims], [a[-1] for a in abstentions]
+
+
+def _agent_claim(item: EvidenceItem) -> str:
+    """The agent's own claim text, copied from the payload."""
+    p = item.payload
+    schema = item.payload_schema_id
+    if schema == MARKET_EVIDENCE_OBSERVATION:
+        return f"{_words(p['category'])} observation: {p['statement']}"
+    mechanism = p.get("conditional_mechanism")
+    tail = f" Conditional mechanism: {mechanism}" if mechanism else ""
+    if schema == NEWS_EVENT_CLAIM:
+        return (
+            f"{_words(p['event_type'])} claim ({_words(p['relevance'])} relevance, "
+            f"{_words(p['content_basis'])}): {p['claim_summary']}{tail}"
+        )
+    return f"`{p['series_id']}` ({_words(p['economic_category'])}): {p['claim_summary']}{tail}"
+
+
+def _agent_statements(b: _Builder, item_ids: Sequence[str]) -> list[Statement]:
+    """Each agent claim and its limitations, as labelled inference citing
+    the agent's own item. A limitation repeated on every claim is shown once."""
+    statements = []
+    seen: set[str] = set()
+    for item_id in item_ids:
+        item = b.s.items[item_id]
+        p = item.payload
+        name = _AGENT_NAMES[p["agent"]]
+        quality = p.get("model_reported_evidence_quality") or "not reported"
+        statements.append(
+            b.cite(
+                item_id,
+                CitationRole.CONTEXT,
+                f"{name} (labelled non-directional inference; model-reported evidence quality "
+                f"`{quality}`), {_agent_claim(item)}.",
+            )
+        )
+        for limitation in p["limitations"]:
+            if limitation not in seen:
+                seen.add(limitation)
+                statements.append(
+                    b.cite(item_id, CitationRole.CONTEXT, f"{name} limitation: {limitation}")
+                )
+    return statements
+
+
+def _abstention_statements(b: _Builder, item_ids: Sequence[str]) -> list[Statement]:
+    """Each abstention as missing evidence: the agent's recorded reasons and
+    limitations (its display text), citing its own missing-evidence item."""
+    statements = []
+    for item_id in item_ids:
+        item = b.s.items[item_id]
+        name = _AGENT_NAMES[item.provenance.producer_id]
+        lines = item.display_text or [f"Abstained ({_words(item.payload['reason_code'])})."]
+        statements += [
+            b.cite(item_id, CitationRole.MISSING_EVIDENCE_NOTICE, f"{name}: {line}")
+            for line in lines
+        ]
+    return statements
+
+
+AgentAnswer = tuple[bool, str, list[Statement], list[Statement]]
+
+
+def _agent_interpretation(b: _Builder, agent: str) -> AgentAnswer:
+    name = _AGENT_NAMES[agent]
+    claims, abstentions = _agent_outputs(b, agent)
+    if not claims and not abstentions:
+        return (
+            False,
+            f"{NOT_ANSWERABLE} The selected bundle holds no {name} output.",
+            [],
+            [],
+        )
+    if not claims:
+        headline = (
+            f"The {name} produced no interpretation. Its abstention is recorded as missing "
+            "evidence, with its reasons and limitations; nothing is concluded in its place."
+        )
+    else:
+        headline = (
+            f"The {name} output below is labelled inference. It cannot qualify a setup, "
+            "change contract status or forecast direction."
+        )
+    return True, headline, _abstention_statements(b, abstentions), _agent_statements(b, claims)
+
+
+def _market_evidence(b: _Builder) -> AgentAnswer:
+    return _agent_interpretation(b, "market_evidence_agent")
+
+
+def _macro_conditions(b: _Builder) -> AgentAnswer:
+    return _agent_interpretation(b, "macro_agent")
+
+
+def _news_context(b: _Builder) -> AgentAnswer:
+    return _agent_interpretation(b, "news_agent")
+
+
+def _interpretation_basis(b: _Builder) -> AgentAnswer:
+    """The evidence each agent output cites, listed by its own kind; the
+    agents' claims and limitations as labelled inference; abstentions as
+    missing evidence."""
+    claims, abstentions = _agent_outputs(b)
+    if not claims and not abstentions:
+        return (
+            False,
+            f"{NOT_ANSWERABLE} The selected bundle holds no analysis-agent output.",
+            [],
+            [],
+        )
+    evidence = _abstention_statements(b, abstentions)
+    inference = _agent_statements(b, claims)
+    shown: set[str] = set()
+    for item_id in [*claims, *abstentions]:
+        item = b.s.items[item_id]
+        name = _AGENT_NAMES[item.provenance.producer_id]
+        parents = item.provenance.parent_evidence_ids
+        outside = [p for p in parents if p not in b.s.items]
+        for parent_id in parents:
+            if parent_id in b.s.items and parent_id not in shown:
+                shown.add(parent_id)
+                kind = b.s.items[parent_id].evidence_kind
+                role = {
+                    EvidenceKind.MISSING_EVIDENCE: CitationRole.MISSING_EVIDENCE_NOTICE,
+                    EvidenceKind.STALE_EVIDENCE: CitationRole.STALE_EVIDENCE_NOTICE,
+                }.get(kind, CitationRole.CONTEXT)
+                evidence.append(
+                    b.cite(parent_id, role, f"Cited by the {name}: {b.describe(parent_id)}.")
+                )
+        if outside:
+            target = inference if item_id in claims else evidence
+            target.append(
+                b.cite(
+                    item_id,
+                    CitationRole.CONTEXT
+                    if item_id in claims
+                    else CitationRole.MISSING_EVIDENCE_NOTICE,
+                    f"{name}: {len(outside)} cited item(s) are outside the selected bundle and "
+                    "are not shown.",
+                )
+            )
+    headline = (
+        "The evidence the agents cite is listed by its own kind. Their interpretations and "
+        "limitations stay labelled inference and never support or contradict the setup; "
+        "an abstention is missing evidence."
+    )
+    return True, headline, evidence, inference
+
+
+_AGENT_ANSWERS = {
+    QuestionId.MARKET_EVIDENCE: _market_evidence,
+    QuestionId.MACRO_CONDITIONS: _macro_conditions,
+    QuestionId.NEWS_CONTEXT: _news_context,
+    QuestionId.INTERPRETATION_BASIS: _interpretation_basis,
+}
+
+
 _ANSWERS = {
     QuestionId.QUALIFICATION: _qualification,
     QuestionId.SUPPORTING: _supporting,
@@ -665,13 +894,17 @@ def answer(selection: Selection, question: str, *, card_id: str, bundle_id: str)
             statements=(),
         )
     b = _Builder(selection)
-    answerable, headline, statements = _ANSWERS[question_id](b)
-    inference = (
-        _inference(b)
-        if question_id
-        in (QuestionId.SUPPORTING, QuestionId.CONTRADICTING, QuestionId.MARKET_AND_RESEARCH)
-        else ()
-    )
+    if question_id in _AGENT_ANSWERS:
+        answerable, headline, statements, agent_inference = _AGENT_ANSWERS[question_id](b)
+        inference = tuple(agent_inference)
+    else:
+        answerable, headline, statements = _ANSWERS[question_id](b)
+        inference = (
+            _inference(b)
+            if question_id
+            in (QuestionId.SUPPORTING, QuestionId.CONTRADICTING, QuestionId.MARKET_AND_RESEARCH)
+            else ()
+        )
     check_references(selection.bundle, [*statements, *inference])
     return Answer(
         question_id=question_id,

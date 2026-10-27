@@ -88,7 +88,7 @@ def _texts(answer: A.Answer) -> str:
 def test_every_supported_question_is_answered_with_cited_labelled_statements():
     selection = _selection("ready_for_manual_review")
     entries = {e.item_id: e for e in selection.bundle.entries}
-    for question in A.QuestionId:
+    for question in A.DETERMINISTIC_QUESTIONS:
         answer = _ask(selection, question)
         assert answer.answerable, question
         assert (answer.card_id, answer.bundle_id) == (

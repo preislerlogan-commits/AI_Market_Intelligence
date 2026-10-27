@@ -26,10 +26,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from functools import cache
-from typing import Any
+from typing import Annotated, Any
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from market_intelligence.contract_selection.contracts import (
     ContractSelectorInput,
@@ -124,6 +124,17 @@ from market_intelligence.evidence.selector_boundary import (
     CONTRACT_SELECTOR_PAYLOAD_ID,
     CONTRACT_SELECTOR_PRODUCER_ID,
 )
+from market_intelligence.evidence_adapters import agents as agent_adapters
+from market_intelligence.evidence_adapters.common import AdapterContext
+from market_intelligence.evidence_adapters.common import missing_evidence as _missing
+from market_intelligence.evidence_adapters.payloads import (
+    MACRO_CLAIM,
+    MARKET_EVIDENCE_OBSERVATION,
+    NEWS_EVENT_CLAIM,
+    MacroClaimInference,
+    MarketEvidenceObservation,
+    NewsEventClaim,
+)
 from market_intelligence.market_features.spy_regime_contracts import ScenarioHorizon
 from market_intelligence.setup_cards.builder import (
     build_no_qualified_setup_card,
@@ -169,6 +180,46 @@ RESEARCH = "spy_vwap_confirmation_result"
 CLOCK_PRODUCER = "system_clock_health"
 DETECTOR = "synthetic_conflict_detector"
 EVALUATOR = "synthetic_setup_evaluator"
+MACRO_SOURCE = "synthetic_macro"
+NEWS_SOURCE = "synthetic_news"
+MARKET_AGENT = agent_adapters.MARKET_EVIDENCE_PRODUCER
+NEWS_AGENT = agent_adapters.NEWS_PRODUCER
+MACRO_AGENT = agent_adapters.MACRO_PRODUCER
+# The agents' own abstention reason codes (preflight and post-response),
+# registered so an abstention can be recorded as missing evidence.
+AGENT_ABSTENTION_REASONS = {
+    MARKET_AGENT: (
+        "bars_missing",
+        "bars_stale",
+        "missing_data",
+        "partial_session",
+        "session_incomplete",
+        "symbol_mismatch",
+        "unexpected_or_duplicate_timestamps",
+    ),
+    NEWS_AGENT: (
+        "future_timestamp_detected",
+        "news_missing",
+        "news_stale",
+        "no_articles_returned",
+        "no_sufficiently_relevant_articles",
+        "symbol_mismatch",
+    ),
+    MACRO_AGENT: (
+        "no_sufficient_macro_evidence",
+        "requested_series_mismatch",
+        "series_frequency_unrecognized",
+        "series_future_dated",
+        "series_latest_missing",
+        "series_metadata_missing",
+        "series_missing",
+        "series_no_evidence_id",
+        "series_stale",
+    ),
+}
+CPI = EvidenceSubject(
+    subject_type=SubjectType.MACRO_SERIES, subject_id="macro_series:fred:CPIAUCSL"
+)
 
 SYNTHETIC_DEFINITION = SetupDefinition(
     setup_definition_id="synthetic-only-vwap-def",
@@ -195,6 +246,14 @@ class SyntheticSessionCalc(BaseModel):
     value: CanonicalDecimal
 
 
+class SyntheticMacroFact(BaseModel):
+    model_config = STRICT_FROZEN
+
+    series_id: Annotated[str, Field(pattern=r"^[A-Z0-9_]{1,32}$")]
+    observation_date: date
+    value: CanonicalDecimal
+
+
 class SyntheticContextInference(BaseModel):
     model_config = STRICT_FROZEN
 
@@ -213,7 +272,12 @@ PAYLOAD_MODELS: dict[str, type[BaseModel]] = {
     "synthetic_session_calc.v1": SyntheticSessionCalc,
     "synthetic_context_inference.v1": SyntheticContextInference,
     "synthetic_research.v1": SyntheticResearch,
+    "synthetic_macro_fact.v1": SyntheticMacroFact,
     SETUP_EVALUATION_PAYLOAD: SetupEvaluationPayload,
+    # The analysis agents' inference payloads, produced by the real adapters.
+    MARKET_EVIDENCE_OBSERVATION: MarketEvidenceObservation,
+    NEWS_EVENT_CLAIM: NewsEventClaim,
+    MACRO_CLAIM: MacroClaimInference,
 }
 
 
@@ -384,6 +448,41 @@ def make_registry() -> EvidenceRegistry:
             [SubjectType.INSTRUMENT],
         ),
         _producer(
+            MACRO_SOURCE,
+            ProducerType.SOURCE_ADAPTER,
+            [_rule(K.CONFIRMED_FACT, "synthetic_macro_fact.v1", "fp.macro.v1", True)],
+            [SubjectType.MACRO_SERIES],
+        ),
+        _producer(
+            NEWS_SOURCE,
+            ProducerType.SOURCE_ADAPTER,
+            [_rule(K.MISSING_EVIDENCE, "missing_evidence.v1", "fp.bars.v1", False)],
+            [SubjectType.INSTRUMENT],
+            reasons=("news_missing",),
+        ),
+        # The analysis agents: non-eligible inference for their claims, and
+        # non-eligible missing evidence for their abstentions. Nothing else.
+        *(
+            _producer(
+                agent,
+                ProducerType.MODEL_AGENT,
+                [
+                    _rule(K.CURRENT_INFERENCE, claim_schema, "fp.agent_inference.v1", False),
+                    _rule(
+                        K.MISSING_EVIDENCE, "missing_evidence.v1", "fp.agent_inference.v1", False
+                    ),
+                ],
+                [SubjectType.INSTRUMENT, SubjectType.MACRO_SERIES],
+                paths=[ProductionPath.DETERMINISTIC, ProductionPath.MODEL_GENERATED],
+                reasons=AGENT_ABSTENTION_REASONS[agent],
+            )
+            for agent, claim_schema in (
+                (MARKET_AGENT, MARKET_EVIDENCE_OBSERVATION),
+                (NEWS_AGENT, NEWS_EVENT_CLAIM),
+                (MACRO_AGENT, MACRO_CLAIM),
+            )
+        ),
+        _producer(
             EVALUATOR,
             ProducerType.DETERMINISTIC_ENGINE,
             [_rule(K.DETERMINISTIC_CALCULATION, SETUP_EVALUATION_PAYLOAD, "fp.bars.v1", True)],
@@ -399,6 +498,10 @@ def make_registry() -> EvidenceRegistry:
         ("clock_health_fact.v1", False),
         ("missing_evidence.v1", False),
         (SETUP_EVALUATION_PAYLOAD, True),
+        ("synthetic_macro_fact.v1", False),
+        (MARKET_EVIDENCE_OBSERVATION, True),
+        (NEWS_EVENT_CLAIM, False),
+        (MACRO_CLAIM, False),
     ]
     rules = [
         SelectionRule(
@@ -443,6 +546,16 @@ def make_registry() -> EvidenceRegistry:
                     "fp.selector.v1", [K.DETERMINISTIC_CALCULATION], current=300, stale=300, tol=0
                 ),
                 _policy("fp.clock.v1", [K.CONFIRMED_FACT], current=60, stale=60, tol=0),
+                _policy(
+                    "fp.macro.v1", [K.CONFIRMED_FACT], current=7_776_000, stale=7_776_000, tol=5
+                ),
+                _policy(
+                    "fp.agent_inference.v1",
+                    [K.CURRENT_INFERENCE, K.MISSING_EVIDENCE],
+                    current=7_200,
+                    stale=86_400,
+                    tol=5,
+                ),
             ],
             key=lambda p: p.policy_id,
         ),
@@ -1243,6 +1356,184 @@ def _superseded(registry: EvidenceRegistry) -> LaneInput:
     )
 
 
+# --- Analysis-agent interpretations (labelled inference via the real adapters) -------------
+
+AGENT_RUN_AT = T0 + timedelta(seconds=30)
+
+
+def macro_fact_item(at: datetime = T0 - timedelta(hours=1)) -> EvidenceItem:
+    """A synthetic stored macro observation (no provider is contacted)."""
+    return seal_item(
+        EvidenceItemContent(
+            evidence_kind=K.CONFIRMED_FACT,
+            subjects=[CPI],
+            effective_at_utc=at,
+            temporal_scope=EvidenceTemporalScope(
+                observation_period_start=date(2026, 12, 1),
+                observation_period_end=date(2026, 12, 31),
+                source_vintage_start=date(2027, 1, 12),
+                source_vintage_end=date(9999, 12, 31),
+            ),
+            payload_schema_id="synthetic_macro_fact.v1",
+            payload={"series_id": "CPIAUCSL", "observation_date": "2026-12-01", "value": "321.5"},
+            provenance=_provenance(
+                MACRO_SOURCE,
+                ProducerType.SOURCE_ADAPTER,
+                generated=at + timedelta(seconds=1),
+                observed=at,
+                refs=[_document_ref()],
+            ),
+            freshness_policy_id="fp.macro.v1",
+            availability=EvidenceAvailability(state=AvailabilityState.AVAILABLE),
+            quality=_quality(
+                SourceBasis.DIRECTLY_OBSERVED, source_tier=SourceTier.PRIMARY_OFFICIAL
+            ),
+            revision=ORIGINAL_REVISION,
+            machine_decision_eligible=True,
+        )
+    )
+
+
+def _adapter_context(
+    registry: EvidenceRegistry, configuration: str, at: datetime = AGENT_RUN_AT
+) -> AdapterContext:
+    return AdapterContext(
+        registry=registry,
+        code_commit_sha=COMMIT,
+        code_tree_clean=True,
+        configuration_identity=configuration,
+        generated_at_utc=at + timedelta(seconds=5),
+    )
+
+
+def news_missing_item(registry: EvidenceRegistry) -> EvidenceItem:
+    """No stored news article was available: an explicit absence record."""
+    return _missing(
+        _adapter_context(registry, "cfg_none", T0 + timedelta(seconds=10)),
+        producer_id=NEWS_SOURCE,
+        expected_subject_id=SPY.subject_id,
+        checked_at=T0 + timedelta(seconds=10),
+        query_sha256="1" * 64,
+        reason_code="news_missing",
+        payload_models=PAYLOAD_MODELS,
+        tier=SourceTier.REPUTABLE_REPORTING,
+    )
+
+
+MARKET_REPORT: dict[str, Any] = {
+    "status": "completed",
+    "symbol": "SPY",
+    "session_date_et": "2027-01-12",
+    "evidence_quality": "limited",
+    "evidence_summary": "One synthetic five-minute bar and one session calculation are available.",
+    "observations": [
+        {
+            "category": "price",
+            "statement": "The latest synthetic bar closed at 500.1.",
+            "evidence_ids": ["bar:latest"],
+        },
+        {
+            "category": "data_quality",
+            "statement": "Only one bar and one distance-from-VWAP calculation are present, so "
+            "session coverage is thin.",
+            "evidence_ids": ["bar:latest", "calc:vwap_distance"],
+        },
+    ],
+    "limitations": ["A single synthetic bar does not describe the whole session."],
+    "directional_assessment": "not_performed",
+    "trade_recommendation": "not_performed",
+    "abstained_reasons": [],
+}
+MACRO_REPORT: dict[str, Any] = {
+    "status": "completed",
+    "series_ids": ["CPIAUCSL"],
+    "snapshot_created_at_utc": "2027-01-12T14:30:00Z",
+    "source_series_count": 1,
+    "evidence_quality": "limited",
+    "macro_claims": [
+        {
+            "series_id": "CPIAUCSL",
+            "claim_summary": "The latest stored synthetic CPI observation is 321.5 for "
+            "December 2026.",
+            "evidence_ids": ["fred:CPIAUCSL:2026-12-01"],
+            "content_basis": "stored_observation_and_official_metadata",
+            "economic_category": "inflation",
+            "transmission_channels": ["inflation", "rates"],
+            "conditional_mechanism": "Inflation readings can matter through interest-rate "
+            "expectations.",
+        }
+    ],
+    "limitations": ["One monthly observation only; no revision history is shown."],
+    "directional_assessment": "not_performed",
+    "trade_recommendation": "not_performed",
+    "abstained_reasons": [],
+}
+NEWS_REPORT: dict[str, Any] = {
+    "status": "abstained",
+    "symbol": "SPY",
+    "snapshot_created_at_utc": "2027-01-12T15:00:10Z",
+    "source_article_count": 0,
+    "evidence_quality": None,
+    "event_claims": [],
+    "limitations": ["No stored news article was available for this window."],
+    "directional_assessment": "not_performed",
+    "trade_recommendation": "not_performed",
+    "abstained_reasons": ["news_missing"],
+}
+
+
+def agent_items(registry: EvidenceRegistry, sources: Mapping[str, EvidenceItem]) -> list:
+    """The three agents' synthetic reports through the real adapters. The
+    News Analyst abstained in preflight (no model call); its abstention is
+    missing evidence, not inference."""
+    inputs = list(sources.values())
+    source_bundle = _build(
+        registry, BundlePurpose.LIVE_MARKET_STATE, T0 + timedelta(seconds=20), inputs
+    )
+
+    def source(keys: Mapping[str, str], *, model: bool) -> agent_adapters.AgentSourceContext:
+        return agent_adapters.AgentSourceContext(
+            bundle=source_bundle.bundle,
+            items=source_bundle.items,
+            citation_keys={k: sources[v].item_id for k, v in keys.items()},
+            agent_generated_at_utc=AGENT_RUN_AT,
+            model_run=_model_ref() if model else None,
+        )
+
+    configs = agent_adapters.AGENT_CONFIGURATIONS
+    return [
+        *agent_adapters.adapt_market_evidence_report(
+            MARKET_REPORT,
+            source=source({"bar:latest": "bar", "calc:vwap_distance": "calc"}, model=True),
+            context=_adapter_context(registry, configs[MARKET_AGENT]),
+        ),
+        *agent_adapters.adapt_macro_report(
+            MACRO_REPORT,
+            source=source({"fred:CPIAUCSL:2026-12-01": "macro"}, model=True),
+            context=_adapter_context(registry, configs[MACRO_AGENT]),
+        ),
+        *agent_adapters.adapt_news_report(
+            NEWS_REPORT,
+            source=source({"news:window": "news"}, model=False),
+            context=_adapter_context(registry, configs[NEWS_AGENT]),
+        ),
+    ]
+
+
+def _agent_interpretations(registry: EvidenceRegistry, selector: ContractSelectorResult):
+    """The ready scenario plus the agents' labelled inference and the
+    evidence it cites. The card cites none of the agents' items."""
+    base = _setup_items()
+    sources = {
+        "bar": base["bar"],
+        "calc": base["calc"],
+        "macro": macro_fact_item(),
+        "news": news_missing_item(registry),
+    }
+    extra = [sources["macro"], sources["news"], *agent_items(registry, sources)]
+    return _card_scenario(registry, selector=selector, extra=extra)
+
+
 SCENARIO_ORDER = (
     "no_authorized_live_qualification",
     "ready_for_manual_review",
@@ -1255,6 +1546,7 @@ SCENARIO_ORDER = (
     "selector_unavailable",
     "no_eligible_contracts",
     "research_only_contracts",
+    "agent_interpretations",
     "outdated_and_superseded",
     "holdout_restricted",
 )
@@ -1349,6 +1641,13 @@ def build_scenarios() -> dict[str, Scenario]:
             "Research-only contracts",
             "An indicative-feed selector run: research-only contracts, never eligible.",
             _card_scenario(registry, selector=selector_result(feed="indicative")),
+        ),
+        scenario(
+            "agent_interpretations",
+            "Agent interpretations (labelled inference)",
+            "Market, macro and news agent outputs as labelled, non-directional inference; "
+            "the News Analyst abstained.",
+            _agent_interpretations(registry, eligible),
         ),
         scenario(
             "outdated_and_superseded",

@@ -906,6 +906,11 @@ _FORBIDDEN_NAME_CALLS = {"open", "input", "eval", "exec", "getenv", "__import__"
 _FORBIDDEN_TIME_MODULE_CALLS = {"time", "monotonic", "perf_counter", "time_ns"}
 
 
+# The agents' shared, pure regex policy (no model, client or I/O) is the one
+# agents-package module an adapter may import, to re-check agent text.
+_ALLOWED_AGENT_MODULES = frozenset({"market_intelligence.agents.non_directional_output_policy"})
+
+
 @pytest.mark.parametrize("module", sorted(p.name for p in PACKAGE.glob("*.py")))
 def test_adapters_import_and_call_no_io_clock_randomness_or_model(module):
     tree = ast.parse((PACKAGE / module).read_text(encoding="utf-8"))
@@ -917,6 +922,8 @@ def test_adapters_import_and_call_no_io_clock_randomness_or_model(module):
         else:
             names = []
         for name in names:
+            if name in _ALLOWED_AGENT_MODULES:
+                continue
             assert not any(name == m or name.startswith(m + ".") for m in _FORBIDDEN_MODULES), (
                 module,
                 name,

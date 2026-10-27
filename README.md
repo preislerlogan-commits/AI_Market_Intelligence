@@ -162,7 +162,17 @@ python -m market_intelligence.integration.demo --dashboard  # show it in the das
     refuses any result that adds, omits, duplicates or reclassifies a
     contract, combines the eligible and research-only sets, exposes a
     rejected contract or changes a rejection count. It assigns no status of
-    its own, and it ranks and recommends nothing.
+    its own, and it ranks and recommends nothing;
+  - the Market Evidence Agent's, News Analyst's and Macro Analyst's
+    already-validated reports (reviewed and implemented),
+    following the registry design. Each completed observation or claim is
+    labelled, non-directional `current_inference`. An abstention (the agent
+    produced no interpretation) is `missing_evidence` with the agent, its
+    reasons and limitations, and no conclusion. Every claim must cite evidence inside the
+    supplied bundle, and those items become its parents. The model's own
+    `evidence_quality` stays in the payload; item quality is not assessed.
+    The items are never facts, calculations, research results,
+    probabilities or machine-decision inputs.
 
   Every time, configuration, source reference and parent is passed in
   explicitly. They make no database, file, environment, network, clock,
@@ -198,6 +208,14 @@ python -m market_intelligence.integration.demo --dashboard  # show it in the das
     separately.
   - Contract answers repeat the Contract Selector's own status and sets,
     never name a rejected contract, and never rank or reclassify.
+  - Four more questions cover the analysis agents' outputs in the bundle:
+    what the market evidence shows, which macro conditions matter, which
+    news context is relevant, and what supports or limits those
+    interpretations. Agent claims and limitations appear only as labelled
+    inference; an abstention appears under missing evidence; the evidence
+    they cite is listed by its own kind.
+    They never support or contradict the setup, qualify it or change
+    contract status.
   - Unsupported questions get a fixed "not answerable from this evidence"
     response. There is no model call and no free-form chat box.
   - It runs only under a synthetic registry with a synthetic, test-only,
