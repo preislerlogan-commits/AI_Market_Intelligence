@@ -6,10 +6,15 @@ the repository, and nothing here registers or activates anything outside a
 temporary store.
 
 - The evidence registry (``synthetic-offline-slice-registry``) admits the
-  offline adapters' producers (including the option-chain and Contract
-  Selector adapters) plus the dashboard's existing synthetic producers
-  (research result, labelled inference, conflict detector and setup
-  evaluator).
+  offline adapters' producers (including the option-chain, Contract
+  Selector, news missing-evidence and analysis-agent adapters) plus the
+  dashboard's existing synthetic producers (research result, labelled
+  inference, conflict detector and setup evaluator). The analysis agents may
+  emit only non-eligible inference (completed claims) and non-eligible
+  missing evidence (pre-model abstentions).
+- Its synthetic, read-only ``assistant`` grant covers ``setup_detail`` only,
+  so the offline assistant can read a card's own stored bundle. It is a test
+  fixture with no production authority and no machine-decision mode.
 - Its single machine-decision grant (a synthetic ``setup_ranker``) exists only
   because the store's frozen conflict-severity derivation counts a conflict as
   critical only when it involves an item required by a machine-decision
@@ -58,8 +63,10 @@ from market_intelligence.evidence.selector_boundary import (
     CONTRACT_SELECTOR_PAYLOAD_ID,
     CONTRACT_SELECTOR_PRODUCER_ID,
 )
+from market_intelligence.evidence_adapters import agents as agent_adapters
 from market_intelligence.evidence_adapters import payloads as P
 from market_intelligence.evidence_adapters.market_calculations import REGIME_CONFIGURATION
+from market_intelligence.evidence_adapters.news import NEWS_PRODUCER
 from market_intelligence.evidence_adapters.options import OPTION_CHAIN_PRODUCER
 from market_intelligence.evidence_store.registry_files import (
     SetupDefinitionRegistry,
@@ -264,6 +271,33 @@ def make_registry(*, machine_decision_fixture: bool = True) -> EvidenceRegistry:
             paths=[ProductionPath.DETERMINISTIC, ProductionPath.MODEL_GENERATED],
         ),
         _producer(
+            NEWS_PRODUCER,
+            ProducerType.SOURCE_ADAPTER,
+            [_rule(K.MISSING_EVIDENCE, missing, "fp.bars_synthetic.v1")],
+            [S.INSTRUMENT],
+            reasons=("no_articles_returned",),
+        ),
+        # The analysis agents: non-eligible inference for completed claims and
+        # non-eligible missing evidence for pre-model abstentions. Nothing else.
+        *(
+            _producer(
+                agent,
+                ProducerType.MODEL_AGENT,
+                [
+                    _rule(K.CURRENT_INFERENCE, claim_schema, "fp.agent_inference.v1", False),
+                    _rule(K.MISSING_EVIDENCE, missing, "fp.agent_inference.v1", False),
+                ],
+                [S.INSTRUMENT, S.MACRO_SERIES],
+                paths=[ProductionPath.DETERMINISTIC, ProductionPath.MODEL_GENERATED],
+                reasons=dashboard_fixtures.AGENT_ABSTENTION_REASONS[agent],
+            )
+            for agent, claim_schema in (
+                (agent_adapters.MARKET_EVIDENCE_PRODUCER, P.MARKET_EVIDENCE_OBSERVATION),
+                (agent_adapters.NEWS_PRODUCER, P.NEWS_EVENT_CLAIM),
+                (agent_adapters.MACRO_PRODUCER, P.MACRO_CLAIM),
+            )
+        ),
+        _producer(
             DETECTOR,
             ProducerType.CONFLICT_DETECTOR,
             [_rule(K.MISSING_EVIDENCE, missing, "fp.bars_synthetic.v1", False)],
@@ -289,6 +323,9 @@ def make_registry(*, machine_decision_fixture: bool = True) -> EvidenceRegistry:
         ("synthetic_context_inference.v1", True),
         (SETUP_EVALUATION_PAYLOAD, True),
         (missing, False),
+        (P.MARKET_EVIDENCE_OBSERVATION, True),
+        (P.NEWS_EVENT_CLAIM, False),
+        (P.MACRO_CLAIM, False),
     ]
     live = [K.CONFIRMED_FACT, K.DETERMINISTIC_CALCULATION, K.MISSING_EVIDENCE]
     window = 172_800
@@ -309,6 +346,12 @@ def make_registry(*, machine_decision_fixture: bool = True) -> EvidenceRegistry:
                 _policy("fp.clock.v1", [K.CONFIRMED_FACT], 300, 300),
                 _policy("fp.macro_monthly.v1", live, 7_776_000, 7_776_000),
                 _policy("fp.inference.v1", [K.CURRENT_INFERENCE], 1800, 3600),
+                _policy(
+                    "fp.agent_inference.v1",
+                    [K.CURRENT_INFERENCE, K.MISSING_EVIDENCE],
+                    7_200,
+                    86_400,
+                ),
                 _policy("fp.research_timeless.v1", [K.HISTORICAL_RESEARCH_RESULT], timeless=True),
             ],
             key=lambda p: p.policy_id,
@@ -322,6 +365,15 @@ def make_registry(*, machine_decision_fixture: bool = True) -> EvidenceRegistry:
         ),
         consumer_grants=sorted(
             [
+                # Synthetic, test-only: lets the offline assistant read the
+                # card's own setup_detail bundle. Read-only, never a production
+                # grant, no machine-decision mode.
+                ConsumerGrant(
+                    consumer_id=ConsumerId.ASSISTANT,
+                    purposes=[BundlePurpose.SETUP_DETAIL],
+                    permissions=_READS,
+                    machine_decision_mode_allowed=False,
+                ),
                 ConsumerGrant(
                     consumer_id=ConsumerId.DASHBOARD,
                     purposes=sorted(

@@ -357,14 +357,18 @@ def test_the_assistant_grant_is_synthetic_read_only_and_setup_detail_only():
     assert grant.purposes == [BundlePurpose.SETUP_DETAIL]
     assert not grant.machine_decision_mode_allowed
     assert all(p.value.startswith("read_") for p in grant.permissions)
-    # Only the dashboard's synthetic fixture registry defines it.
+    # Only the two synthetic registries (the dashboard prototype's and the
+    # offline slice's) define it; no production registry does.
     root = PACKAGE.parent
     defining = sorted(
         str(p.relative_to(root))
         for p in root.rglob("*.py")
         if "tests" not in p.parts and _ASSISTANT_GRANT.search(p.read_text("utf-8"))
     )
-    assert defining == [str(Path("dashboard") / "fixtures.py")]
+    assert defining == [
+        str(Path("dashboard") / "fixtures.py"),
+        str(Path("integration") / "registry.py"),
+    ]
 
 
 def test_registries_without_a_synthetic_read_only_grant_are_refused():

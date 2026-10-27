@@ -1,4 +1,4 @@
-"""The ten deterministic scenarios of the offline vertical slice.
+"""The eleven deterministic scenarios of the offline vertical slice.
 
 Every scenario runs in its own temporary store on one fixed synthetic
 timeline (Tuesday 2027-01-12, outside the sealed holdout window). Source
@@ -10,7 +10,10 @@ selector adapter citing exactly those chain items. Items no adapter covers
 yet (the recorded research result and a labelled inference) come from the
 dashboard prototype's existing synthetic builders. The setup
 evaluation is the one synthetic, in-memory, ``synthetic-only-`` definition's
-deterministic output.
+deterministic output. In the agent scenario, synthetic analysis-agent reports
+pass through the agent adapters against a bundle read back from the store:
+completed claims are stored as labelled inference and a pre-model abstention
+as missing evidence, with their parents already stored.
 """
 
 from __future__ import annotations
@@ -72,15 +75,17 @@ from market_intelligence.evidence.enums import (
 )
 from market_intelligence.evidence.errors import EvidenceValidationError
 from market_intelligence.evidence.validation import derive_machine_decision_eligible
+from market_intelligence.evidence_adapters import agents as agent_adapters
 from market_intelligence.evidence_adapters import clock as clock_adapter
 from market_intelligence.evidence_adapters import contract_selector as selector_adapter
 from market_intelligence.evidence_adapters import fred as fred_adapter
 from market_intelligence.evidence_adapters import market_calculations as calc_adapter
 from market_intelligence.evidence_adapters import market_data as bar_adapter
+from market_intelligence.evidence_adapters import news as news_adapter
 from market_intelligence.evidence_adapters import options as chain_adapter
 from market_intelligence.evidence_adapters.common import window_subject
 from market_intelligence.integration import registry as R
-from market_intelligence.integration.pipeline import ScenarioStore, read_back
+from market_intelligence.integration.pipeline import ScenarioStore, _stored_bundle, read_back
 from market_intelligence.integration.workspace import store_paths
 from market_intelligence.market_features.spy_regime_classifier import classify
 from market_intelligence.market_features.spy_regime_contracts import (
@@ -542,7 +547,13 @@ def _bundles_and_card(built: Built, as_of: datetime, *, no_setup: bool = False, 
         s.no_setup_card(setup, supporting_ids=supporting, context_ids=[research])
         return
     context = [research]
-    inference = [e.item_id for e in setup.entries if e.evidence_kind.value == "current_inference"]
+    # Only the slice's own labelled synthetic inference is card context; the
+    # analysis agents' inference is never cited by a card.
+    inference = [
+        e.item_id
+        for e in setup.entries
+        if e.evidence_kind.value == "current_inference" and e.producer_id == R.AGENT
+    ]
     s.setup_card(
         setup,
         setup_subject_id=dash.SETUP_SUBJECT,
@@ -681,6 +692,136 @@ def _premarket_with_macro(s: ScenarioStore) -> None:
     )
 
 
+# --- Analysis-agent evidence through the store -------------------------------------------------
+
+AGENT_RUN_AT = _t(15, 2, 20)
+MARKET_REPORT = {
+    "status": "completed",
+    "symbol": "SPY",
+    "session_date_et": "2027-01-12",
+    "evidence_quality": "limited",
+    "evidence_summary": "Six stored synthetic five-minute bars and one regime-feature calculation "
+    "are available.",
+    "observations": [
+        {
+            "category": "price",
+            "statement": "The latest stored synthetic bar closed at 501.4.",
+            "evidence_ids": ["bar:latest"],
+        },
+        {
+            "category": "data_quality",
+            "statement": "Coverage is the first 30 minutes of the session only.",
+            "evidence_ids": ["bar:latest", "regime:features"],
+        },
+    ],
+    "limitations": ["Only the opening half hour of the session is stored."],
+    "directional_assessment": "not_performed",
+    "trade_recommendation": "not_performed",
+    "abstained_reasons": [],
+}
+MACRO_REPORT = {
+    "status": "completed",
+    "series_ids": ["CPIAUCSL"],
+    "snapshot_created_at_utc": "2027-01-12T13:10:00Z",
+    "source_series_count": 1,
+    "evidence_quality": "limited",
+    "macro_claims": [
+        {
+            "series_id": "CPIAUCSL",
+            "claim_summary": "The stored synthetic CPI observation for December 2026 is 321.4.",
+            "evidence_ids": ["fred:CPIAUCSL:2026-12-01"],
+            "content_basis": "stored_observation_and_official_metadata",
+            "economic_category": "inflation",
+            "transmission_channels": ["inflation", "rates"],
+            "conditional_mechanism": "Inflation readings can matter through interest-rate "
+            "expectations.",
+        }
+    ],
+    "limitations": ["One monthly vintage only; later revisions are possible."],
+    "directional_assessment": "not_performed",
+    "trade_recommendation": "not_performed",
+    "abstained_reasons": [],
+}
+NEWS_REPORT = {
+    "status": "abstained",
+    "symbol": "SPY",
+    "snapshot_created_at_utc": "2027-01-12T15:02:11Z",
+    "source_article_count": 0,
+    "evidence_quality": None,
+    "event_claims": [],
+    "limitations": ["No stored news article was returned for this window."],
+    "directional_assessment": "not_performed",
+    "trade_recommendation": "not_performed",
+    "abstained_reasons": ["no_articles_returned"],
+}
+
+
+def _agent_outputs(s: ScenarioStore, built: Built) -> None:
+    """Store a missing-news notice and an agent-input bundle, then run the
+    three synthetic reports through the agent adapters against that bundle
+    as read back from storage, and store their outputs."""
+    s.at(_t(15, 2, 11))
+    notice = news_adapter.missing_news(
+        checked_at=_t(15, 2, 11),
+        query_sha256=canonical_sha256({"synthetic_news_query": SESSION.isoformat()}),
+        context=s.context(news_adapter.NEWS_CONFIGURATION),
+    )
+    s.ingest([notice])
+    s.named_items["news_notice"] = notice
+    s.at(_t(15, 2, 13))
+    agent_input = s.bundle(
+        "agent_input", BundlePurpose.LIVE_MARKET_STATE, _t(15, 2, 12), lookback=LOOKBACK
+    )
+    stored = _stored_bundle(s.store, agent_input.bundle_id)
+
+    def source(keys, *, model: bool) -> agent_adapters.AgentSourceContext:
+        return agent_adapters.AgentSourceContext(
+            bundle=stored.bundle,
+            items=stored.items,
+            citation_keys=keys,
+            agent_generated_at_utc=AGENT_RUN_AT,
+            model_run=dash._model_ref() if model else None,
+        )
+
+    configs = agent_adapters.AGENT_CONFIGURATIONS
+    s.at(_t(15, 2, 25))
+    s.ingest(
+        agent_adapters.adapt_market_evidence_report(
+            MARKET_REPORT,
+            source=source(
+                {"bar:latest": built.bars[-1].item_id, "regime:features": built.features.item_id},
+                model=True,
+            ),
+            context=s.context(configs[agent_adapters.MARKET_EVIDENCE_PRODUCER]),
+        )
+    )
+    s.ingest(
+        agent_adapters.adapt_macro_report(
+            MACRO_REPORT,
+            source=source(
+                {"fred:CPIAUCSL:2026-12-01": s.named_items["original_observation"].item_id},
+                model=True,
+            ),
+            context=s.context(configs[agent_adapters.MACRO_PRODUCER]),
+        )
+    )
+    s.ingest(
+        agent_adapters.adapt_news_report(
+            NEWS_REPORT,
+            source=source({"news:window": notice.item_id}, model=False),  # pre-model abstention
+            context=s.context(configs[agent_adapters.NEWS_PRODUCER]),
+        )
+    )
+
+
+def _agent_interpretations(s: ScenarioStore) -> str:
+    _premarket_with_macro(s)
+    built = _session(s, selector="opra")
+    _agent_outputs(s, built)
+    _bundles_and_card(built, AS_OF)
+    return "market"
+
+
 SCENARIOS: tuple[SliceScenario, ...] = (
     SliceScenario(
         "ready_for_manual_review",
@@ -741,6 +882,12 @@ SCENARIOS: tuple[SliceScenario, ...] = (
         "Later correction, earlier bundle unchanged",
         "A later FRED vintage is stored; the earlier bundle still rebuilds exactly.",
         _correction,
+    ),
+    SliceScenario(
+        "agent_interpretations",
+        "Agent interpretations through the store",
+        "Market and macro agent inference and a pre-model news abstention, stored and read back.",
+        _agent_interpretations,
     ),
 )
 SCENARIO_IDS = tuple(s.scenario_id for s in SCENARIOS)
