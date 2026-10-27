@@ -420,7 +420,7 @@ def test_rendering_inputs_are_deterministic():
     second = {sid: present(s) for sid, s in build_scenarios().items()}
     assert first == second
     ids = [c for m in second.values() for c in m.cards]
-    assert len(ids) == len(set(ids)) == 13
+    assert len(ids) == len(set(ids)) == 14  # one card per card scenario, plus revisions
 
 
 _FORBIDDEN_IMPORTS = (

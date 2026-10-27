@@ -44,6 +44,10 @@ SPY_REGIME_CLASSIFICATION = "spy_regime_classification.v1"
 # One schema per feed, so registry permissions are separate structurally.
 OPTION_QUOTE_OPRA_FACT = "option_quote_opra_fact.v1"
 OPTION_QUOTE_INDICATIVE_FACT = "option_quote_indicative_fact.v1"
+# Analysis-agent outputs: labelled, non-directional current_inference only.
+MARKET_EVIDENCE_OBSERVATION = "market_evidence_observation.v1"
+NEWS_EVENT_CLAIM = "news_event_claim.v1"
+MACRO_CLAIM = "macro_claim.v1"
 
 DISPLAY_TEXT_LIMIT = 500
 _Symbol = Annotated[str, Field(pattern=r"^[A-Z][A-Z0-9.]{0,9}$")]
@@ -229,6 +233,111 @@ class OptionQuoteIndicativeFact(OptionQuoteFact):
     feed: Literal["indicative"]
 
 
+# --- Analysis-agent inference payloads ------------------------------------------------------
+
+_AgentText = Annotated[SafeText, Field(min_length=1, max_length=400)]
+_Limitation = Annotated[SafeText, Field(min_length=1, max_length=300)]
+_CitationKey = Annotated[str, Field(min_length=1, max_length=64)]
+_ModelQuality = Literal["sufficient", "limited", "insufficient"]
+_Channel = Literal[
+    "rates",
+    "inflation",
+    "growth",
+    "earnings",
+    "liquidity",
+    "risk_appetite",
+    "regulation",
+    "supply_chain",
+    "credit_conditions",
+    "currency",
+    "housing",
+    "energy",
+    "other",
+]
+
+
+class _AgentInference(BaseModel):
+    """Fields every agent inference carries. The model's own
+    ``evidence_quality`` is kept here as ``model_reported_evidence_quality``
+    only; it never sets the item's quality profile. Direction and trade
+    recommendation are fixed as not performed."""
+
+    model_config = STRICT_FROZEN
+
+    agent: Literal["market_evidence_agent", "news_agent", "macro_agent"]
+    agent_generated_at_utc: UtcTimestamp
+    model_reported_evidence_quality: _ModelQuality | None
+    limitations: Annotated[list[_Limitation], Field(max_length=6)]
+    cited_evidence_keys: Annotated[list[_CitationKey], Field(min_length=1, max_length=16)]
+    non_directional: Literal[True]
+    directional_assessment: Literal["not_performed"]
+    trade_recommendation: Literal["not_performed"]
+
+
+class _AgentClaim(_AgentInference):
+    report_status: Literal["completed"]
+    claim_index: Annotated[int, Field(ge=0, le=15)]
+    claim_count: Annotated[int, Field(ge=1, le=16)]
+
+    @model_validator(mode="after")
+    def _check_index(self) -> _AgentClaim:
+        if self.claim_index >= self.claim_count:
+            raise ValueError("claim_index must be below claim_count")
+        return self
+
+
+class MarketEvidenceObservation(_AgentClaim):
+    """``market_evidence_observation.v1``: one Market Evidence Agent observation."""
+
+    agent: Literal["market_evidence_agent"]
+    symbol: Literal["SPY"]
+    session_date_et: date | None
+    evidence_summary: Annotated[SafeText, Field(min_length=1, max_length=800)] | None
+    category: Literal["data_quality", "price", "volume", "news", "macro"]
+    statement: _AgentText
+
+
+class NewsEventClaim(_AgentClaim):
+    """``news_event_claim.v1``: one News Analyst event claim."""
+
+    agent: Literal["news_agent"]
+    symbol: Literal["SPY"]
+    snapshot_created_at_utc: UtcTimestamp
+    source_article_count: Annotated[int, Field(ge=0, le=10_000)]
+    event_type: Literal[
+        "monetary_policy",
+        "economic_data",
+        "corporate",
+        "regulatory",
+        "geopolitical",
+        "market_structure",
+        "other",
+    ]
+    claim_summary: _AgentText
+    content_basis: Literal["headline_only", "headline_and_provider_summary"]
+    transmission_channels: Annotated[list[_Channel], Field(max_length=4)]
+    relevance: Literal["direct", "broad_market", "sector_or_industry"]
+    relevance_rationale: Annotated[SafeText, Field(min_length=1, max_length=300)]
+    conditional_mechanism: Annotated[SafeText, Field(min_length=1, max_length=300)] | None
+
+
+class MacroClaimInference(_AgentClaim):
+    """``macro_claim.v1``: one Macro Analyst claim about one series."""
+
+    agent: Literal["macro_agent"]
+    series_ids: Annotated[list[_SeriesId], Field(min_length=1, max_length=16)]
+    snapshot_created_at_utc: UtcTimestamp
+    source_series_count: Annotated[int, Field(ge=0, le=10_000)]
+    series_id: _SeriesId
+    claim_summary: _AgentText
+    content_basis: Literal["stored_observation_and_official_metadata"]
+    economic_category: Literal[
+        "policy_rate", "inflation", "labor", "growth", "liquidity", "housing", "energy", "other"
+    ]
+    transmission_channels: Annotated[list[_Channel], Field(max_length=4)]
+    conditional_mechanism: Annotated[SafeText, Field(min_length=1, max_length=300)] | None
+
+
 ADAPTER_PAYLOAD_MODELS: Mapping[str, type[BaseModel]] = MappingProxyType(
     {
         **CORE_PAYLOAD_MODELS,
@@ -241,5 +350,8 @@ ADAPTER_PAYLOAD_MODELS: Mapping[str, type[BaseModel]] = MappingProxyType(
         SPY_REGIME_CLASSIFICATION: RegimeClassificationResult,
         OPTION_QUOTE_OPRA_FACT: OptionQuoteOpraFact,
         OPTION_QUOTE_INDICATIVE_FACT: OptionQuoteIndicativeFact,
+        MARKET_EVIDENCE_OBSERVATION: MarketEvidenceObservation,
+        NEWS_EVENT_CLAIM: NewsEventClaim,
+        MACRO_CLAIM: MacroClaimInference,
     }
 )

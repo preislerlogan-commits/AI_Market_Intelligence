@@ -30,6 +30,7 @@ from market_intelligence.evidence.contracts import (
     MISSING_EVIDENCE_PAYLOAD,
     ORIGINAL_REVISION,
     EvidenceAvailability,
+    EvidenceInferenceBasis,
     EvidenceItem,
     EvidenceItemContent,
     EvidenceProvenance,
@@ -246,9 +247,27 @@ def require_price_schema(registry: EvidenceRegistry, payload_schema_id: str) -> 
 
 
 def quality(
-    kind: EvidenceKind, *, uncertainty: Sequence[str] = (), tier: SourceTier
+    kind: EvidenceKind,
+    *,
+    uncertainty: Sequence[str] = (),
+    tier: SourceTier,
+    production_path: ProductionPath = ProductionPath.DETERMINISTIC,
 ) -> EvidenceQualityProfile:
     calc = kind is EvidenceKind.DETERMINISTIC_CALCULATION
+    if kind is EvidenceKind.CURRENT_INFERENCE:
+        # Inference quality is never self-graded: a model's own reported
+        # quality stays in the payload, not here.
+        model = production_path is ProductionPath.MODEL_GENERATED
+        return EvidenceQualityProfile(
+            data_quality=DataQuality.NOT_ASSESSED,
+            source_basis=SourceBasis.MODEL_INFERRED if model else SourceBasis.RULE_INFERRED,
+            source_tier=tier,
+            calculation_completeness=CalculationCompleteness.NOT_APPLICABLE,
+            inference_support=InferenceSupport.NOT_ASSESSED,
+            research_status=ResearchStatus.NOT_APPLICABLE,
+            graded_strength=GradedStrength.CONFIDENCE_NOT_AVAILABLE,
+            uncertainty_codes=sorted(set(uncertainty)),
+        )
     return EvidenceQualityProfile(
         data_quality=DataQuality.COMPLETE,
         source_basis=SourceBasis.DERIVED if calc else SourceBasis.DIRECTLY_OBSERVED,
@@ -281,6 +300,9 @@ def build_item(
     uncertainty: Sequence[str] = (),
     availability: EvidenceAvailability | None = None,
     revision: EvidenceRevision = ORIGINAL_REVISION,
+    production_path: ProductionPath = ProductionPath.DETERMINISTIC,
+    inference_basis: EvidenceInferenceBasis | None = None,
+    display_text: Sequence[str] = (),
 ) -> EvidenceItem:
     """Assemble, seal and validate one item. The producer's type, version and
     freshness policy come from the registry; eligibility is the registry's
@@ -308,7 +330,7 @@ def build_item(
                 producer_id=producer_id,
                 producer_version=ADAPTER_VERSION,
                 producer_type=producer.producer_type,
-                production_path=ProductionPath.DETERMINISTIC,
+                production_path=production_path,
                 code_commit_sha=context.code_commit_sha,
                 code_tree_clean=context.code_tree_clean,
                 configuration_identity=context.configuration_identity,
@@ -319,7 +341,11 @@ def build_item(
             ),
             freshness_policy_id=rule.freshness_policy_id,
             availability=availability or EvidenceAvailability(state=AvailabilityState.AVAILABLE),
-            quality=quality(kind, uncertainty=uncertainty, tier=tier),
+            quality=quality(
+                kind, uncertainty=uncertainty, tier=tier, production_path=production_path
+            ),
+            inference_basis=inference_basis,
+            display_text=list(display_text),
             revision=revision,
             machine_decision_eligible=False,
         )
