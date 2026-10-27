@@ -150,7 +150,11 @@ documents, or the shadow sample.
    `current_inference` that cites its source evidence (an abstention is
    `missing_evidence`, per the registry design), and the synthetic
    assistant can explain them. No model call, production inference-input
-   or machine-decision authorization. A dashboard connected to
+   or machine-decision authorization. **Agent evidence through the offline
+   slice reviewed and implemented through its merge (2026-10-27):** the same adapters now
+   run inside the vertical slice, so agent evidence is stored, bundled,
+   carded and read back before the assistant and dashboard use it, in
+   temporary stores only. A dashboard connected to
    real evidence, live setup qualification, ranking, scenarios,
    notifications, SMS, machine-decision mode and trading remain
    unauthorized.

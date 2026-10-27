@@ -219,8 +219,9 @@ python -m market_intelligence.integration.demo --dashboard  # show it in the das
   - Unsupported questions get a fixed "not answerable from this evidence"
     response. There is no model call and no free-form chat box.
   - It runs only under a synthetic registry with a synthetic, test-only,
-    read-only `assistant` grant for `setup_detail` (in the dashboard
-    prototype's fixture registry only). No production grant exists.
+    read-only `assistant` grant for `setup_detail` (only in the dashboard
+    prototype's and the offline slice's synthetic registries). No production
+    grant exists.
 - **Offline vertical slice** (`market_intelligence/integration/`; offline,
   synthetic; reviewed and implemented). Small orchestration over the existing components:
   - a temporary, self-cleaning workspace with guards;
@@ -230,6 +231,14 @@ python -m market_intelligence.integration.demo --dashboard  # show it in the das
 
   Option-chain and selector evidence in the slice now come through the
   option-chain and Contract Selector adapters, over synthetic chains only.
+  An `agent_interpretations` scenario (reviewed and implemented) carries
+  analysis-agent evidence through the whole slice:
+  synthetic reports pass through the agent adapters against a bundle read
+  back from the store. The resulting items are stored with their parents,
+  bundled, carded and read back. The assistant and dashboard views are built
+  from those stored records. Market and Macro claims stay labelled
+  inference, the pre-model News abstention stays missing evidence, and the
+  setup and contract results match the ready scenario.
 
   Streamlit rendering stays in the dashboard package.
 - **Evidence store core** (`market_intelligence/evidence_store/`, migration
