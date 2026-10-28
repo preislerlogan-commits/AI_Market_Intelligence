@@ -11,6 +11,7 @@ conflicts and contract sets are all taken from the Evidence Envelope and
 
 from __future__ import annotations
 
+import dataclasses
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -41,6 +42,7 @@ from market_intelligence.dashboard.views import (
     AssistantAnswerView,
     AssistantPanelView,
     AssistantStatementView,
+    BriefingView,
     BundleView,
     CardSummary,
     ConflictView,
@@ -606,6 +608,91 @@ def _system(scenario: Scenario, market: BundleView, premarket: BundleInput) -> S
             "every bundle until the holdout is recorded."
         ),
         authorization=AUTHORIZATION,
+    )
+
+
+# --- A macro-and-news briefing (no card, no lane) -------------------------------------------------
+
+_MACRO_PRODUCERS = frozenset({"fred_macro_observations", "fred_macro_series_metadata"})
+_NEWS_PRODUCERS = frozenset({"alpaca_news"})
+
+
+def _answer_view(answer, rows: Mapping[str, EvidenceRow]) -> AssistantAnswerView:
+    return AssistantAnswerView(
+        question_id=answer.question_id.value if answer.question_id else "unsupported",
+        question=answer.question,
+        answerable=answer.answerable,
+        headline=answer.headline,
+        statements=tuple(_statement_view(s, rows) for s in answer.statements),
+        inference=tuple(_statement_view(s, rows) for s in answer.inference),
+        scope=answer.scope,
+    )
+
+
+def present_briefing(
+    bundle_input: BundleInput,
+    registry: EvidenceRegistry,
+    answers: Mapping[str, Any],
+    *,
+    payload_models: Mapping[str, Any],
+    assistant_unavailable: str | None = None,
+) -> DashboardModel:
+    """A validated ``premarket_briefing`` bundle as a briefing view. The
+    bundle is validated first; nothing is shown if it fails."""
+    _validate_input(bundle_input, registry, BundlePurpose.PREMARKET_BRIEFING, payload_models)
+    view = bundle_view(bundle_input, registry)
+    # A briefing is never a setup review: its strip says so.
+    view = dataclasses.replace(
+        view,
+        strip=dataclasses.replace(
+            view.strip, readiness_label=L.BRIEFING_READINESS[view.strip.readiness.value]
+        ),
+    )
+    rows = _rows(bundle_input)
+    limitations: list[str] = []
+    for item in bundle_input.items.values():
+        if item.evidence_kind is EvidenceKind.CURRENT_INFERENCE:
+            limitations += item.payload.get("limitations", [])
+        elif item.evidence_kind is EvidenceKind.MISSING_EVIDENCE:
+            limitations += item.display_text
+    briefing = BriefingView(
+        label=L.BRIEFING_LABEL,
+        bundle=view,
+        macro=tuple(
+            r
+            for r in view.rows
+            if r.producer_id in _MACRO_PRODUCERS and r.kind is EvidenceKind.CONFIRMED_FACT
+        ),
+        news=tuple(
+            r
+            for r in view.rows
+            if r.producer_id in _NEWS_PRODUCERS and r.kind is EvidenceKind.CONFIRMED_FACT
+        ),
+        interpretations=view.rows_of(EvidenceKind.CURRENT_INFERENCE),
+        missing=view.rows_of(EvidenceKind.MISSING_EVIDENCE),
+        limitations=tuple(dict.fromkeys(limitations)),
+        answers={key: _answer_view(answer, rows) for key, answer in answers.items()},
+        assistant_unavailable=assistant_unavailable,
+    )
+    excluded = LaneView(
+        Lane.VWAP_REVERSION,
+        "VWAP reversion",
+        LaneQualificationAvailability.NOT_AUTHORIZED,
+        L.BRIEFING_EXCLUDED,
+        (),
+        (),
+    )
+    return DashboardModel(
+        scenario_id="macro_news_briefing",
+        title="Macro-and-news market-context briefing",
+        summary=L.BRIEFING_LABEL,
+        market=view,
+        premarket=view,
+        vwap_lane=excluded,
+        trend_lane=dataclasses.replace(
+            excluded, lane=Lane.TREND_CONTINUATION, title="Trend continuation"
+        ),
+        briefing=briefing,
     )
 
 

@@ -241,6 +241,43 @@ python -m market_intelligence.integration.demo --dashboard  # show it in the das
   setup and contract results match the ready scenario.
 
   Streamlit rendering stays in the dashboard package.
+- **Macro-and-news briefing workflow** (`market_intelligence/briefing/`;
+  reviewed and implemented; offline-tested only). **The live run is not
+  authorized; implementing it does not authorize executing it.** A one-time, non-directional market-context briefing built only from
+  existing components:
+  - FRED and Alpaca News retrieval (injected; the real connectors only behind
+    a recorded live authorization, of which none exists);
+  - a temporary source database filled by the existing repositories;
+  - the existing Macro and News analysts reading it, with an injected model
+    client;
+  - the existing evidence and agent adapters;
+  - a temporary Evidence Store and a reproduced `premarket_briefing` bundle;
+  - the existing assistant (briefing questions) and dashboard (Pre-Market
+    Brief page).
+
+  It excludes SPY prices and bars, the Market Evidence Agent, VWAP and trend
+  detection, setup qualification, contract selection, predictions,
+  probabilities, recommendations and trading. A non-network `preflight`
+  reports which credentials and settings are present, as booleans only. The
+  workflow fails closed on:
+  - missing authorization or credentials;
+  - a non-temporary or repository location;
+  - malformed or directional analyst output;
+  - an unresolvable citation;
+  - a post-model abstention;
+  - stale evidence under an interpretation.
+
+  The temporary workspace is always deleted. Tests use fakes only. Offline
+  view: `streamlit run market_intelligence/briefing/dashboard_app.py`.
+
+  Two operational blockers stand before any live run:
+  - **No trustworthy clock-health source exists.** Without one the
+    briefing refuses.
+  - **A live result cannot be handed to the assistant.** The assistant
+    reads synthetic registries only, and only the offline dashboard path
+    exists. A live result would live only in memory and would need a
+    reviewed live dashboard entry point that keeps it alive while
+    displayed.
 - **Evidence store core** (`market_intelligence/evidence_store/`, migration
   `0010`; reviewed and implemented offline) — insert-only storage of
   evidence, conflicts, bundles and setup cards with a hash-chained commit
