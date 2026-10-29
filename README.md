@@ -270,14 +270,34 @@ python -m market_intelligence.integration.demo --dashboard  # show it in the das
   The temporary workspace is always deleted. Tests use fakes only. Offline
   view: `streamlit run market_intelligence/briefing/dashboard_app.py`.
 
-  Two operational blockers stand before any live run:
-  - **No trustworthy clock-health source exists.** Without one the
-    briefing refuses.
+  Operational blockers before any live run:
+  - **The clock-health source has never been exercised live.** A Windows Time source now exists (`market_intelligence/clock_sources/`;
+    reviewed and implemented; offline-tested only). It
+    has never been run against the real Windows Time service, and it does
+    not authorize the briefing. Without a healthy reading the briefing
+    refuses.
   - **A live result cannot be handed to the assistant.** The assistant
     reads synthetic registries only, and only the offline dashboard path
     exists. A live result would live only in memory and would need a
     reviewed live dashboard entry point that keeps it alive while
     displayed.
+- **Windows clock-health source** (`market_intelligence/clock_sources/`;
+  reviewed and implemented; offline-tested only; **never exercised live, and it does not authorize the briefing**). A replaceable
+  source that reads the Windows Time service's own status through one fixed
+  `w32tm /query /status /verbose` command. The command runs through an
+  injected runner: never a shell, a strict timeout, no input, and bounded
+  ASCII output. It parses English labels only, never a localized date.
+  - It returns bounded fields only: source kind, synchronized, stratum,
+    offset, last synchronization, measurement time, and wall-clock and
+    monotonic timing. It never returns raw output, server or machine names,
+    or paths.
+  - Thresholds come from the registry's `ClockPolicy`. An unset threshold
+    gives `unknown`.
+  - Only a healthy result yields the existing `ClockHealthReading`. Any
+    other outcome fails closed: unsupported platform, timeout, command
+    failure, malformed or localized output, an unsynchronized source, a
+    stale synchronization, an excessive offset, or inconsistent clocks.
+  - It never requests a fresh time-server sample.
 - **Evidence store core** (`market_intelligence/evidence_store/`, migration
   `0010`; reviewed and implemented offline) — insert-only storage of
   evidence, conflicts, bundles and setup cards with a hash-chained commit

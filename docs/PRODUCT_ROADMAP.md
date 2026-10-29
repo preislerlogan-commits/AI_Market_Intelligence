@@ -160,11 +160,16 @@ documents, or the shadow sample.
    the evidence and agent adapters, a temporary Evidence Store and a
    briefing bundle, then the assistant and dashboard (offline results only).
    No SPY prices, strategies, setups, contracts or trading. Tests use fakes
-   only. **The first live run is not authorized.** Next operational
-   blockers: a trustworthy clock-health source, and a live dashboard entry
-   point that keeps the in-memory result alive while displayed (the
-   assistant cannot take a live result). The run also needs its own
-   recorded authorization. A dashboard connected to
+   only. **The first live run is not authorized.** **Windows clock-health
+   source reviewed and implemented through its merge, offline-tested only
+   (2026-10-29):** it
+   reads the Windows Time service's own status through a bounded runner and
+   yields a reading only when it is healthy under the registry's clock
+   policy. It has never been exercised live and does not authorize the
+   briefing. Remaining blockers: a reviewed first live exercise of that
+   clock source, and a live dashboard entry point that keeps the in-memory
+   result alive while displayed (the assistant cannot take a live result).
+   The run also needs its own recorded authorization. A dashboard connected to
    real evidence, live setup qualification, ranking, scenarios,
    notifications, SMS, machine-decision mode and trading remain
    unauthorized.
