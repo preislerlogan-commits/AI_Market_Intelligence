@@ -154,7 +154,17 @@ documents, or the shadow sample.
    slice reviewed and implemented through its merge (2026-10-27):** the same adapters now
    run inside the vertical slice, so agent evidence is stored, bundled,
    carded and read back before the assistant and dashboard use it, in
-   temporary stores only. A dashboard connected to
+   temporary stores only. **Bounded macro-and-news briefing workflow
+   reviewed and implemented through its merge, offline-tested only
+   (2026-10-28):** FRED and Alpaca News, then the Macro and News analysts,
+   the evidence and agent adapters, a temporary Evidence Store and a
+   briefing bundle, then the assistant and dashboard (offline results only).
+   No SPY prices, strategies, setups, contracts or trading. Tests use fakes
+   only. **The first live run is not authorized.** Next operational
+   blockers: a trustworthy clock-health source, and a live dashboard entry
+   point that keeps the in-memory result alive while displayed (the
+   assistant cannot take a live result). The run also needs its own
+   recorded authorization. A dashboard connected to
    real evidence, live setup qualification, ranking, scenarios,
    notifications, SMS, machine-decision mode and trading remain
    unauthorized.

@@ -37,6 +37,7 @@ from market_intelligence.dashboard.validation import DashboardInputError
 from market_intelligence.dashboard.views import (
     AssistantAnswerView,
     AssistantStatementView,
+    BriefingView,
     BundleView,
     ConflictView,
     DashboardModel,
@@ -186,6 +187,9 @@ def _manual_decision(text: str) -> None:
 
 
 def _market_overview(model: DashboardModel) -> None:
+    if model.briefing is not None:
+        st.info(L.BRIEFING_EXCLUDED)
+        return
     view: BundleView = model.market
     _strip(view.strip)
     _blocking(view.blocking)
@@ -213,7 +217,39 @@ def _market_overview(model: DashboardModel) -> None:
     _evidence("What is not current", view.non_current, "Every entry is current or timeless.")
 
 
+def _briefing(view: BriefingView) -> None:
+    st.warning(view.label)
+    _strip(view.bundle.strip)
+    _blocking(view.bundle.blocking)
+    _evidence("Macro conditions: stored FRED facts", view.macro, "No macro fact is stored.")
+    _evidence(
+        "Relevant news: provider-reported publication metadata (unverified)",
+        view.news,
+        "No news article is stored.",
+    )
+    _evidence(
+        "INFERENCE: analyst interpretations (labelled, non-directional; never a forecast)",
+        view.interpretations,
+        "No analyst interpretation is stored.",
+    )
+    _evidence(
+        "Missing evidence, including analyst abstentions",
+        view.missing,
+        "No missing-evidence record is stored.",
+    )
+    _evidence("What is not current", view.bundle.non_current, "Every entry is current.")
+    _conflicts(view.bundle.conflicts)
+    st.markdown("**Limitations reported by the analysts**")
+    if not view.limitations:
+        st.caption("No limitation was reported.")
+    for limitation in view.limitations:
+        st.markdown(f"- {limitation}")
+
+
 def _premarket(model: DashboardModel) -> None:
+    if model.briefing is not None:
+        _briefing(model.briefing)
+        return
     view = model.premarket
     _strip(view.strip)
     _blocking(view.blocking)
@@ -452,9 +488,29 @@ def _answer(answer: AssistantAnswerView) -> None:
         st.caption(answer.scope)
 
 
+def _briefing_assistant(view: BriefingView) -> None:
+    st.caption(
+        f"Briefing bundle (premarket_briefing): `{view.bundle.strip.bundle_id}`. "
+        "Every answer cites only this bundle."
+    )
+    if view.assistant_unavailable is not None:
+        st.error(f"Assistant unavailable. Reason: {L.humanize(view.assistant_unavailable)}")
+        return
+    question = st.radio(
+        "Supported briefing questions",
+        list(view.answers),
+        format_func=lambda q: view.answers[q].question,
+        key="briefing_question",
+    )
+    _answer(view.answers[question])
+
+
 def _assistant(model: DashboardModel, nav: NavigationState) -> None:
     st.warning(L.ASSISTANT_BANNER)
     panel = assistant_panel(model, nav)
+    if panel is None and model.briefing is not None:
+        _briefing_assistant(model.briefing)
+        return
     if panel is None:
         st.info(L.ASSISTANT_NO_CARD)
         return

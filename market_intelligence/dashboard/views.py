@@ -239,6 +239,23 @@ class AssistantPanelView:
 
 
 @dataclass(frozen=True)
+class BriefingView:
+    """A non-directional macro-and-news market-context briefing: one
+    validated ``premarket_briefing`` bundle, split by evidence kind, with the
+    assistant's briefing answers. No price, setup or contract content."""
+
+    label: str
+    bundle: BundleView
+    macro: tuple[EvidenceRow, ...]
+    news: tuple[EvidenceRow, ...]
+    interpretations: tuple[EvidenceRow, ...]
+    missing: tuple[EvidenceRow, ...]
+    limitations: tuple[str, ...]
+    answers: Mapping[str, AssistantAnswerView]
+    assistant_unavailable: str | None
+
+
+@dataclass(frozen=True)
 class DashboardModel:
     """Everything one synthetic scenario renders, derived only after every
     bundle and card in it passed validation."""
@@ -254,3 +271,4 @@ class DashboardModel:
     contract_reviews: Mapping[str, ContractReviewView] = field(default_factory=dict)
     system: SystemStatusView | None = None
     assistant: Mapping[str, AssistantPanelView] = field(default_factory=dict)
+    briefing: BriefingView | None = None

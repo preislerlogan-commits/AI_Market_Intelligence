@@ -122,6 +122,18 @@ ASSISTANT_BANNER = (
     "deterministic templates over the selected card's own evidence bundle. No model, live data "
     "or free-form chat; no forecast, probability, direction, advice or order."
 )
+BRIEFING_LABEL = (
+    "MARKET-CONTEXT BRIEFING: macro and news evidence only, non-directional and "
+    "explanatory. No price data, forecast, probability, setup, contract or advice."
+)
+BRIEFING_READINESS = {
+    "ready": "BRIEFING EVIDENCE COMPLETE (not a setup review)",
+    "blocked": "BRIEFING EVIDENCE INCOMPLETE (see what is missing)",
+}
+BRIEFING_EXCLUDED = (
+    "This is a macro-and-news briefing: it carries no SPY price, market-state, setup or "
+    "contract evidence."
+)
 ASSISTANT_NO_CARD = (
     "The assistant explains one card. Open a card from the Live Scanner, then choose "
     "'Explain this card' on Setup Detail."

@@ -240,22 +240,22 @@ class Selection:
 # --- Selection checks ---------------------------------------------------------------------------
 
 
-def check_selection(selection: Selection, *, card_id: str, bundle_id: str) -> None:
-    """Refuse anything but the selected card, its own bundle and that
-    bundle's evidence, under a synthetic, read-only assistant grant."""
-    card, bundle, registry = selection.card, selection.bundle, selection.registry
+def _check_registry(registry: EvidenceRegistry, purpose: BundlePurpose):
+    """A synthetic registry with a read-only assistant grant for ``purpose``."""
     if not registry.registry_label.startswith(SYNTHETIC_REGISTRY_PREFIX):
         raise AssistantRefusal("assistant_synthetic_only")
     grant = registry.consumer_grant(ConsumerId.ASSISTANT)
-    if grant is None or BundlePurpose.SETUP_DETAIL not in grant.purposes:
+    if grant is None or purpose not in grant.purposes:
         raise AssistantRefusal("assistant_not_granted")
     if grant.machine_decision_mode_allowed or not set(grant.permissions) <= _READ_ONLY:
         raise AssistantRefusal("assistant_grant_not_read_only")
-    if card.card_id != card_id or bundle.bundle_id != bundle_id:
-        raise AssistantRefusal("handoff_mismatch")
-    if card.decision_context_bundle_id != bundle.bundle_id:
-        raise AssistantRefusal("card_bundle_mismatch")
-    if bundle.purpose is not BundlePurpose.SETUP_DETAIL:
+    return grant
+
+
+def _check_bundle(selection, purpose: BundlePurpose, grant) -> None:
+    """Exactly one bundle of ``purpose`` and exactly its own evidence."""
+    bundle, registry = selection.bundle, selection.registry
+    if bundle.purpose is not purpose:
         raise AssistantRefusal("bundle_purpose_not_granted")
     if bundle.registry_version_id != compute_registry_version_id(registry):
         raise AssistantRefusal("bundle_registry_mismatch")
@@ -272,6 +272,18 @@ def check_selection(selection: Selection, *, card_id: str, bundle_id: str) -> No
         needed = _READ_PERMISSION[item.evidence_kind]
         if needed is not None and needed not in grant.permissions:
             raise AssistantRefusal("permission_not_granted")
+
+
+def check_selection(selection: Selection, *, card_id: str, bundle_id: str) -> None:
+    """Refuse anything but the selected card, its own bundle and that
+    bundle's evidence, under a synthetic, read-only assistant grant."""
+    card, bundle = selection.card, selection.bundle
+    grant = _check_registry(selection.registry, BundlePurpose.SETUP_DETAIL)
+    if card.card_id != card_id or bundle.bundle_id != bundle_id:
+        raise AssistantRefusal("handoff_mismatch")
+    if card.decision_context_bundle_id != bundle.bundle_id:
+        raise AssistantRefusal("card_bundle_mismatch")
+    _check_bundle(selection, BundlePurpose.SETUP_DETAIL, grant)
 
 
 # --- Statement building -------------------------------------------------------------------------
@@ -910,6 +922,148 @@ def answer(selection: Selection, question: str, *, card_id: str, bundle_id: str)
         question_id=question_id,
         question=QUESTIONS[question_id],
         card_id=card_id,
+        bundle_id=bundle_id,
+        answerable=answerable,
+        headline=headline,
+        statements=tuple(statements),
+        inference=inference,
+    )
+
+
+# --- Briefing mode (no setup card) ------------------------------------------------------------
+
+BRIEFING_QUESTIONS = (
+    QuestionId.MACRO_CONDITIONS,
+    QuestionId.NEWS_CONTEXT,
+    QuestionId.INTERPRETATION_BASIS,
+    QuestionId.MISSING_OR_STALE,
+)
+
+
+@dataclass(frozen=True)
+class BriefingSelection:
+    """One ``premarket_briefing`` bundle and exactly its evidence. There is no
+    setup card: a briefing never qualifies a setup."""
+
+    bundle: EvidenceBundleManifest
+    items: Mapping[str, EvidenceItem]
+    conflicts: Mapping[str, EvidenceConflict]
+    registry: EvidenceRegistry
+
+
+def check_briefing_selection(selection: BriefingSelection, *, bundle_id: str) -> None:
+    grant = _check_registry(selection.registry, BundlePurpose.PREMARKET_BRIEFING)
+    if selection.bundle.bundle_id != bundle_id:
+        raise AssistantRefusal("handoff_mismatch")
+    _check_bundle(selection, BundlePurpose.PREMARKET_BRIEFING, grant)
+
+
+def _briefing_missing_stale_conflicts(b: _Builder) -> tuple[bool, str, list[Statement]]:
+    """What the briefing bundle itself records as missing, not current or in
+    conflict: required inputs with no item, missing-evidence notices (an
+    agent abstention shows its own reasons), non-current entries and both
+    sides of every unresolved conflict."""
+    statements: list[Statement] = [
+        b.missing_requirement(requirement) for requirement in b.s.bundle.missing_required_producers
+    ]
+    for item_id, item in sorted(b.s.items.items()):
+        if item.evidence_kind is not EvidenceKind.MISSING_EVIDENCE:
+            continue
+        name = _AGENT_NAMES.get(item.provenance.producer_id)
+        lines = (
+            item.display_text
+            if name and item.display_text
+            else [
+                f"Missing-evidence notice from `{item.provenance.producer_id}` "
+                f"({_words(item.payload['reason_code'])})."
+            ]
+        )
+        statements += [
+            b.cite(
+                item_id,
+                CitationRole.MISSING_EVIDENCE_NOTICE,
+                f"{name}: {line}" if name else line,
+            )
+            for line in lines
+        ]
+    for entry in b.s.bundle.entries:
+        state = entry.freshness.state
+        if state.value not in ("current", "timeless"):
+            item = b.s.items[entry.item_id]
+            statements.append(
+                b.cite(
+                    entry.item_id,
+                    CitationRole.STALE_EVIDENCE_NOTICE,
+                    f"A {_kind(item.evidence_kind).lower()} from "
+                    f"`{item.provenance.producer_id}` is `{state.value}` "
+                    f"({_words(entry.freshness.reason.value)}) at the briefing's as-of time.",
+                    label=StatementLabel.STALE_EVIDENCE,
+                )
+            )
+    for conflict_id, conflict in sorted(b.s.conflicts.items()):
+        if conflict.status.value != "unresolved":
+            continue
+        for item_id in conflict.involved_item_ids:
+            if item_id in b.s.items:
+                statements.append(
+                    b.cite(
+                        item_id,
+                        CitationRole.CONFLICT_NOTICE,
+                        f"One side of a `{conflict.severity.value}` "
+                        f"`{_words(conflict.conflict_type.value)}` conflict (no winner is "
+                        f"chosen): {b.describe(item_id)}.",
+                        conflict_ids=[conflict_id],
+                    )
+                )
+    if not statements:
+        return (
+            True,
+            "The briefing bundle records no missing, stale, aging, unknown-freshness or "
+            "conflicting evidence.",
+            [],
+        )
+    return True, f"{len(statements)} missing, stale or conflicting record(s).", statements
+
+
+def answer_briefing(selection: BriefingSelection, question: str, *, bundle_id: str) -> Answer:
+    """Answer one bounded question about a market-context briefing bundle.
+    Only the briefing questions are supported; anything else gets the fixed
+    not-answerable response."""
+    check_briefing_selection(selection, bundle_id=bundle_id)
+    try:
+        question_id = QuestionId(question)
+    except ValueError:
+        question_id = None
+    if question_id not in BRIEFING_QUESTIONS:
+        return Answer(
+            question_id=None,
+            question=question[:200],
+            card_id="",
+            bundle_id=bundle_id,
+            answerable=False,
+            headline=f"{NOT_ANSWERABLE} Only the briefing questions are supported.",
+            statements=(),
+        )
+    b = _Builder(
+        Selection(
+            card=None,
+            bundle=selection.bundle,
+            items=selection.items,
+            conflicts=selection.conflicts,
+            registry=selection.registry,
+        )
+    )
+    if question_id is QuestionId.MISSING_OR_STALE:
+        answerable, headline, statements = _briefing_missing_stale_conflicts(b)
+        inference: tuple[Statement, ...] = ()
+    else:
+        answerable, headline, statements, agent_inference = _AGENT_ANSWERS[question_id](b)
+        inference = tuple(agent_inference)
+    check_references(selection.bundle, [*statements, *inference])
+    return Answer(
+        question_id=question_id,
+        question=QUESTIONS[question_id],
+        card_id="",
         bundle_id=bundle_id,
         answerable=answerable,
         headline=headline,
