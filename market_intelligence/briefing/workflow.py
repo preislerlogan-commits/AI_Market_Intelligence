@@ -44,6 +44,7 @@ from market_intelligence.agents.macro_analyst import MacroAnalyst, MacroAnalystA
 from market_intelligence.agents.news_analyst import AGENT_INSTRUCTIONS as NEWS_INSTRUCTIONS
 from market_intelligence.agents.news_analyst import NewsAnalyst, NewsAnalystAgentError
 from market_intelligence.assistant import explain as assistant
+from market_intelligence.clock_sources.windows_time import system_windows_time_source
 from market_intelligence.config.settings import Settings
 from market_intelligence.dashboard.adapter import present_briefing
 from market_intelligence.dashboard.fixtures import BundleInput
@@ -65,6 +66,7 @@ from market_intelligence.evidence.enums import (
     ResponseClass,
 )
 from market_intelligence.evidence.errors import EvidenceValidationError
+from market_intelligence.evidence.registry import ClockPolicy
 from market_intelligence.evidence_adapters import agents as agent_adapters
 from market_intelligence.evidence_adapters import clock as clock_adapter
 from market_intelligence.evidence_adapters import fred as fred_adapter
@@ -212,19 +214,38 @@ class _LiveSources:
         return self._fred.get_series_metadata(series_id)
 
 
+def windows_clock_health(policy: ClockPolicy) -> Callable[[], ClockHealthReading]:
+    """A clock-health callable backed by the Windows Time source. Building it
+    runs nothing; each call measures once and refuses anything but a healthy
+    result (``clock_<status>``), so the briefing fails closed."""
+    source = system_windows_time_source(policy)
+
+    def read() -> ClockHealthReading:
+        result = source.measure()
+        if result.reading is None:
+            raise BriefingRefusal(f"clock_{result.status.value}")
+        return result.reading
+
+    return read
+
+
 def live_dependencies(
     settings: Settings,
     authorization: Any,
     *,
     clock: Callable[[], datetime],
-    clock_health: Callable[[], ClockHealthReading],
+    clock_health: Callable[[], ClockHealthReading] | None = None,
 ) -> BriefingDependencies:
-    """The live connectors and model client, only for an authorized run with
-    every credential configured. The authorization is checked first; no
-    client is built and nothing is requested before both checks pass."""
+    """The live connectors, model client and (by default) the Windows Time
+    clock-health source, only for an authorized run with every credential
+    configured. The authorization is checked first; no client or source is
+    built and nothing is requested or run before both checks pass."""
     require_live_authorization(authorization)
     if not preflight(settings).ready:
         raise BriefingRefusal("credentials_missing")
+    if clock_health is None:
+        registry = briefing_registry.make_briefing_registry(briefing_registry.LIVE_LABEL)
+        clock_health = windows_clock_health(registry.clock_policy)
     from market_intelligence.model_clients.openai_structured import OpenAIStructuredClient
 
     return BriefingDependencies(
