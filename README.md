@@ -277,10 +277,19 @@ python -m market_intelligence.integration.demo --dashboard  # show it in the das
     not authorize the briefing. Without a healthy reading the briefing
     refuses.
   - **A live result cannot be handed to the assistant.** The assistant
-    reads synthetic registries only, and only the offline dashboard path
-    exists. A live result would live only in memory and would need a
-    reviewed live dashboard entry point that keeps it alive while
-    displayed.
+    reads synthetic registries only. A live dashboard handoff now exists
+    (`market_intelligence/briefing/live_dashboard_app.py`; implemented and
+    reviewed and implemented; offline-tested only):
+    - the Streamlit process would own one run per session and keep only the
+      materialized result in session memory, after the temporary store is
+      deleted;
+    - it renders the existing Market Overview and Pre-Market Brief views;
+    - it can clear the result;
+    - its run control stays disabled while no authorization is recorded or
+      the preflight is not ready.
+
+    **It implements the display handoff only; it does not authorize or
+    execute a live run.**
 - **Windows clock-health source** (`market_intelligence/clock_sources/`;
   reviewed and implemented; offline-tested only; **never exercised live, and it does not authorize the briefing**). A replaceable
   source that reads the Windows Time service's own status through one fixed
