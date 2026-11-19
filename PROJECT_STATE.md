@@ -7464,8 +7464,9 @@ entry describes something that has already been built, ingested, or attempted;
 
 73. **Windows clock-health source — REVIEWED AND IMPLEMENTED (OFFLINE-TESTED
     ONLY) through its merge from branch
-    `infrastructure/windows-clock-health-source` (2026-10-29).** **Never
-    exercised live. It does not authorize the briefing or any live run.**
+    `infrastructure/windows-clock-health-source` (2026-10-29).** **Exercised live once (item 75, 2026-11-19; it failed closed with
+    `not_synchronized` and produced no reading). It does not authorize the
+    briefing or any live run.**
     - **Design** (`market_intelligence/clock_sources/`). It is replaceable:
       `base.py` holds the result contract (`ClockSourceResult`,
       `ClockSourceStatus`, `SourceKind`), the injected `ProcessRunner`
@@ -7527,9 +7528,10 @@ entry describes something that has already been built, ingested, or attempted;
       Full suite: **4,614 passed, 22 skipped** (2026-10-29; previously 4,584
       passed, 22 skipped on `main`, zero regressions).
     - **Limitations.**
-      - Never run against the real Windows Time service. The parser is
+      - Run against the real Windows Time service once (item 75), where
+        the operator's English report parsed fully. Otherwise the parser is
         tested only on synthetic output modelled on the documented English
-        `w32tm` report, so a real system's output may differ (including
+        `w32tm` report, so another system's output may differ (including
         non-English Windows, which fails closed).
       - It reports the service's last measured state, not an independent
         fresh comparison against an authenticated time source.
@@ -7537,7 +7539,8 @@ entry describes something that has already been built, ingested, or attempted;
       - These limitations (the last-known state, English-format output, and
         no demonstration yet on the operator's machine) belong to a future
         live-clock authorization, not to another offline redesign.
-    - **Not authorized.** Running the source live, any live briefing,
+    - **Not authorized.** Running the source live (beyond the single
+      exercise in item 75), any live briefing,
       provider or model request, time-server request, real database,
       migration `0010` on the real database, production registry or
       trading. The real database remains at `0009`.
@@ -7614,6 +7617,50 @@ entry describes something that has already been built, ingested, or attempted;
       request, real database, migration `0010` on the real database,
       production registry, assistant access to live results, or trading.
       The real database remains at `0009`.
+
+75. **First controlled live exercise of the Windows clock-health source —
+    RUN ONCE, RECORDED (DOCUMENTATION-ONLY MILESTONE)** on branch
+    `feature/first-live-clock-exercise` (2026-11-19). The user authorized
+    exactly one read-only local invocation of the fixed
+    `w32tm /query /status /verbose` query through the existing source.
+    **That one-call authorization is consumed; it does not authorize any
+    future clock call or a live briefing. A healthy live clock reading is
+    still required before any live briefing.**
+    - **What ran.** `system_windows_time_source(policy).measure()`, once, with
+      the briefing registry's live clock policy (`clock.briefing.v1`:
+      offset at most 1,000 ms, last sync at most 3,600 s old). A
+      pass-through wrapper around the existing runner held the process
+      outcome in memory only, to diagnose a failure from fixed field labels
+      and parse booleans; no raw output was printed or stored. No code was
+      changed.
+    - **Sanitized result.**
+      - Status `not_synchronized`; **no `ClockHealthReading` was produced**.
+      - Source kind `network_time_server`; synchronized `false`; stratum `0`.
+      - The command finished within its timeout with exit status zero; the
+        wall-clock and monotonic checks were consistent.
+      - The offset and last-sync age were both within the policy limits,
+        but the policy is evaluated only after the synchronized check, so
+        they did not make the result healthy.
+      - Diagnostics: ASCII output; every required label present exactly
+        once; every field parsed (offset, time since last good sync,
+        stratum, leap indicator, last sync error).
+    - **Classification: environmental, not a parser or source defect.** The
+      real report parsed completely, and the source failed closed as
+      designed. With a network time source, `not_synchronized` means the
+      service itself reported a leap indicator of 3 (not synchronized) or a
+      non-zero last sync error. Its reported stratum `0` (unspecified)
+      likewise means it had no valid synchronization at that moment. The
+      exercise printed only sanitized booleans, so it does not record which
+      of those two conditions applied; finding out would need another,
+      separately authorized invocation.
+    - **Tests run (no code change).** `test_windows_clock_source.py`,
+      `test_macro_news_briefing.py` and `test_briefing_session.py`, plus
+      the seven test files that read the project documents: **565 passed,
+      1 skipped**. The full suite was not rerun because no code changed.
+    - **Not authorized.** Any further clock call, the macro-and-news
+      briefing, any provider, model or direct time-server request, the real
+      database, migration `0010` or trading. The real database remains at
+      `0009`.
 
 ## Next Planned Work
 
@@ -8037,9 +8084,12 @@ This is the forward plan. It replaces the historical content now under
       blockers before its first live run, each needing its own reviewed
       change:
       - a trustworthy clock-health reading source (without it the briefing
-        refuses). A Windows Time source exists (item 73, merged, offline-tested only)
-        but has never been exercised live; its first live exercise needs
-        its own live-clock authorization;
+        refuses). A Windows Time source exists (item 73, merged). Its first live
+        exercise (item 75) parsed the real report but failed closed with
+        `not_synchronized`, so it produced no reading. A healthy live
+        reading still needs the operator's Windows Time service to be
+        synchronized, and any further clock call needs its own
+        authorization;
       - a live dashboard entry point that keeps the in-memory result alive
         while displayed. It now exists (item 74, merged, offline-tested only); the
         assistant still cannot take a live result while it reads synthetic
