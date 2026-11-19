@@ -166,10 +166,14 @@ documents, or the shadow sample.
    reads the Windows Time service's own status through a bounded runner and
    yields a reading only when it is healthy under the registry's clock
    policy. It has never been exercised live and does not authorize the
-   briefing. Remaining blockers: a reviewed first live exercise of that
-   clock source, and a live dashboard entry point that keeps the in-memory
-   result alive while displayed (the assistant cannot take a live result).
-   The run also needs its own recorded authorization. A dashboard connected to
+   briefing. **Live briefing dashboard handoff reviewed and implemented
+   through its merge, offline-tested only (2026-10-29):** a Streamlit entry point
+   that would own one authorized run per session and keep only its
+   materialized result in session memory for the existing Market Overview
+   and Pre-Market Brief views. It does not authorize or execute a live run,
+   and live assistant access remains unavailable. Remaining blockers: a
+   reviewed first live exercise of the clock source, and a recorded
+   live-run authorization with credentials that pass the preflight. A dashboard connected to
    real evidence, live setup qualification, ranking, scenarios,
    notifications, SMS, machine-decision mode and trading remain
    unauthorized.
